@@ -241,12 +241,40 @@ All found keys are added to the SSH config, so SSH tries each until one works.
 
 If you have no SSH keys, Haven automatically generates `~/.ssh/haven_ed25519` and shows you the public key to add to your workspace. This key has no passphrase for maximum convenience.
 
-#### Passphrase-Protected Keys
+#### Encrypted (Passphrase-Protected) Keys
 
-Haven uses SSH BatchMode for non-interactive operation. This means **passphrase-protected keys require ssh-agent**:
+Haven uses SSH BatchMode for non-interactive operation. BatchMode cannot prompt for passphrases, so **encrypted keys require ssh-agent**.
 
+Haven **proactively detects** encrypted keys before attempting connection:
+
+```
+$ haven connect . myproject
+
+⚠ Your SSH keys are encrypted (passphrase-protected)
+
+  Found keys:
+    ~/.ssh/id_ed25519 (encrypted, not in agent)
+
+  Haven uses non-interactive SSH which can't prompt for passphrases.
+
+What would you like to do?
+
+  [1] Generate a Haven key (recommended)
+      One-time setup, no passphrase, works everywhere
+
+  [2] Load your key into ssh-agent first
+      Run: eval "$(ssh-agent -s)" && ssh-add
+
+Choice [1]:
+```
+
+**Option 1 (Haven key)** — simplest, zero ongoing maintenance:
+- Generates `~/.ssh/haven_ed25519` with no passphrase
+- Shows the public key to add to your workspace
+- One-time setup, works forever
+
+**Option 2 (ssh-agent)** — for users who prefer their existing keys:
 ```bash
-# Start agent and add your key
 eval "$(ssh-agent -s)"
 ssh-add
 
@@ -254,21 +282,33 @@ ssh-add
 ssh-add --apple-use-keychain ~/.ssh/id_ed25519
 ```
 
-If you don't want to manage ssh-agent, the auto-generated `haven_ed25519` key (no passphrase) is the simplest option.
-
 #### GitHub OAuth Users
 
 If you logged into EnvHaven via GitHub, your SSH keys are automatically imported to the workspace. You just need ssh-agent if your keys have a passphrase.
 
-#### When Connection Fails
+#### Key Usability Detection
 
-Haven CLI guides you through authentication issues:
+Haven CLI detects key issues **proactively** (before connecting), not reactively (after failure):
 
 | Situation | What Haven Does |
 |-----------|-----------------|
-| No keys exist | Generates `haven_ed25519`, shows public key to add |
-| Keys exist, connection fails, no haven key | Offers: generate haven key OR set up ssh-agent |
-| Haven key exists, connection fails | Shows full public key to copy/add to workspace |
+| No keys exist | Auto-generates `haven_ed25519`, shows public key |
+| Haven key exists | Proceeds (always usable) |
+| Unencrypted key exists | Proceeds |
+| Encrypted key in ssh-agent | Proceeds |
+| **Encrypted key, not in agent** | **Prompts: generate haven key OR run ssh-add** |
+
+This avoids confusing "connection failed" errors when the real issue is a passphrase prompt that BatchMode can't display.
+
+#### When Connection Fails (After Key Check)
+
+If keys are usable but connection still fails:
+
+| Error | Likely Cause | Fix |
+|-------|--------------|-----|
+| "Host key verification failed" | Workspace rebuilt | `haven connect --reset-host-key` |
+| "Permission denied" | Key not authorized | Add public key to workspace |
+| Timeout | Workspace stopped or firewall | Check workspace status |
 
 The haven key is always the simplest fix — one-time setup, no ongoing maintenance.
 

@@ -274,7 +274,10 @@ bun run build -- --all   # All platforms (darwin/linux, x64/arm64)
 
 Outputs to `cli/dist/`.
 
-See [cli/AGENTS.md](../cli/AGENTS.md) for architecture details.
+See [cli/AGENTS.md](../cli/AGENTS.md) for architecture details, including:
+- Proactive SSH key encryption detection
+- Key usability analysis flow
+- Connection failure handling
 
 ## Runtime Scripts
 

@@ -31,7 +31,7 @@ cli/
 │   │   └── ignore.ts         # Ignore pattern handling
 │   ├── ssh/
 │   │   ├── config.ts         # SSH config generation
-│   │   └── keys.ts           # SSH key discovery
+│   │   └── keys.ts           # SSH key discovery + encryption detection
 │   ├── config/
 │   │   └── store.ts          # Connection config storage
 │   └── utils/
@@ -111,36 +111,103 @@ When no SSH keys exist, Haven generates `~/.ssh/haven_ed25519`:
 
 This is the simplest path — one-time setup, zero ongoing maintenance.
 
+#### Proactive Key Encryption Detection
+
+The CLI detects encrypted (passphrase-protected) keys **before** attempting connection. This avoids confusing failures from BatchMode's inability to prompt for passphrases.
+
+**Detection method:** `ssh-keygen -y -P "" -f <keyfile>` — exits non-zero if key is encrypted.
+
+**Agent check:** `ssh-add -l` returns fingerprints of keys loaded in ssh-agent.
+
+A key is **usable** if: `!encrypted || inAgent`
+
 #### User Scenarios and Handling
 
-| Scenario | What Happens |
-|----------|--------------|
-| **Fresh machine, no keys** | Haven generates `haven_ed25519`, shows public key, user adds to workspace |
-| **Passphrase-less key, authorized** | Just works |
-| **Passphrase-less key, NOT authorized** | Fails → offers to generate haven key |
-| **Passphrase key, agent loaded** | Just works (agent handles decryption) |
-| **Passphrase key, no agent** | Fails → offers haven key OR ssh-agent setup |
-| **Haven key exists, authorized** | Just works |
-| **Haven key exists, NOT authorized** | Fails → shows full public key for user to add |
-| **GitHub OAuth user** | Keys auto-authorized on workspace; if passphrase, just need ssh-agent |
+| Scenario | Detection | Action |
+|----------|-----------|--------|
+| **No keys exist** | `keys.length === 0` | Auto-generate haven key, show public key |
+| **Haven key exists** | `hasHavenKey()` | Proceed (always usable, no passphrase) |
+| **Unencrypted key exists** | `!encrypted` | Proceed |
+| **Encrypted key in agent** | `encrypted && inAgent` | Proceed |
+| **Encrypted key, no agent** | `encrypted && !inAgent` | Proactive prompt (see below) |
+| **Mixed keys (some usable)** | `any(usable)` | Proceed |
 
-#### Connection Failure Flow
+#### Key Usability Flow (Proactive)
 
-When `haven connect` fails, the CLI determines the likely cause:
+```
+                                ┌─────────────────────────────────────────┐
+                                │                 START                   │
+                                └─────────────────────────────────────────┘
+                                                    │
+                                                    ▼
+                                ┌─────────────────────────────────────────┐
+                                │           findExistingKeys()            │
+                                └─────────────────────────────────────────┘
+                                                    │
+                        ┌───────────────────────────┼───────────────────────────┐
+                        │                           │                           │
+                        ▼                           ▼                           ▼
+                ┌───────────────┐         ┌─────────────────┐         ┌─────────────────┐
+                │   NO_KEYS     │         │ HAVEN_KEY_EXISTS│         │  OTHER_KEYS     │
+                └───────────────┘         └─────────────────┘         └─────────────────┘
+                        │                           │                           │
+                        │                           │                           ▼
+                        │                           │         ┌─────────────────────────────┐
+                        │                           │         │     analyzeKeys()           │
+                        │                           │         │ For each: encrypted? agent? │
+                        │                           │         └─────────────────────────────┘
+                        │                           │                           │
+                        │                           │                ┌──────────┴──────────┐
+                        │                           │                │                     │
+                        │                           │                ▼                     ▼
+                        │                           │      ┌─────────────────┐   ┌─────────────────┐
+                        │                           │      │  USABLE_EXISTS  │   │  NO_USABLE      │
+                        │                           │      │ ≥1 key works    │   │ All encrypted,  │
+                        │                           │      └─────────────────┘   │ none in agent   │
+                        │                           │                │           └─────────────────┘
+                        ▼                           ▼                ▼                     │
+                ┌───────────────┐         ┌─────────────────────────────┐                  │
+                │  GENERATE     │         │        PROCEED              │                  │
+                │ Auto-generate │         │ → testConnection()          │                  │
+                │ haven key     │         │ → startSync()               │                  │
+                └───────────────┘         └─────────────────────────────┘                  │
+                        │                           ▲                                      │
+                        │                           │                                      ▼
+                        └───────────────────────────┤                          ┌───────────────────┐
+                                                    │                          │      PROMPT       │
+                                                    │                          │ [1] Generate key  │
+                                                    │                          │ [2] ssh-add first │
+                                                    │                          └───────────────────┘
+                                                    │                                      │
+                                                    │               ┌──────────────────────┴──────────────────────┐
+                                                    │               │                                             │
+                                                    │               ▼                                             ▼
+                                                    │     ┌─────────────────┐                           ┌─────────────────┐
+                                                    │     │ USER_CHOSE_GEN  │                           │ USER_CHOSE_AGENT│
+                                                    │     │ Generate key    │                           │ Exit with       │
+                                                    │     └─────────────────┘                           │ instructions    │
+                                                    │               │                                   └─────────────────┘
+                                                    └───────────────┘                                             │
+                                                                                                                  ▼
+                                                                                                        ┌─────────────────┐
+                                                                                                        │    EXIT(1)      │
+                                                                                                        └─────────────────┘
+```
+
+#### Connection Failure Flow (Post-Connection)
+
+After key usability is confirmed, connection failures are simpler to diagnose:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ Connection failed                                           │
+│ Connection failed (key usability already verified)          │
 ├─────────────────────────────────────────────────────────────┤
 │ "Host key verification failed"?                             │
 │   → Suggest: haven connect --reset-host-key                 │
 ├─────────────────────────────────────────────────────────────┤
-│ Haven key exists?                                           │
-│   YES → Show full haven public key for user to copy/add     │
-│         Also mention ssh-agent for passphrase keys          │
-│   NO  → Offer options:                                      │
-│         [1] Generate Haven key (recommended)                │
-│         [2] Set up ssh-agent                                │
+│ Otherwise:                                                  │
+│   → Show haven public key (if exists) for user to add       │
+│   → List possible causes: workspace stopped, firewall, etc. │
 └─────────────────────────────────────────────────────────────┘
 ```
 

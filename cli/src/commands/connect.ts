@@ -9,7 +9,15 @@ import {
   type ConnectionConfig,
 } from "../config/store";
 import { canonicalPath, contractPath, isDirectory, baseName } from "../utils/paths";
-import { ensureKeyExists, getPublicKeys, hasHavenKey, getHavenPublicKey, generateHavenKey } from "../ssh/keys";
+import {
+  findExistingKeys,
+  hasHavenKey,
+  getHavenPublicKey,
+  generateHavenKey,
+  analyzeKeys,
+  type KeyAnalysis,
+  type SshKeyInfo,
+} from "../ssh/keys";
 import { writeHostConfig, hasIncludeDirective, getIncludeDirective, testConnection, getRemoteEnv, removeHostKey } from "../ssh/config";
 import { startSync } from "../sync/mutagen";
 import { parseDuration, formatDuration } from "../utils/duration";
@@ -59,27 +67,91 @@ async function prompt(question: string, defaultValue?: string): Promise<string> 
   });
 }
 
-async function ensureSshKeys(workspaceUrl?: string): Promise<void> {
-  const result = await ensureKeyExists();
+async function showGeneratedKey(key: SshKeyInfo, workspaceUrl?: string): Promise<void> {
+  blank();
+  console.log("━".repeat(60));
+  console.log("");
+  console.log("  Copy this public key:");
+  console.log("");
+  console.log(`  ${key.publicKey}`);
+  console.log("");
+  console.log("━".repeat(60));
+  blank();
+  info(formatKeyInstructions(workspaceUrl));
+  blank();
+  await prompt("Press Enter when ready...");
+}
 
-  if (result.generated) {
-    const key = result.keys[0]!;
+async function ensureUsableKey(workspaceUrl?: string): Promise<void> {
+  const keys = findExistingKeys();
+
+  if (keys.length === 0) {
     blank();
-    console.log("🔑 No SSH keys found. Generated a new key for Haven.");
+    console.log("🔑 No SSH keys found. Generating a Haven key...");
+    const key = await generateHavenKey();
     success(`Created ${contractPath(key.privateKeyPath)}`);
-    blank();
-    console.log("━".repeat(60));
-    console.log("");
-    console.log("  Copy this public key:");
-    console.log("");
-    console.log(`  ${key.publicKey}`);
-    console.log("");
-    console.log("━".repeat(60));
-    blank();
-    info(formatKeyInstructions(workspaceUrl));
-    blank();
-    await prompt("Press Enter when ready...");
+    await showGeneratedKey(key, workspaceUrl);
+    return;
   }
+
+  if (hasHavenKey()) {
+    return;
+  }
+
+  const analyses = await analyzeKeys();
+  const hasUsable = analyses.some((a) => a.usable);
+
+  if (hasUsable) {
+    return;
+  }
+
+  await promptForEncryptedKeyResolution(analyses, workspaceUrl);
+}
+
+async function promptForEncryptedKeyResolution(
+  analyses: KeyAnalysis[],
+  workspaceUrl?: string
+): Promise<void> {
+  blank();
+  warn("Your SSH keys are encrypted (passphrase-protected)");
+  blank();
+  console.log("  Found keys:");
+  for (const a of analyses) {
+    const status = a.inAgent ? "in agent ✓" : "not in agent";
+    console.log(`    ${contractPath(a.key.privateKeyPath)} (encrypted, ${status})`);
+  }
+  blank();
+  console.log("  Haven uses non-interactive SSH which can't prompt for passphrases.");
+  blank();
+
+  console.log("What would you like to do?");
+  blank();
+  console.log("  [1] Generate a Haven key (recommended)");
+  console.log("      One-time setup, no passphrase, works everywhere");
+  blank();
+  console.log("  [2] Load your key into ssh-agent first");
+  console.log("      Run: eval \"$(ssh-agent -s)\" && ssh-add");
+  blank();
+
+  const choice = await prompt("Choice", "1");
+
+  if (choice === "1") {
+    const spinner = createSpinner("Generating Haven key...");
+    spinner.start();
+    const key = await generateHavenKey();
+    spinner.succeed(`Created ${contractPath(key.privateKeyPath)}`);
+    await showGeneratedKey(key, workspaceUrl);
+    return;
+  }
+
+  blank();
+  info("Load your key into ssh-agent:");
+  blank();
+  console.log("   eval \"$(ssh-agent -s)\"");
+  console.log("   ssh-add");
+  blank();
+  info("Then run 'haven connect' again.");
+  process.exit(1);
 }
 
 function checkSshConfig(): void {
@@ -94,7 +166,7 @@ function checkSshConfig(): void {
 
 function showSshKeyHelp(workspaceUrl?: string): void {
   const havenKey = getHavenPublicKey();
-  
+
   if (havenKey) {
     console.log("━".repeat(60));
     console.log("");
@@ -110,93 +182,6 @@ function showSshKeyHelp(workspaceUrl?: string): void {
     info("Run 'haven connect' again to generate a Haven key.");
     blank();
   }
-}
-
-async function handlePassphraseKeyFlow(workspaceUrl?: string): Promise<{ retry: boolean; key?: import("../ssh/keys").SshKeyInfo }> {
-  const existingKeys = getPublicKeys();
-  const hasExisting = existingKeys.length > 0;
-  
-  blank();
-  warn("SSH authentication failed. This usually means:");
-  console.log("   • Your key isn't authorized on the workspace, OR");
-  console.log("   • Your key is passphrase-protected without ssh-agent");
-  blank();
-  
-  console.log("Recommended:");
-  console.log("  [1] Generate a Haven key");
-  console.log("      One-time setup, no passphrase, works everywhere");
-  blank();
-  console.log("Advanced:");
-  if (hasExisting) {
-    console.log("  [2] Use an existing key (if you have a passphrase-less key ready)");
-    console.log("  [3] Set up ssh-agent (if your keys require a passphrase)");
-  } else {
-    console.log("  [2] Set up ssh-agent (if your keys require a passphrase)");
-  }
-  blank();
-  console.log("Not sure? Haven key works for everyone.");
-  blank();
-  
-  const choice = await prompt("Choice", "1");
-  
-  if (choice === "1") {
-    return generateAndShowHavenKey(workspaceUrl);
-  }
-  
-  if (hasExisting && choice === "2") {
-    return showExistingKeysFlow(existingKeys, workspaceUrl);
-  }
-  
-  blank();
-  info("Add your key to ssh-agent:");
-  blank();
-  console.log("   eval \"$(ssh-agent -s)\"");
-  console.log("   ssh-add");
-  blank();
-  info("Then run 'haven connect' again.");
-  return { retry: false };
-}
-
-async function showExistingKeysFlow(keys: string[], workspaceUrl?: string): Promise<{ retry: boolean }> {
-  blank();
-  console.log("━".repeat(60));
-  console.log("");
-  console.log("  Your existing public key(s):");
-  console.log("");
-  for (const key of keys) {
-    console.log(`  ${key}`);
-    console.log("");
-  }
-  console.log("━".repeat(60));
-  blank();
-  info(formatKeyInstructions(workspaceUrl));
-  blank();
-  await prompt("Press Enter when ready...");
-  return { retry: true };
-}
-
-async function generateAndShowHavenKey(workspaceUrl?: string): Promise<{ retry: boolean; key: import("../ssh/keys").SshKeyInfo }> {
-  blank();
-  const spinner = createSpinner("Generating Haven key...");
-  spinner.start();
-  
-  const key = await generateHavenKey();
-  spinner.succeed(`Created ${contractPath(key.privateKeyPath)}`);
-  
-  blank();
-  console.log("━".repeat(60));
-  console.log("");
-  console.log("  Copy this public key:");
-  console.log("");
-  console.log(`  ${key.publicKey}`);
-  console.log("");
-  console.log("━".repeat(60));
-  blank();
-  info(formatKeyInstructions(workspaceUrl));
-  blank();
-  await prompt("Press Enter when ready...");
-  
-  return { retry: true, key };
 }
 
 function parseConnectionFromTarget(target: string, localPath: string): ConnectionConfig | null {
@@ -272,7 +257,7 @@ export async function connect(pathArg: string | undefined, options: ConnectOptio
 
   const workspaceUrl = getWorkspaceUrl(options.target);
   
-  await ensureSshKeys(workspaceUrl);
+  await ensureUsableKey(workspaceUrl);
   checkSshConfig();
 
   if (options.target) {
@@ -314,39 +299,14 @@ export async function connect(pathArg: string | undefined, options: ConnectOptio
     bullet("Network/firewall blocking port");
     bullet("SSH key not added to workspace");
     blank();
-    info("Check your workspace subdomain at https://envhaven.com/dashboard");
-    blank();
 
     if (connResult.error?.includes("Host key verification failed")) {
       info("Host key may have changed. Try: haven connect --reset-host-key");
-      process.exit(1);
-    }
-    
-    if (!hasHavenKey()) {
-      const result = await handlePassphraseKeyFlow(workspaceUrl);
-      if (result.retry) {
-        writeHostConfig(sshAlias, config.host, config.port, config.user);
-        const retrySpinner = createSpinner("Retrying connection...");
-        retrySpinner.start();
-        
-        const retryResult = await testConnection(sshAlias);
-        if (!retryResult.success) {
-          retrySpinner.fail("Connection still failed");
-          blank();
-          showSshKeyHelp(workspaceUrl);
-          process.exit(1);
-        }
-        retrySpinner.succeed("SSH connection successful");
-      } else {
-        process.exit(1);
-      }
     } else {
       showSshKeyHelp(workspaceUrl);
-      blank();
-      info("If using passphrase-protected keys, ensure ssh-agent is running:");
-      console.log("   eval \"$(ssh-agent -s)\" && ssh-add");
-      process.exit(1);
     }
+
+    process.exit(1);
   }
 
   connSpinner.succeed("SSH connection successful");

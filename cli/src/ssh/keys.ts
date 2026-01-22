@@ -115,3 +115,73 @@ export async function ensureKeyExists(sshDirOverride?: string): Promise<{ keys: 
   const generated = await generateHavenKey(sshDirOverride);
   return { keys: [generated], generated: true };
 }
+
+export async function isKeyEncrypted(keyPath: string): Promise<boolean> {
+  // ssh-keygen -y with empty passphrase fails on encrypted keys
+  const proc = Bun.spawn(
+    ["ssh-keygen", "-y", "-P", "", "-f", keyPath],
+    { stdout: "pipe", stderr: "pipe" }
+  );
+  return (await proc.exited) !== 0;
+}
+
+export async function getAgentFingerprints(): Promise<string[]> {
+  const proc = Bun.spawn(["ssh-add", "-l"], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  if ((await proc.exited) !== 0) return [];
+
+  const stdout = await new Response(proc.stdout).text();
+  return stdout
+    .trim()
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => line.split(" ")[1])
+    .filter((fp): fp is string => fp !== undefined);
+}
+
+export async function getKeyFingerprint(keyPath: string): Promise<string | null> {
+  const proc = Bun.spawn(["ssh-keygen", "-lf", keyPath], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  if ((await proc.exited) !== 0) return null;
+
+  const stdout = await new Response(proc.stdout).text();
+  return stdout.trim().split(" ")[1] ?? null;
+}
+
+export interface KeyAnalysis {
+  key: SshKeyInfo;
+  encrypted: boolean;
+  inAgent: boolean;
+  usable: boolean;
+}
+
+export async function analyzeKeys(sshDirOverride?: string): Promise<KeyAnalysis[]> {
+  const keys = findExistingKeys(sshDirOverride);
+  const agentFingerprints = await getAgentFingerprints();
+
+  const analyses: KeyAnalysis[] = [];
+
+  for (const key of keys) {
+    const encrypted = await isKeyEncrypted(key.privateKeyPath);
+    const fingerprint = await getKeyFingerprint(key.privateKeyPath);
+    const inAgent = fingerprint ? agentFingerprints.includes(fingerprint) : false;
+    const usable = !encrypted || inAgent;
+
+    analyses.push({ key, encrypted, inAgent, usable });
+  }
+
+  return analyses;
+}
+
+export async function hasUsableKey(sshDirOverride?: string): Promise<boolean> {
+  if (hasHavenKey(sshDirOverride)) return true;
+
+  const analyses = await analyzeKeys(sshDirOverride);
+  return analyses.some((a) => a.usable);
+}

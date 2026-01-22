@@ -11,6 +11,10 @@ import {
   getHavenPublicKey,
   generateHavenKey,
   ensureKeyExists,
+  isKeyEncrypted,
+  getKeyFingerprint,
+  analyzeKeys,
+  hasUsableKey,
 } from "../../src/ssh/keys";
 
 const TEST_SSH_DIR = "/tmp/haven-test-ssh";
@@ -29,6 +33,15 @@ const MOCK_RSA_PUBLIC = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDtest test-rsa-ke
 function createMockKey(name: string, publicKey: string): void {
   writeFileSync(join(TEST_SSH_DIR, name), MOCK_ED25519_PRIVATE, { mode: 0o600 });
   writeFileSync(join(TEST_SSH_DIR, `${name}.pub`), publicKey, { mode: 0o644 });
+}
+
+async function createRealKey(name: string, passphrase: string = ""): Promise<void> {
+  const keyPath = join(TEST_SSH_DIR, name);
+  const proc = Bun.spawn([
+    "ssh-keygen", "-t", "ed25519", "-f", keyPath,
+    "-N", passphrase, "-C", `test-${name}`, "-q"
+  ], { stdout: "pipe", stderr: "pipe" });
+  await proc.exited;
 }
 
 describe("ssh/keys", () => {
@@ -237,6 +250,97 @@ describe("ssh/keys", () => {
       expect(result.keys).toHaveLength(1);
       expect(result.keys[0]!.privateKeyPath).toBe(`${TEST_SSH_DIR}/haven_ed25519`);
       expect(result.keys[0]!.publicKey).toContain("ssh-ed25519");
+    });
+  });
+
+  describe("isKeyEncrypted", () => {
+    it("returns false for unencrypted key", async () => {
+      await createRealKey("id_ed25519", "");
+      expect(await isKeyEncrypted(`${TEST_SSH_DIR}/id_ed25519`)).toBe(false);
+    });
+
+    it("returns true for encrypted key", async () => {
+      await createRealKey("encrypted_key", "testpassphrase");
+      expect(await isKeyEncrypted(`${TEST_SSH_DIR}/encrypted_key`)).toBe(true);
+    });
+
+    it("returns false for haven-generated key", async () => {
+      const key = await generateHavenKey(TEST_SSH_DIR);
+      expect(await isKeyEncrypted(key.privateKeyPath)).toBe(false);
+    });
+  });
+
+  describe("getKeyFingerprint", () => {
+    it("returns fingerprint for valid key", async () => {
+      createMockKey("id_ed25519", MOCK_ED25519_PUBLIC);
+      const fingerprint = await getKeyFingerprint(`${TEST_SSH_DIR}/id_ed25519`);
+      expect(fingerprint).not.toBeNull();
+      expect(fingerprint).toMatch(/^SHA256:/);
+    });
+
+    it("returns null for nonexistent key", async () => {
+      const fingerprint = await getKeyFingerprint(`${TEST_SSH_DIR}/nonexistent`);
+      expect(fingerprint).toBeNull();
+    });
+  });
+
+  describe("analyzeKeys", () => {
+    it("marks unencrypted key as usable", async () => {
+      await createRealKey("id_ed25519", "");
+
+      const analyses = await analyzeKeys(TEST_SSH_DIR);
+
+      expect(analyses).toHaveLength(1);
+      expect(analyses[0]!.encrypted).toBe(false);
+      expect(analyses[0]!.usable).toBe(true);
+    });
+
+    it("marks encrypted key without agent as not usable", async () => {
+      await createRealKey("id_ed25519", "testpassphrase");
+
+      const analyses = await analyzeKeys(TEST_SSH_DIR);
+
+      expect(analyses).toHaveLength(1);
+      expect(analyses[0]!.encrypted).toBe(true);
+      expect(analyses[0]!.inAgent).toBe(false);
+      expect(analyses[0]!.usable).toBe(false);
+    });
+
+    it("analyzes multiple unencrypted keys correctly", async () => {
+      await createRealKey("id_ed25519", "");
+      await createRealKey("id_rsa", "");
+
+      const analyses = await analyzeKeys(TEST_SSH_DIR);
+
+      expect(analyses).toHaveLength(2);
+      expect(analyses.every(a => a.usable)).toBe(true);
+    });
+  });
+
+  describe("hasUsableKey", () => {
+    it("returns true when haven key exists", async () => {
+      await createRealKey("haven_ed25519", "");
+      expect(await hasUsableKey(TEST_SSH_DIR)).toBe(true);
+    });
+
+    it("returns true when unencrypted key exists", async () => {
+      await createRealKey("id_ed25519", "");
+      expect(await hasUsableKey(TEST_SSH_DIR)).toBe(true);
+    });
+
+    it("returns false when only encrypted keys exist without agent", async () => {
+      await createRealKey("id_ed25519", "testpassphrase");
+      expect(await hasUsableKey(TEST_SSH_DIR)).toBe(false);
+    });
+
+    it("returns true when mixed keys exist with at least one usable", async () => {
+      await createRealKey("id_rsa", "");
+      await createRealKey("id_ed25519", "testpassphrase");
+      expect(await hasUsableKey(TEST_SSH_DIR)).toBe(true);
+    });
+
+    it("returns false when no keys exist", async () => {
+      expect(await hasUsableKey(TEST_SSH_DIR)).toBe(false);
     });
   });
 });
