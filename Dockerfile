@@ -25,10 +25,15 @@ RUN bun run build && bun run build:webview && vsce package --out /extension/envh
 # ============================================
 FROM linuxserver/code-server:latest
 
+# Version tracking for updates
+ARG ENVHAVEN_VERSION=dev
+ENV ENVHAVEN_VERSION=$ENVHAVEN_VERSION
+
 LABEL maintainer="EnvHaven Team"
 LABEL org.opencontainers.image.source="https://github.com/envhaven/envhaven"
 LABEL org.opencontainers.image.description="Batteries-included environments for AI agents"
 LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.version=$ENVHAVEN_VERSION
 
 # ============================================
 # System Dependencies
@@ -197,9 +202,10 @@ COPY runtime/templates/AGENTS.md.managed.template /defaults/AGENTS.md.managed.te
 COPY runtime/templates/AGENTS.md.selfhosted.template /defaults/AGENTS.md.selfhosted.template
 COPY runtime/scripts/envhaven-welcome.sh /defaults/envhaven-welcome.sh
 COPY runtime/scripts/envhaven-status /opt/envhaven/bin/envhaven
+COPY runtime/scripts/envhaven-version-check /opt/envhaven/bin/envhaven-version-check
 COPY runtime/scripts/bashrc-additions /defaults/bashrc-additions
 COPY runtime/scripts/zshrc-additions /defaults/zshrc-additions
-RUN chmod +x /defaults/envhaven-welcome.sh /opt/envhaven/bin/envhaven
+RUN chmod +x /defaults/envhaven-welcome.sh /opt/envhaven/bin/envhaven /opt/envhaven/bin/envhaven-version-check
 
 # ============================================
 # Environment & Runtime Configuration

@@ -104,6 +104,12 @@ export interface TmuxWindow {
   active: boolean;
 }
 
+export interface VersionInfo {
+  current: string | null;
+  latest: string | null;
+  updateAvailable: boolean;
+}
+
 export interface WorkspaceInfo {
   isManaged: boolean;
   workspacePath: string;
@@ -127,6 +133,7 @@ export interface WorkspaceInfo {
   workspaceToken: string | null;
   apiUrl: string | null;
   tmuxWindows: TmuxWindow[];
+  version: VersionInfo;
 }
 
 interface ToolDefinition {
@@ -462,6 +469,65 @@ function isPortOpen(port: number, host = '127.0.0.1'): Promise<boolean> {
   });
 }
 
+async function getVersionInfo(isManaged: boolean, apiUrl: string | null): Promise<VersionInfo> {
+  const current = process.env.ENVHAVEN_VERSION || null;
+  
+  let latest: string | null = null;
+  
+  try {
+    if (isManaged && apiUrl) {
+      const response = await fetch(`${apiUrl}/v1/version`, { signal: AbortSignal.timeout(3000) });
+      if (response.ok) {
+        const data = await response.json() as { latest?: string };
+        latest = data.latest || null;
+      }
+    } else {
+      const tokenRes = await fetch(
+        'https://ghcr.io/token?service=ghcr.io&scope=repository:envhaven/envhaven:pull',
+        { signal: AbortSignal.timeout(3000) }
+      );
+      if (tokenRes.ok) {
+        const { token } = await tokenRes.json() as { token: string };
+        
+        const manifestRes = await fetch(
+          'https://ghcr.io/v2/envhaven/envhaven/manifests/latest',
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: 'application/vnd.docker.distribution.manifest.v2+json',
+            },
+            signal: AbortSignal.timeout(3000),
+          }
+        );
+        
+        if (manifestRes.ok) {
+          const manifest = await manifestRes.json() as { config?: { digest?: string } };
+          const configDigest = manifest.config?.digest;
+          
+          if (configDigest) {
+            const configRes = await fetch(
+              `https://ghcr.io/v2/envhaven/envhaven/blobs/${configDigest}`,
+              { 
+                headers: { Authorization: `Bearer ${token}` },
+                signal: AbortSignal.timeout(3000),
+              }
+            );
+            
+            if (configRes.ok) {
+              const config = await configRes.json() as { config?: { Labels?: Record<string, string> } };
+              latest = config.config?.Labels?.['org.opencontainers.image.version'] || null;
+            }
+          }
+        }
+      }
+    }
+  } catch { }
+  
+  const updateAvailable = !!(current && latest && current !== latest);
+  
+  return { current, latest, updateAvailable };
+}
+
 export async function getTmuxWindows(): Promise<TmuxWindow[]> {
   try {
     const { stdout } = await execSafe('tmux list-windows -t envhaven -F "#{window_index}|#{window_name}|#{window_active}"');
@@ -489,7 +555,7 @@ export async function getWorkspaceInfo(): Promise<WorkspaceInfo> {
   const workspaceToken = process.env.ENVHAVEN_WORKSPACE_TOKEN || null;
   const apiUrl = process.env.ENVHAVEN_API_URL || null;
 
-  const [toolResults, versions, sshEnabled, previewPortOpen, tmuxWindows] = await Promise.all([
+  const [toolResults, versions, sshEnabled, previewPortOpen, tmuxWindows, versionInfo] = await Promise.all([
     Promise.all(
       TOOL_DEFINITIONS.map(async (def) => {
         const installed = await commandExists(def.command);
@@ -515,6 +581,7 @@ export async function getWorkspaceInfo(): Promise<WorkspaceInfo> {
     isSshEnabled(),
     isPortOpen(exposedPort),
     getTmuxWindows(),
+    getVersionInfo(isManaged, apiUrl),
   ]);
 
   return {
@@ -540,5 +607,6 @@ export async function getWorkspaceInfo(): Promise<WorkspaceInfo> {
     workspaceToken,
     apiUrl,
     tmuxWindows,
+    version: versionInfo,
   };
 }

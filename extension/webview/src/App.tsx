@@ -4,7 +4,7 @@ import { vscode, type ExtensionToWebviewMessage } from './lib/vscode';
 import { useWorkspaceStore } from './stores/workspace-store';
 import { ToolLauncher } from './components/tool-launcher';
 import { TerminalsPanel } from './components/terminals-panel';
-import { WorkspaceInfo, SshSection, TryEnvHavenCard } from './components/workspace-info';
+import { WorkspaceInfo, SshSection, TryEnvHavenCard, VersionSection } from './components/workspace-info';
 import { Skeleton } from './components/ui/skeleton';
 import { Separator } from './components/ui/separator';
 
@@ -82,6 +82,8 @@ export default function App() {
 
       <footer className="mt-auto pt-4 space-y-3">
         <Separator />
+        
+        {!isManaged && <VersionSection />}
         
         <SshSection />
         

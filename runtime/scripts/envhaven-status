@@ -122,6 +122,23 @@ if [[ "${ENVHAVEN_MANAGED:-}" == "true" ]]; then
 else
   printf "  Mode:       %sSelf-hosted%s\n" "$CYAN" "$RESET"
 fi
+
+CURRENT_VERSION="${ENVHAVEN_VERSION:-dev}"
+UPDATE_AVAILABLE=""
+if [[ "${ENVHAVEN_MANAGED:-}" == "true" ]] && [[ -n "${ENVHAVEN_API_URL:-}" ]]; then
+  LATEST_INFO=$(curl -sf "${ENVHAVEN_API_URL}/v1/version" 2>/dev/null || echo '{}')
+  LATEST_VERSION=$(echo "$LATEST_INFO" | jq -r '.latest // empty' 2>/dev/null)
+  if [[ -n "$LATEST_VERSION" ]] && [[ "$CURRENT_VERSION" != "$LATEST_VERSION" ]]; then
+    UPDATE_AVAILABLE="$LATEST_VERSION"
+  fi
+fi
+
+if [[ -n "$UPDATE_AVAILABLE" ]]; then
+  printf "  Version:    %s%s%s  %s⚡ %s available%s\n" "$CYAN" "$CURRENT_VERSION" "$RESET" "$YELLOW" "$UPDATE_AVAILABLE" "$RESET"
+else
+  printf "  Version:    %s%s%s\n" "$CYAN" "$CURRENT_VERSION" "$RESET"
+fi
+
 printf "  Workspace:  %s\n" "$WORKSPACE_DIR"
 
 if [[ "$SSH_KEY_COUNT" != "0" && -n "$SSH_KEY_COUNT" ]]; then

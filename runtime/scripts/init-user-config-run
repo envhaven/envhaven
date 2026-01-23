@@ -50,4 +50,9 @@ elif [ ! -f "$BASHRC" ]; then
     chown abc:abc "$BASHRC"
 fi
 
+# Initialize version status for tmux
+if [[ -x /opt/envhaven/bin/envhaven-version-check ]]; then
+  /opt/envhaven/bin/envhaven-version-check &
+fi
+
 echo "User configuration completed"

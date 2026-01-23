@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Copy, Key, Check, ChevronRight, Github, ExternalLink, Pencil } from 'lucide-react';
+import { Copy, Key, Check, ChevronRight, Github, ExternalLink, Pencil, ArrowUpCircle } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Card, CardContent } from './ui/card';
@@ -403,6 +403,75 @@ export function TryEnvHavenCard() {
   );
 }
 
+export function VersionSection() {
+  const { workspace } = useWorkspaceStore();
+
+  if (!workspace?.version?.current) return null;
+
+  const { current, latest, updateAvailable } = workspace.version;
+
+  const handleCopyPullCommand = () => {
+    vscode.postMessage({ 
+      command: 'copyToClipboard', 
+      text: 'docker pull ghcr.io/envhaven/envhaven:latest' 
+    });
+  };
+
+  return (
+    <div className={cn(
+      "rounded-md p-3 transition-all",
+      updateAvailable
+        ? "border border-amber-500/30 bg-amber-500/10"
+        : "bg-muted/50"
+    )}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Version
+          </span>
+          <span className="font-mono text-xs font-medium text-foreground">
+            {current}
+          </span>
+        </div>
+        
+        {updateAvailable && latest && (
+          <div className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400">
+            <ArrowUpCircle className="h-3 w-3" />
+            <span className="font-mono text-[10px] font-medium">{latest}</span>
+          </div>
+        )}
+      </div>
+
+      {updateAvailable && (
+        <div className="mt-2 space-y-1.5">
+          <p className="text-[10px] text-amber-700 dark:text-amber-400">
+            {workspace.isManaged 
+              ? "Update available in your dashboard at envhaven.com"
+              : "New version available!"
+            }
+          </p>
+          {!workspace.isManaged && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={handleCopyPullCommand}
+                    className="flex items-center gap-1.5 rounded-sm bg-background/50 px-2 py-1 font-mono text-[10px] text-foreground hover:bg-background transition-colors"
+                  >
+                    <span>docker pull ghcr.io/envhaven/envhaven:latest</span>
+                    <Copy className="h-2.5 w-2.5 opacity-50" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>Copy pull command</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function WorkspaceInfo() {
   const { workspace } = useWorkspaceStore();
 
@@ -415,6 +484,7 @@ export function WorkspaceInfo() {
       </h3>
 
       <PreviewSection url={workspace.previewUrl} isOnline={workspace.previewPortOpen} />
+      <VersionSection />
     </div>
   );
 }

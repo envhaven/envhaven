@@ -67,6 +67,12 @@ export interface AITool {
   envVars?: string[];
 }
 
+export interface VersionInfo {
+  current: string | null;
+  latest: string | null;
+  updateAvailable: boolean;
+}
+
 export interface WorkspaceInfo {
   isManaged: boolean;
   workspacePath: string;
@@ -90,6 +96,7 @@ export interface WorkspaceInfo {
   workspaceToken: string | null;
   apiUrl: string | null;
   tmuxWindows: TmuxWindow[];
+  version: VersionInfo;
 }
 
 class VSCodeAPI {
