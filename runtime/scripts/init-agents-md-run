@@ -1,6 +1,7 @@
 #!/usr/bin/with-contenv bash
 
 AGENTS_FILE="/config/workspace/AGENTS.md"
+CLAUDE_FILE="/config/workspace/CLAUDE.md"
 
 mkdir -p /config/workspace
 chown abc:abc /config/workspace
@@ -23,7 +24,13 @@ generate_agents_md() {
     fi
     
     chown abc:abc "$AGENTS_FILE"
+    
+    # Create CLAUDE.md copy for Claude Code compatibility
+    # (copy instead of symlink - Claude Code may not follow symlinks)
+    cp "$AGENTS_FILE" "$CLAUDE_FILE"
+    chown abc:abc "$CLAUDE_FILE"
 }
 
 generate_agents_md
 echo "AGENTS.md generated (managed=${ENVHAVEN_MANAGED:-false})"
+echo "CLAUDE.md created (copy of AGENTS.md)"

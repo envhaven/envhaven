@@ -3,9 +3,9 @@
 
 ## Managed Workspace
 
-You're running on **EnvHaven Managed** — a fully provisioned workspace with automatic HTTPS and SSH access.
+This is an **EnvHaven Managed** workspace with automatic HTTPS and SSH access.
 
-### Your URLs
+### URLs
 
 | Service | URL |
 |---------|-----|
@@ -20,39 +20,19 @@ You're running on **EnvHaven Managed** — a fully provisioned workspace with au
 haven connect . ${ENVHAVEN_WORKSPACE_NAME}
 ```
 
-### Preview URLs
+### Preview URL
 
-Your web apps are accessible via the preview URL when running on **port 3000** (default).
+Apps running on **port 3000** (default) are accessible via the preview URL.
 
-| Component | Value |
-|-----------|-------|
+| Property | Value |
+|----------|-------|
 | **Preview URL** | ${ENVHAVEN_PREVIEW_URL} |
 | **Default Port** | 3000 |
 
-**IMPORTANT:** Apps MUST bind to `0.0.0.0` to be accessible via preview URL.
+Change the port in the EnvHaven extension sidebar if needed.
 
-```javascript
-// Next.js (package.json)
-"scripts": { "dev": "next dev -H 0.0.0.0 -p 3000" }
-
-// Express
-app.listen(3000, '0.0.0.0');
-
-// Vite (vite.config.ts)
-server: { host: '0.0.0.0', port: 3000 }
-
-// FastAPI
-uvicorn main:app --host 0.0.0.0 --port 3000
-```
-
-### Starting Dev Servers (Managed)
-
-When starting a dev server, always remind the user:
-
-**🔗 Instant Preview**: Your app is available at **${ENVHAVEN_PREVIEW_URL}**
-
-> **Port**: Default is 3000. Change it in the EnvHaven extension sidebar if needed.
+**Reminder:** Apps MUST bind to `0.0.0.0` to be accessible via preview URL.
 
 ---
 
-*This workspace is managed by EnvHaven. For support, visit [envhaven.com](https://envhaven.com).*
+*Managed by EnvHaven. Support: [envhaven.com](https://envhaven.com)*

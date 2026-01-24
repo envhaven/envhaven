@@ -3,11 +3,11 @@
 
 ## Self-Hosted Setup
 
-You're running EnvHaven **self-hosted**. Configure access as needed.
+This is a **self-hosted** EnvHaven workspace.
 
 ### SSH Access
 
-Configure these environment variables for correct connection strings in the UI:
+Set these environment variables for correct connection strings:
 
 | Variable | Example | Description |
 |----------|---------|-------------|
@@ -18,9 +18,9 @@ Configure these environment variables for correct connection strings in the UI:
 
 **Haven CLI:** `haven connect . abc@<host>:2222`
 
-### Exposing Ports
+### Port Mapping
 
-Map container ports in your `docker-compose.yml`:
+Map container ports in `docker-compose.yml`:
 
 ```yaml
 ports:
@@ -29,16 +29,9 @@ ports:
   - "3000:3000"   # App dev server (optional)
 ```
 
-### Starting Dev Servers (Self-Hosted)
+### Starting Dev Servers
 
-When starting a dev server, remind the user to ensure the port is mapped in `docker-compose.yml`:
-
-```yaml
-ports:
-  - "3000:3000"   # Map your app's port
-```
-
-Then access at `http://<your-host>:3000`
+Ensure the port is mapped in `docker-compose.yml`, then access at `http://<your-host>:<port>`
 
 ### Cloudflare Tunnels (Optional)
 
@@ -55,4 +48,4 @@ See [docs/configuration.md](https://github.com/envhaven/envhaven/blob/master/doc
 
 ---
 
-*Self-hosted EnvHaven. For issues, visit [github.com/envhaven/envhaven](https://github.com/envhaven/envhaven).*
+*Self-hosted EnvHaven. Issues: [github.com/envhaven/envhaven](https://github.com/envhaven/envhaven)*

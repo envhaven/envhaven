@@ -1,38 +1,141 @@
 # EnvHaven Environment
 
-This file provides context for AI coding assistants about the EnvHaven development environment.
-
-## About EnvHaven
-
-EnvHaven is a **batteries-included environment for AI coding agents**. You're running inside an isolated container with:
-
-- **Full sudo access** in a safe sandbox — break things freely, nuke and restart if needed
-- **12+ AI coding tools** pre-installed and ready to use
-- **Multiple access modes** — browser IDE, SSH terminal, or local editor via Haven CLI
-- **Persistent workspace** — code, configs, and projects survive container restarts
-
-## Environment Details
+## Quick Reference
 
 | Property | Value |
 |----------|-------|
 | **OS** | Ubuntu (Docker container) |
+| **User** | `abc` (sudo available) |
 | **Shell** | zsh (oh-my-zsh) or bash |
-| **User** | abc |
-| **Workspace** | ${WORKSPACE_PATH} |
+| **Workspace** | `${WORKSPACE_PATH}` |
 
-### Available Runtimes
+### Web Servers
+
+**MUST bind to `0.0.0.0`**, not localhost or 127.0.0.1, for apps to be accessible outside the container.
+
+```javascript
+// Express
+app.listen(3000, '0.0.0.0');
+
+// Next.js (package.json)
+"scripts": { "dev": "next dev -H 0.0.0.0" }
+
+// Vite (vite.config.ts)
+server: { host: '0.0.0.0' }
+
+// FastAPI
+uvicorn main:app --host 0.0.0.0 --port 3000
+```
+
+### Package Managers
+
+| Language | Preferred | Command |
+|----------|-----------|---------|
+| JavaScript | `bun` | `bun install`, `bun add <pkg>` |
+| Python | `uv` | `uv pip install`, `uv add <pkg>` |
+
+### Database
+
+Use **SQLite** by default: `sqlite3 myapp.db`
+
+---
+
+## Terminal Sessions (tmux)
+
+EnvHaven uses a **single persistent tmux session** named `envhaven`. This enables:
+
+- **Cross-device continuity**: Same session from browser, SSH, or Haven CLI
+- **Process persistence**: Dev servers and AI tools keep running if you disconnect
+- **Multi-window workflow**: Run AI tool in one window, dev server in another
+
+### Bottom Bar
+
+The tmux status bar shows:
+
+| Element | Description |
+|---------|-------------|
+| **Session name** | `envhaven` (left side) |
+| **Window list** | Numbered tabs, current highlighted |
+| **Version** | EnvHaven version + update indicator |
+| **Hotkeys** | Press `Ctrl+B` to see options |
+
+### Hotkeys (after `Ctrl+B`)
+
+| Key | Action |
+|-----|--------|
+| `n` | New window |
+| `x` | Close current pane |
+| `0-9` | Switch to window by number |
+| `Shift+Click` | Close window (in status bar) |
+
+### Default Behavior
+
+- New terminal sessions auto-attach to the `envhaven` session
+- Windows are numbered starting at 1
+- Closing last window ends the session (new one created on next terminal open)
+
+### Power User Override
+
+To bypass auto-attach (e.g., for nested tmux):
+```bash
+ENVHAVEN_SKIP_WELCOME=1 zsh
+```
+
+---
+
+## VS Code Extension (Sidebar)
+
+The EnvHaven sidebar (Activity Bar icon) provides:
+
+### Terminals Section
+
+- **Window list**: Shows all tmux windows, click to switch
+- **New Terminal**: Creates new tmux window
+- **Kill**: Close windows (shift+click in status bar also works)
+
+### AI Tools Section
+
+| Feature | Description |
+|---------|-------------|
+| **Tool launcher** | One-click launch into new tmux window |
+| **Status indicators** | ● ready (authenticated) / ○ needs setup |
+| **Setup guides** | Inline instructions for each tool |
+
+### API Key Management
+
+- Secure input fields for each provider's API key
+- Auto-saves to `~/.zshrc` and `~/.bashrc`
+- Keys available immediately in current session
+
+### SSH Access Section
+
+- **Import from GitHub**: Enter username to fetch `github.com/<user>.keys`
+- **Paste key**: Direct input for SSH public key
+- **SSH command**: Copy-ready connection string
+
+### Workspace Info
+
+- URLs (public, preview)
+- SSH connection details
+- Workspace path
+
+---
+
+## Runtimes
 
 | Runtime | Version | Package Manager |
 |---------|---------|-----------------|
 | **Node.js** | 20.x LTS | npm, pnpm, yarn |
-| **Bun** | latest | bun (preferred for JS) |
-| **Python** | 3.12.x | uv (preferred), pip |
+| **Bun** | latest | bun |
+| **Python** | 3.12.x | uv, pip |
 | **Go** | 1.22.x | go modules |
 | **Rust** | stable | cargo |
 
+---
+
 ## AI Coding Tools
 
-12 AI coding tools are pre-installed. Most require API keys or authentication.
+12 AI coding tools are pre-installed. Most require API keys.
 
 ### CLI Tools
 
@@ -50,18 +153,6 @@ EnvHaven is a **batteries-included environment for AI coding agents**. You're ru
 | **Augment** | `auggie` | Browser login via `auggie login` |
 | **Kiro** | `kiro-cli` | Browser login (GitHub / Google / AWS Builder ID) |
 | **Factory Droid** | `droid` | Browser login or `FACTORY_API_KEY` |
-
-### Quick Start
-
-```bash
-# Authenticate with GitHub (recommended first step)
-gh auth login
-
-# Start coding with AI
-opencode              # OpenCode (recommended)
-claude                # Claude Code
-aider                 # Aider
-```
 
 ### API Key Configuration
 
@@ -81,47 +172,67 @@ export FACTORY_API_KEY=...            # Factory/Droid
 
 Add to `~/.zshrc` or `~/.bashrc` for persistence across sessions.
 
-### VS Code Extension
+---
 
-The **EnvHaven sidebar** (Activity Bar) provides:
+## CLI Tools
 
-| Feature | Description |
-|---------|-------------|
-| **AI Tool Launcher** | One-click launch with status indicators |
-| **API Key Management** | Secure input fields, auto-saves to shell config |
-| **SSH Key Setup** | Import from GitHub URL or paste directly |
-| **Workspace Info** | URLs, SSH command, workspace path |
+| Tool | Command | Purpose |
+|------|---------|---------|
+| **GitHub CLI** | `gh` | GitHub operations |
+| **git** | `git` | Version control |
+| **ripgrep** | `rg` | Fast text search |
+| **fd** | `fd` | Fast file finder |
+| **jq** | `jq` | JSON processor |
+| **sqlite3** | `sqlite3` | SQLite CLI |
+| **curl** | `curl` | HTTP requests |
+| **htop** | `htop` | Process viewer |
+| **cloudflared** | `cloudflared` | Cloudflare tunnel CLI |
 
-**Status indicators:** ● ready (key set) / ○ needs setup
+---
 
-## Haven CLI (Local Editor + Remote AI)
+## Running Dev Servers
 
-Haven CLI enables using your local editor (neovim, emacs, helix) while AI tools run here. Changes sync bidirectionally in ~200ms.
+Use named tmux windows for dev servers. This makes them visible in the sidebar and status bar.
 
-### Architecture
+### Naming Convention
 
+| Mode | Window Name | Example |
+|------|-------------|---------|
+| Development | `{project}-dev` | `myapp-dev` |
+| Production | `{project}` | `myapp` |
+
+### Start a Dev Server
+
+```bash
+# From project directory
+cd ${WORKSPACE_PATH}/myproject
+
+# Create named window (detached) and start server
+tmux new-window -d -n "$(basename $(pwd))-dev" -c "$(pwd)" \; \
+  send-keys -t "$(basename $(pwd))-dev" 'npm run dev 2>&1 | tee /tmp/$(basename $(pwd))-dev.log' Enter
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         USER'S LOCAL MACHINE                            │
-│  ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐   │
-│  │   Local Editor  │     │   Haven CLI     │     │  Sync Daemon    │   │
-│  │  nvim/emacs/    │     │  haven connect  │     │   (Mutagen)     │   │
-│  │  helix/etc      │     │                 │     │  ~200ms sync    │   │
-│  └────────┬────────┘     └────────┬────────┘     └────────┬────────┘   │
-│           └───────────────────────┼───────────────────────┘             │
-│                    ~/projects/myapp/ (local files)                      │
-└───────────────────────────────────┼─────────────────────────────────────┘
-                          SSH + Mutagen Protocol
-                                    │
-┌───────────────────────────────────┼─────────────────────────────────────┐
-│                    ${WORKSPACE_PATH}/myapp/ (this container)            │
-│           ┌─────────────────┐     ┌─────────────────┐                   │
-│           │  Claude Code    │     │    OpenCode     │                   │
-│           │  (AI runs here) │     │  (AI runs here) │                   │
-│           └─────────────────┘     └─────────────────┘                   │
-│                          THIS ENVHAVEN CONTAINER                        │
-└─────────────────────────────────────────────────────────────────────────┘
+
+The `-d` flag creates the window without switching to it.
+
+### Check Logs
+
+```bash
+tail -f /tmp/myapp-dev.log      # Live follow
+tail -100 /tmp/myapp-dev.log    # Last 100 lines
+grep -i error /tmp/myapp-dev.log # Search errors
 ```
+
+---
+
+## Haven CLI
+
+Haven CLI enables using a **local editor** (neovim, emacs, helix, VS Code) on the user's machine while **AI tools run in this container**. Changes sync bidirectionally in ~200ms via Mutagen.
+
+### When to Suggest Haven CLI
+
+- User prefers their local editor configuration
+- User wants to use local AI tools but needs EnvHaven's environment
+- User is on a slow connection and wants local file editing
 
 ### Commands
 
@@ -130,7 +241,7 @@ Haven CLI enables using your local editor (neovim, emacs, helix) while AI tools 
 | `haven connect [path] [target]` | Connect local directory to workspace |
 | `haven disconnect [path]` | Stop sync and disconnect |
 | `haven status` | Show connection status |
-| `haven <any-command>` | Run any command in workspace |
+| `haven <any-command>` | Run any command in workspace remotely |
 
 ### Options
 
@@ -138,9 +249,9 @@ Haven CLI enables using your local editor (neovim, emacs, helix) while AI tools 
 |--------|-------------|
 | `--idle-timeout <duration>` | Override idle timeout (e.g., `4h`) |
 | `--reset-host-key` | Clear cached host key after workspace rebuild |
-| `--watch` | Continuously update status (with `status`) |
-| `--json` | JSON output (with `status`) |
-| `--diagnose` | Run diagnostic checks (with `status`) |
+| `--watch` | Continuously update status |
+| `--json` | JSON output |
+| `--diagnose` | Run diagnostic checks |
 
 ### Remote Execution
 
@@ -150,61 +261,65 @@ Any command not reserved by Haven CLI runs in the workspace:
 haven opencode          # Run OpenCode in workspace
 haven npm install       # Install dependencies remotely
 haven git status        # Check git status
-haven python app.py     # Run Python script
 ```
 
 ### Sync Details
 
-- **Latency:** ~200ms bidirectional via Mutagen
+- **Latency:** ~200ms bidirectional
 - **Conflicts:** Creates `.sync-conflict` files when both sides modify same file
 - **Custom ignores:** Add `.havenignore` file (gitignore syntax)
 
 ### Prerequisites
 
-Add your SSH public key via:
-- **EnvHaven sidebar** (SSH Access section) — easiest
+User must add their SSH public key via:
+- **EnvHaven sidebar** (SSH Access section)
 - `PUBLIC_KEY_URL` env var (e.g., `https://github.com/username.keys`)
 - Manual: add to `~/.ssh/authorized_keys`
 
-## Development Conventions
+---
 
-### Web Servers
+## Workspace Structure
 
-**MUST bind to `0.0.0.0`**, not localhost or 127.0.0.1, for the app to be accessible outside the container.
-
-```javascript
-// Express
-app.listen(3000, '0.0.0.0');
-
-// Next.js (package.json)
-"scripts": { "dev": "next dev -H 0.0.0.0" }
-
-// Vite (vite.config.ts)
-server: { host: '0.0.0.0' }
+```
+/config/                    # Container home directory
+├── workspace/              # Project files (${WORKSPACE_PATH})
+│   ├── AGENTS.md           # This file
+│   ├── CLAUDE.md           # Copy of AGENTS.md (for Claude Code)
+│   └── <projects>/         # User's projects
+├── .ssh/                   # SSH keys
+│   └── authorized_keys     # For SSH/Haven CLI access
+├── .zshrc                  # Shell config (API keys persisted here)
+└── .config/                # Tool configurations
 ```
 
-### Package Managers
+---
 
-| Language | Preferred | Why |
-|----------|-----------|-----|
-| JavaScript | `bun` | Fastest, all-in-one runtime + package manager |
-| Python | `uv` | Faster than pip, manages virtualenvs automatically |
+## Quick Start Examples
+
+### Node.js/Bun Project
 
 ```bash
-bun install          # JS dependencies
-bun add express      # Add package
-
-uv pip install       # Python dependencies
-uv add fastapi       # Add package (creates venv if needed)
+mkdir myapp && cd myapp
+bun init
+bun add express
 ```
 
-### Databases
-
-Use **SQLite** by default unless the project specifically requires something else.
+### Python Project
 
 ```bash
-sqlite3 myapp.db
+mkdir myapp && cd myapp
+uv init
+uv add fastapi uvicorn
 ```
+
+### Go Project
+
+```bash
+mkdir myapp && cd myapp
+go mod init myapp
+```
+
+---
 
 ## CRITICAL: SSH/GPG Key Security Protocol
 
@@ -259,114 +374,7 @@ eval "$(ssh-agent -s)" && ssh-add   # Cache passphrase for session
 | Suggest skipping passphrase | Never trade security for convenience here |
 | Pipe passphrase to `ssh-add` via stdin | Never automate away human approval |
 
-## Available CLI Tools
-
-| Tool | Command | Purpose |
-|------|---------|---------|
-| **Bun** | `bun` | JavaScript runtime & package manager |
-| **uv** | `uv` | Python package manager |
-| **pnpm** | `pnpm` | Node package manager |
-| **yarn** | `yarn` | Node package manager |
-| **ripgrep** | `rg` | Fast text search |
-| **fd** | `fd` | Fast file finder |
-| **jq** | `jq` | JSON processor |
-| **sqlite3** | `sqlite3` | SQLite CLI |
-| **GitHub CLI** | `gh` | GitHub operations |
-| **git** | `git` | Version control |
-| **curl** | `curl` | HTTP requests |
-| **htop** | `htop` | Process viewer |
-| **cloudflared** | `cloudflared` | Cloudflare tunnel CLI |
-
-## Workspace Structure
-
-```
-/config/                    # Container home directory
-├── workspace/              # Project files (${WORKSPACE_PATH})
-│   ├── AGENTS.md           # This file
-│   └── <projects>/         # User's projects
-├── .ssh/                   # SSH keys
-│   └── authorized_keys     # For SSH/Haven CLI access
-├── .zshrc                  # Shell config (persist API keys here)
-└── .config/                # Tool configurations
-```
-
-## Quick Start Examples
-
-### Node.js/Bun Project
-
-```bash
-mkdir myapp && cd myapp
-bun init
-bun add express
-```
-
-### Python Project
-
-```bash
-mkdir myapp && cd myapp
-uv init
-uv add fastapi uvicorn
-```
-
-### Go Project
-
-```bash
-mkdir myapp && cd myapp
-go mod init myapp
-```
-
-## Running Development Servers
-
-Use tmux windows to run dev servers. Name windows descriptively so they appear clearly in the tmux status bar and EnvHaven extension sidebar.
-
-### Naming Convention
-
-| Mode | Window Name | Example |
-|------|-------------|---------|
-| Development | `{project}-dev` | `myapp-dev` |
-| Production | `{project}` | `myapp` |
-
-Detect project name from directory: `basename $(pwd)`
-
-### Start a Dev Server
-
-```bash
-# From your project directory
-cd ${WORKSPACE_PATH}/myproject
-
-# Create named window (detached) and start server
-# -d flag keeps you in the current window - don't switch away from user
-tmux new-window -d -n "$(basename $(pwd))-dev" -c "$(pwd)" \; \
-  send-keys -t "$(basename $(pwd))-dev" 'npm run dev 2>&1 | tee /tmp/$(basename $(pwd))-dev.log' Enter
-```
-
-**Important**: The `-d` flag creates the window without switching to it. The agent stays in the current window with the user.
-
-### Check Logs
-
-Log files follow the pattern `/tmp/{project}-dev.log`. Read them without switching windows:
-
-```bash
-# Tail logs (live follow)
-tail -f /tmp/myapp-dev.log
-
-# Read last 100 lines
-tail -100 /tmp/myapp-dev.log
-
-# Search for errors
-grep -i error /tmp/myapp-dev.log
-```
-
-**For agents**: After starting a server for project `foo`, logs are at `/tmp/foo-dev.log`. Use `tail` or `grep` to inspect without leaving your current window.
-
-### Why This Pattern?
-
-| Benefit | Explanation |
-|---------|-------------|
-| **Named windows** | Appear in tmux status bar (`Ctrl+B` then window list) and extension sidebar |
-| **`-dev` suffix** | Distinguishes dev from production instances at a glance |
-| **Logs in `/tmp/`** | Accessible from any window; cleared on container restart |
-| **`tee` command** | Shows output live while capturing to file |
+---
 
 ## Constraints
 
@@ -374,4 +382,3 @@ grep -i error /tmp/myapp-dev.log
 2. **Network**: Container has full internet access
 3. **Permissions**: Running as non-root user `abc` (sudo available)
 4. **Docker**: Docker-in-Docker available if socket is mounted
-
