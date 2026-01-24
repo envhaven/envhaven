@@ -8,10 +8,10 @@ if [[ "${ENVHAVEN_MANAGED:-}" == "true" ]] && [[ -n "${ENVHAVEN_API_URL:-}" ]]; 
   LATEST=$(curl -sf "$ENVHAVEN_API_URL/v1/version" 2>/dev/null | jq -r '.latest // empty')
   
   if [[ -n "$LATEST" ]] && [[ "$CURRENT" != "$LATEST" ]]; then
-    echo "v$CURRENT ⚡ $LATEST" > /tmp/envhaven-version-status
+    echo "$CURRENT ⚡ $LATEST available" > /tmp/envhaven-version-status
   else
-    echo "v$CURRENT" > /tmp/envhaven-version-status
+    echo "$CURRENT" > /tmp/envhaven-version-status
   fi
 else
-  echo "v$CURRENT" > /tmp/envhaven-version-status
+  echo "$CURRENT" > /tmp/envhaven-version-status
 fi
