@@ -71,7 +71,8 @@
     "build": "bun esbuild.mjs --production",
     "build:webview": "cd webview && bun run build",
     "package": "bun run build && bun run build:webview && vsce package --out envhaven.vsix",
-    "lint": "eslint src --ext ts"
+    "lint": "eslint src --ext ts",
+    "test": "bun test"
   },
   "devDependencies": {
     "@types/node": "^20.x",

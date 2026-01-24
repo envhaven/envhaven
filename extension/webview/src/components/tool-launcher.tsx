@@ -1,10 +1,11 @@
-import { useState } from 'react';
-import { Settings, ExternalLink, Zap, Copy, SquareTerminal, Key, Check } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Settings, ExternalLink, Zap, Copy, SquareTerminal, Key, Check, ChevronRight } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 import { Separator } from './ui/separator';
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from './ui/collapsible';
 import { ToolIcon } from './tool-icons';
 import { useWorkspaceStore } from '../stores/workspace-store';
 import { vscode, type AITool, type SetupStep } from '../lib/vscode';
@@ -241,16 +242,20 @@ function ToolRow({ tool }: { tool: AITool }) {
 }
 
 export function ToolLauncher() {
-  const { workspace, getReadyTools, getUnreadyTools } = useWorkspaceStore();
+  const { workspace, getConnectedTools, getDisconnectedTools } = useWorkspaceStore();
+  
+  const connectedTools = workspace ? getConnectedTools() : [];
+  const disconnectedTools = workspace ? getDisconnectedTools() : [];
+  const [isOpen, setIsOpen] = useState(connectedTools.length === 0);
+
+  useEffect(() => {
+    if (connectedTools.length > 0) setIsOpen(false);
+  }, [connectedTools.length]);
 
   if (!workspace) return null;
+  if (connectedTools.length === 0 && disconnectedTools.length === 0) return null;
 
-  const readyTools = getReadyTools();
-  const unreadyTools = getUnreadyTools();
-
-  if (readyTools.length === 0 && unreadyTools.length === 0) {
-    return null;
-  }
+  const hasConnectedTools = connectedTools.length > 0;
 
   return (
     <div className="space-y-2">
@@ -259,13 +264,35 @@ export function ToolLauncher() {
       </h3>
 
       <div className="space-y-1">
-        {readyTools.map((tool) => (
+        {connectedTools.map((tool) => (
           <ToolRow key={tool.id} tool={tool} />
         ))}
 
-        {unreadyTools.map((tool) => (
-          <ToolRow key={tool.id} tool={tool} />
-        ))}
+        {hasConnectedTools && disconnectedTools.length > 0 ? (
+          <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+            <CollapsibleTrigger asChild>
+              <button className="flex w-full items-center justify-between rounded-sm px-1 py-1 text-[11px] font-medium text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors cursor-pointer">
+                <span className="flex items-center gap-1.5">
+                  <ChevronRight
+                    className={`h-3.5 w-3.5 transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`}
+                  />
+                  More Tools ({disconnectedTools.length})
+                </span>
+              </button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="collapsible-content overflow-hidden">
+              <div className="space-y-1 pt-1">
+                {disconnectedTools.map((tool) => (
+                  <ToolRow key={tool.id} tool={tool} />
+                ))}
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+        ) : (
+          disconnectedTools.map((tool) => (
+            <ToolRow key={tool.id} tool={tool} />
+          ))
+        )}
       </div>
     </div>
   );

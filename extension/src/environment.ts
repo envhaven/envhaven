@@ -136,7 +136,7 @@ export interface WorkspaceInfo {
   version: VersionInfo;
 }
 
-interface ToolDefinition {
+export interface ToolDefinition {
   id: string;
   name: string;
   command: string;
@@ -368,27 +368,104 @@ function getSetEnvVar(varNames: string[]): string | null {
   return null;
 }
 
-interface AuthResult {
+export interface AuthResult {
   status: 'ready' | 'needs-auth' | 'unknown';
   connectedVia: string | null;
 }
 
-async function checkAuth(def: ToolDefinition): Promise<AuthResult> {
+const FILE_AUTH_PATHS: Record<string, { path: string; label: string }[]> = {
+  opencode: [
+    { path: '.local/share/opencode/auth.json', label: 'opencode auth' },
+  ],
+  claude: [
+    { path: '.claude/.credentials.json', label: 'credentials file' },
+  ],
+  codex: [
+    { path: '.codex/auth.json', label: 'codex auth' },
+    { path: '.codex/config.toml', label: 'codex config' },
+  ],
+  gemini: [
+    { path: '.gemini/oauth_creds.json', label: 'google oauth' },
+    { path: '.gemini/settings.json', label: 'gemini settings' },
+  ],
+  kiro: [
+    { path: '.kiro/settings/cli.json', label: 'kiro settings' },
+  ],
+  amp: [
+    { path: '.config/amp/auth.json', label: 'amp auth' },
+    { path: '.amp/credentials', label: 'amp credentials' },
+  ],
+  qwen: [
+    { path: '.qwen/config.json', label: 'qwen config' },
+    { path: '.config/qwen/config.json', label: 'qwen config' },
+  ],
+};
+
+function checkGooseAuth(): AuthResult {
+  const configPath = path.join(os.homedir(), '.config/goose/config.yaml');
+  try {
+    if (!fs.existsSync(configPath)) {
+      return { status: 'needs-auth', connectedVia: null };
+    }
+    const content = fs.readFileSync(configPath, 'utf-8');
+    if (content.includes('GOOSE_PROVIDER:')) {
+      const match = content.match(/GOOSE_PROVIDER:\s*["']?(\w+)["']?/);
+      const provider = match ? match[1] : 'configured';
+      return { status: 'ready', connectedVia: `goose (${provider})` };
+    }
+    return { status: 'needs-auth', connectedVia: null };
+  } catch {
+    return { status: 'needs-auth', connectedVia: null };
+  }
+}
+
+function checkAuggieAuth(): AuthResult {
+  if (process.env.AUGMENT_SESSION_AUTH) {
+    return { status: 'ready', connectedVia: 'AUGMENT_SESSION_AUTH' };
+  }
+  const rcVars = getCachedRcEnvVars();
+  if (rcVars.has('AUGMENT_SESSION_AUTH')) {
+    return { status: 'ready', connectedVia: 'AUGMENT_SESSION_AUTH' };
+  }
+  return { status: 'unknown', connectedVia: null };
+}
+
+export async function checkAuth(def: ToolDefinition): Promise<AuthResult> {
   if (def.envVars) {
     const setVar = getSetEnvVar(def.envVars);
     if (setVar) return { status: 'ready', connectedVia: setVar };
   }
 
-  if (def.authCommand) {
-    try {
-      await execSafe(def.authCommand);
-      return { status: 'ready', connectedVia: def.authCommand.split(' ')[0] };
-    } catch {
-      return { status: 'needs-auth', connectedVia: null };
+  if (def.id === 'goose') return checkGooseAuth();
+  if (def.id === 'auggie') return checkAuggieAuth();
+
+  const filePaths = FILE_AUTH_PATHS[def.id];
+  if (filePaths) {
+    for (const { path: relPath, label } of filePaths) {
+      const fullPath = path.join(os.homedir(), relPath);
+      try {
+        if (fs.existsSync(fullPath)) {
+          if (fullPath.endsWith('.json')) {
+            const content = fs.readFileSync(fullPath, 'utf-8').trim();
+            if (content && content !== '{}' && content !== '[]') {
+              return { status: 'ready', connectedVia: label };
+            }
+          } else {
+            return { status: 'ready', connectedVia: label };
+          }
+        }
+      } catch {
+        continue;
+      }
     }
+    return { status: 'needs-auth', connectedVia: null };
   }
 
-  return { status: 'needs-auth', connectedVia: null };
+  if (def.envVars && def.envVars.length > 0) {
+    return { status: 'needs-auth', connectedVia: null };
+  }
+
+  return { status: 'unknown', connectedVia: null };
 }
 
 function hasOhMyOpenCode(): boolean {

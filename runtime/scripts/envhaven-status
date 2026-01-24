@@ -69,18 +69,36 @@ SSH_KEY_COUNT=0
 AUTH_KEYS="/config/.ssh/authorized_keys"
 [[ -f "$AUTH_KEYS" ]] && SSH_KEY_COUNT=$(grep '^ssh-' "$AUTH_KEYS" 2>/dev/null | wc -l | tr -d ' ')
 
+has_nonempty_json() { [[ -f "$1" ]] && [[ -s "$1" ]] && grep -qE '[^{}\[\][:space:]]' "$1" 2>/dev/null; }
+
 OPENCODE_CFG=0; has_any_env ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY GOOGLE_API_KEY && OPENCODE_CFG=1
+[[ $OPENCODE_CFG -eq 0 ]] && has_nonempty_json "$HOME/.local/share/opencode/auth.json" && OPENCODE_CFG=1
+
 CLAUDE_CFG=0;   has_any_env ANTHROPIC_API_KEY && CLAUDE_CFG=1
-AIDER_CFG=0;    has_any_env ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY OPENROUTER_API_KEY && AIDER_CFG=1
+[[ $CLAUDE_CFG -eq 0 ]] && has_nonempty_json "$HOME/.claude/.credentials.json" && CLAUDE_CFG=1
+
 CODEX_CFG=0;    has_any_env OPENAI_API_KEY && CODEX_CFG=1
+[[ $CODEX_CFG -eq 0 ]] && { has_nonempty_json "$HOME/.codex/auth.json" || [[ -f "$HOME/.codex/config.toml" ]]; } && CODEX_CFG=1
+
 GEMINI_CFG=0;   has_any_env GEMINI_API_KEY GOOGLE_API_KEY && GEMINI_CFG=1
+[[ $GEMINI_CFG -eq 0 ]] && { has_nonempty_json "$HOME/.gemini/oauth_creds.json" || has_nonempty_json "$HOME/.gemini/settings.json"; } && GEMINI_CFG=1
+
+AIDER_CFG=0;    has_any_env ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY OPENROUTER_API_KEY && AIDER_CFG=1
+
 GOOSE_CFG=0;    has_any_env ANTHROPIC_API_KEY OPENAI_API_KEY && GOOSE_CFG=1
+[[ $GOOSE_CFG -eq 0 ]] && [[ -f "$HOME/.config/goose/config.yaml" ]] && grep -q 'GOOSE_PROVIDER:' "$HOME/.config/goose/config.yaml" 2>/dev/null && GOOSE_CFG=1
+
 VIBE_CFG=0;     has_any_env MISTRAL_API_KEY && VIBE_CFG=1
 AMP_CFG=0;      has_any_env AMP_API_KEY && AMP_CFG=1
-AUGGIE_CFG=0;   command_exists auggie && auggie tokens print >/dev/null 2>&1 && AUGGIE_CFG=1
-KIRO_CFG=0
+
+AUGGIE_CFG=0;   has_any_env AUGMENT_SESSION_AUTH && AUGGIE_CFG=1
+
+KIRO_CFG=0;     has_nonempty_json "$HOME/.kiro/settings/cli.json" && KIRO_CFG=1
+
 DROID_CFG=0;    has_any_env FACTORY_API_KEY && DROID_CFG=1
+
 QWEN_CFG=0;     has_any_env QWEN_API_KEY OPENAI_API_KEY && QWEN_CFG=1
+[[ $QWEN_CFG -eq 0 ]] && { has_nonempty_json "$HOME/.qwen/config.json" || has_nonempty_json "$HOME/.config/qwen/config.json"; } && QWEN_CFG=1
 
 echo ""
 printf '%s' "$G1"

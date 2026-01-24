@@ -15,8 +15,8 @@ interface WorkspaceStore {
   optimisticSetPort: (port: number) => void;
   updateTerminals: (tmuxWindows: TmuxWindow[]) => void;
 
-  getReadyTools: () => AITool[];
-  getUnreadyTools: () => AITool[];
+  getConnectedTools: () => AITool[];
+  getDisconnectedTools: () => AITool[];
 }
 
 export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
@@ -48,13 +48,13 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     });
   },
 
-  getReadyTools: () => {
+  getConnectedTools: () => {
     const { workspace } = get();
     if (!workspace) return [];
     return workspace.aiTools.filter((t) => t.installed && t.authStatus === 'ready');
   },
 
-  getUnreadyTools: () => {
+  getDisconnectedTools: () => {
     const { workspace } = get();
     if (!workspace) return [];
     return workspace.aiTools.filter((t) => t.installed && t.authStatus !== 'ready');
