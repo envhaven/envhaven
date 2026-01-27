@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as net from 'net';
+import toolDefinitionsJson from '../../tool-definitions.json';
 
 /** Default timeout for all process spawns (ms) */
 const DEFAULT_TIMEOUT_MS = 2000;
@@ -93,7 +94,6 @@ export interface AITool {
   installed: boolean;
   authStatus: 'ready' | 'needs-auth' | 'unknown';
   connectedVia: string | null;
-  authHint?: string;
   setupSteps?: SetupStep[];
   envVars?: string[];
 }
@@ -142,167 +142,13 @@ export interface ToolDefinition {
   command: string;
   description: string;
   docsUrl: string;
-  envVars?: string[];
-  authCommand?: string;
-  authHint?: string;
-  setupSteps?: SetupStep[];
+  envVars: string[];
+  authFiles: string[];
+  authCheck?: 'goose';
+  setupSteps: SetupStep[];
 }
 
-const TOOL_DEFINITIONS: ToolDefinition[] = [
-  {
-    id: 'opencode',
-    name: 'OpenCode',
-    command: 'opencode',
-    description: 'AI coding agent from SST',
-    docsUrl: 'https://opencode.ai/docs',
-    envVars: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY'],
-    setupSteps: [
-      { instruction: 'Run OpenCode and configure your provider:' },
-      { command: 'opencode' },
-      { instruction: 'Then type /connect to set up authentication.' },
-    ],
-  },
-  {
-    id: 'claude',
-    name: 'Claude Code',
-    command: 'claude',
-    description: "Anthropic's official CLI",
-    docsUrl: 'https://docs.anthropic.com/en/docs/claude-code',
-    authCommand: 'claude auth status',
-    setupSteps: [
-      { instruction: 'Sign in with your Claude account:' },
-      { command: 'claude' },
-      { instruction: 'Then type /login to authenticate via browser.' },
-    ],
-  },
-  {
-    id: 'gemini',
-    name: 'Gemini CLI',
-    command: 'gemini',
-    description: "Google's AI in your terminal",
-    docsUrl: 'https://github.com/google-gemini/gemini-cli',
-    envVars: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
-    setupSteps: [
-      { instruction: 'Run Gemini and select your auth method:' },
-      { command: 'gemini' },
-      { instruction: 'Or set: export GEMINI_API_KEY="your-key"' },
-    ],
-  },
-  {
-    id: 'codex',
-    name: 'Codex',
-    command: 'codex',
-    description: "OpenAI's coding agent",
-    docsUrl: 'https://github.com/openai/codex',
-    envVars: ['OPENAI_API_KEY'],
-    setupSteps: [
-      { instruction: 'Sign in with ChatGPT (Plus/Pro/Team):' },
-      { command: 'codex' },
-      { instruction: 'Or set: export OPENAI_API_KEY="your-key"' },
-    ],
-  },
-  {
-    id: 'aider',
-    name: 'Aider',
-    command: 'aider',
-    description: 'AI pair programming',
-    docsUrl: 'https://aider.chat',
-    envVars: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'OPENROUTER_API_KEY'],
-    setupSteps: [
-      { instruction: 'Set your API key for any supported provider:' },
-      { command: 'export ANTHROPIC_API_KEY="your-key"' },
-      { instruction: 'Or: OPENAI_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY' },
-    ],
-  },
-  {
-    id: 'goose',
-    name: 'Goose',
-    command: 'goose',
-    description: "Block's AI developer agent",
-    docsUrl: 'https://block.github.io/goose',
-    envVars: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'],
-    setupSteps: [
-      { instruction: 'Configure your LLM provider:' },
-      { command: 'goose configure' },
-      { instruction: 'Select "Configure Providers" and enter your API key.' },
-    ],
-  },
-  {
-    id: 'vibe',
-    name: 'Mistral Vibe',
-    command: 'vibe',
-    description: 'Powered by Devstral',
-    docsUrl: 'https://github.com/mistralai/mistral-vibe',
-    envVars: ['MISTRAL_API_KEY'],
-    setupSteps: [
-      { instruction: 'Set your Mistral API key:' },
-      { command: 'export MISTRAL_API_KEY="your-key"' },
-      { instruction: 'Get key at console.mistral.ai' },
-    ],
-  },
-  {
-    id: 'amp',
-    name: 'Amp',
-    command: 'amp',
-    description: 'Frontier coding agent',
-    docsUrl: 'https://ampcode.com/manual',
-    envVars: ['AMP_API_KEY'],
-    setupSteps: [
-      { instruction: 'Sign in via browser:' },
-      { command: 'amp login' },
-      { instruction: 'Or set: export AMP_API_KEY="your-key"' },
-    ],
-  },
-  {
-    id: 'auggie',
-    name: 'Augment',
-    command: 'auggie',
-    description: 'Context-aware coding agent',
-    docsUrl: 'https://docs.augmentcode.com/cli/overview',
-    authCommand: 'auggie tokens print',
-    setupSteps: [
-      { instruction: 'Sign in via browser:' },
-      { command: 'auggie login' },
-    ],
-  },
-  {
-    id: 'factory',
-    name: 'Factory',
-    command: 'droid',
-    description: 'AI for CI/CD automation',
-    docsUrl: 'https://docs.factory.ai',
-    envVars: ['FACTORY_API_KEY'],
-    setupSteps: [
-      { instruction: 'Run droid - browser auth opens automatically:' },
-      { command: 'droid' },
-    ],
-  },
-  {
-    id: 'kiro',
-    name: 'Kiro',
-    command: 'kiro-cli',
-    description: 'AWS-powered AI CLI',
-    docsUrl: 'https://kiro.dev/docs/cli',
-    setupSteps: [
-      { instruction: 'Run Kiro - browser auth opens automatically:' },
-      { command: 'kiro-cli' },
-      { instruction: 'Sign in with GitHub, Google, or AWS Builder ID.' },
-    ],
-  },
-  {
-    id: 'qwen',
-    name: 'Qwen Code',
-    command: 'qwen',
-    description: "Alibaba's coding assistant",
-    docsUrl: 'https://qwenlm.github.io/qwen-code-docs',
-    envVars: ['QWEN_API_KEY'],
-    setupSteps: [
-      { instruction: 'Run Qwen and sign in (free tier available):' },
-      { command: 'qwen' },
-      { instruction: 'Or use OpenAI-compatible API with OPENAI_API_KEY' },
-    ],
-  },
-];
+const TOOL_DEFINITIONS: ToolDefinition[] = toolDefinitionsJson.tools as ToolDefinition[];
 
 async function commandExists(cmd: string): Promise<boolean> {
   const cached = staticCache.tools.get(cmd);
@@ -373,34 +219,6 @@ export interface AuthResult {
   connectedVia: string | null;
 }
 
-const FILE_AUTH_PATHS: Record<string, { path: string; label: string }[]> = {
-  opencode: [
-    { path: '.local/share/opencode/auth.json', label: 'opencode auth' },
-  ],
-  claude: [
-    { path: '.claude/.credentials.json', label: 'credentials file' },
-  ],
-  codex: [
-    { path: '.codex/auth.json', label: 'codex auth' },
-    { path: '.codex/config.toml', label: 'codex config' },
-  ],
-  gemini: [
-    { path: '.gemini/oauth_creds.json', label: 'google oauth' },
-    { path: '.gemini/settings.json', label: 'gemini settings' },
-  ],
-  kiro: [
-    { path: '.kiro/settings/cli.json', label: 'kiro settings' },
-  ],
-  amp: [
-    { path: '.config/amp/auth.json', label: 'amp auth' },
-    { path: '.amp/credentials', label: 'amp credentials' },
-  ],
-  qwen: [
-    { path: '.qwen/config.json', label: 'qwen config' },
-    { path: '.config/qwen/config.json', label: 'qwen config' },
-  ],
-};
-
 function checkGooseAuth(): AuthResult {
   const configPath = path.join(os.homedir(), '.config/goose/config.yaml');
   try {
@@ -419,52 +237,59 @@ function checkGooseAuth(): AuthResult {
   }
 }
 
-function checkAuggieAuth(): AuthResult {
-  if (process.env.AUGMENT_SESSION_AUTH) {
-    return { status: 'ready', connectedVia: 'AUGMENT_SESSION_AUTH' };
+function hasNonEmptyJson(filePath: string): boolean {
+  try {
+    if (!fs.existsSync(filePath)) return false;
+    const content = fs.readFileSync(filePath, 'utf-8').trim();
+    return content.length > 0 && content !== '{}' && content !== '[]';
+  } catch {
+    return false;
   }
-  const rcVars = getCachedRcEnvVars();
-  if (rcVars.has('AUGMENT_SESSION_AUTH')) {
-    return { status: 'ready', connectedVia: 'AUGMENT_SESSION_AUTH' };
+}
+
+function fileExists(filePath: string): boolean {
+  try {
+    return fs.existsSync(filePath);
+  } catch {
+    return false;
   }
-  return { status: 'unknown', connectedVia: null };
+}
+
+function getAuthFileLabel(filePath: string): string {
+  const basename = path.basename(filePath);
+  const dirname = path.basename(path.dirname(filePath));
+  return `${dirname}/${basename}`.replace(/^\./, '');
 }
 
 export async function checkAuth(def: ToolDefinition): Promise<AuthResult> {
-  if (def.envVars) {
+  // 1. Check env vars first (highest priority)
+  if (def.envVars.length > 0) {
     const setVar = getSetEnvVar(def.envVars);
     if (setVar) return { status: 'ready', connectedVia: setVar };
   }
 
-  if (def.id === 'goose') return checkGooseAuth();
-  if (def.id === 'auggie') return checkAuggieAuth();
+  // 2. Special auth check for goose (requires YAML pattern matching)
+  if (def.authCheck === 'goose') return checkGooseAuth();
 
-  const filePaths = FILE_AUTH_PATHS[def.id];
-  if (filePaths) {
-    for (const { path: relPath, label } of filePaths) {
+  // 3. Check auth files
+  if (def.authFiles.length > 0) {
+    for (const relPath of def.authFiles) {
       const fullPath = path.join(os.homedir(), relPath);
-      try {
-        if (fs.existsSync(fullPath)) {
-          if (fullPath.endsWith('.json')) {
-            const content = fs.readFileSync(fullPath, 'utf-8').trim();
-            if (content && content !== '{}' && content !== '[]') {
-              return { status: 'ready', connectedVia: label };
-            }
-          } else {
-            return { status: 'ready', connectedVia: label };
-          }
-        }
-      } catch {
-        continue;
+      const isJson = fullPath.endsWith('.json');
+      const exists = isJson ? hasNonEmptyJson(fullPath) : fileExists(fullPath);
+      if (exists) {
+        return { status: 'ready', connectedVia: getAuthFileLabel(relPath) };
       }
     }
     return { status: 'needs-auth', connectedVia: null };
   }
 
-  if (def.envVars && def.envVars.length > 0) {
+  // 4. If tool has env vars but none are set, it needs auth
+  if (def.envVars.length > 0) {
     return { status: 'needs-auth', connectedVia: null };
   }
 
+  // 5. No detection method available
   return { status: 'unknown', connectedVia: null };
 }
 
@@ -486,8 +311,6 @@ async function isSshEnabled(): Promise<boolean> {
     return false;
   }
 }
-
-
 
 function isSshKeyConfigured(): boolean {
   if (process.env.PUBLIC_KEY) return true;
@@ -648,7 +471,6 @@ export async function getWorkspaceInfo(): Promise<WorkspaceInfo> {
           installed,
           authStatus: auth.status,
           connectedVia: auth.connectedVia,
-          authHint: def.authHint,
           setupSteps: def.setupSteps,
           envVars: def.envVars,
         };

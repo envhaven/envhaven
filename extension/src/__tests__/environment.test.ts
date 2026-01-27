@@ -13,6 +13,9 @@ function createToolDef(overrides: Partial<ToolDefinition>): ToolDefinition {
     command: 'test',
     description: 'Test tool',
     docsUrl: 'https://test.com',
+    envVars: [],
+    authFiles: [],
+    setupSteps: [],
     ...overrides,
   };
 }
@@ -51,6 +54,7 @@ describe('checkAuth', () => {
       const def = createToolDef({
         id: 'claude',
         envVars: ['ANTHROPIC_API_KEY'],
+        authFiles: ['.claude/.credentials.json'],
       });
 
       const result = await checkAuth(def);
@@ -63,14 +67,17 @@ describe('checkAuth', () => {
   describe('file-based detection', () => {
     it('returns ready for OpenCode when auth.json exists', async () => {
       const authPath = path.join(os.homedir(), '.local/share/opencode/auth.json');
-      const def = createToolDef({ id: 'opencode' });
+      const def = createToolDef({
+        id: 'opencode',
+        envVars: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY'],
+        authFiles: ['.local/share/opencode/auth.json'],
+      });
       const result = await checkAuth(def);
 
       if (fs.existsSync(authPath)) {
         const content = fs.readFileSync(authPath, 'utf-8').trim();
         if (content && content !== '{}' && content !== '[]') {
           expect(result.status).toBe('ready');
-          expect(result.connectedVia).toBe('opencode auth');
         } else {
           expect(result.status).toBe('needs-auth');
         }
@@ -81,14 +88,17 @@ describe('checkAuth', () => {
 
     it('returns ready for Claude when credentials file exists', async () => {
       const credPath = path.join(os.homedir(), '.claude', '.credentials.json');
-      const def = createToolDef({ id: 'claude' });
+      const def = createToolDef({
+        id: 'claude',
+        envVars: ['ANTHROPIC_API_KEY'],
+        authFiles: ['.claude/.credentials.json'],
+      });
       const result = await checkAuth(def);
 
       if (fs.existsSync(credPath)) {
         const content = fs.readFileSync(credPath, 'utf-8').trim();
         if (content && content !== '{}' && content !== '[]') {
           expect(result.status).toBe('ready');
-          expect(result.connectedVia).toBe('credentials file');
         } else {
           expect(result.status).toBe('needs-auth');
         }
@@ -97,18 +107,23 @@ describe('checkAuth', () => {
       }
     });
 
-    it('returns unknown for Auggie without AUGMENT_SESSION_AUTH env var', async () => {
+    it('returns needs-auth for Auggie without AUGMENT_SESSION_AUTH env var', async () => {
       delete process.env.AUGMENT_SESSION_AUTH;
-      const def = createToolDef({ id: 'auggie' });
+      const def = createToolDef({
+        id: 'auggie',
+        envVars: ['AUGMENT_SESSION_AUTH'],
+      });
       const result = await checkAuth(def);
 
-      expect(result.status).toBe('unknown');
-      expect(result.connectedVia).toBeNull();
+      expect(result.status).toBe('needs-auth');
     });
 
     it('returns ready for Auggie with AUGMENT_SESSION_AUTH env var', async () => {
       process.env.AUGMENT_SESSION_AUTH = 'test-session-token';
-      const def = createToolDef({ id: 'auggie' });
+      const def = createToolDef({
+        id: 'auggie',
+        envVars: ['AUGMENT_SESSION_AUTH'],
+      });
       const result = await checkAuth(def);
 
       expect(result.status).toBe('ready');
@@ -117,7 +132,11 @@ describe('checkAuth', () => {
 
     it('returns ready for Goose when config.yaml has GOOSE_PROVIDER', async () => {
       const configPath = path.join(os.homedir(), '.config/goose/config.yaml');
-      const def = createToolDef({ id: 'goose' });
+      const def = createToolDef({
+        id: 'goose',
+        envVars: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'],
+        authCheck: 'goose',
+      });
       const result = await checkAuth(def);
 
       if (fs.existsSync(configPath)) {
@@ -135,7 +154,10 @@ describe('checkAuth', () => {
 
     it('returns needs-auth for Kiro when no settings exist', async () => {
       const kiroPath = path.join(os.homedir(), '.kiro/settings/cli.json');
-      const def = createToolDef({ id: 'kiro' });
+      const def = createToolDef({
+        id: 'kiro',
+        authFiles: ['.kiro/settings/cli.json'],
+      });
       const result = await checkAuth(def);
 
       if (!fs.existsSync(kiroPath)) {

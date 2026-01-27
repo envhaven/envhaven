@@ -1,0 +1,173 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Single source of truth for AI tool definitions. Used by both extension and runtime scripts.",
+  "tools": [
+    {
+      "id": "opencode",
+      "name": "OpenCode",
+      "command": "opencode",
+      "description": "AI coding agent from SST",
+      "docsUrl": "https://opencode.ai/docs",
+      "envVars": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"],
+      "authFiles": [".local/share/opencode/auth.json"],
+      "setupSteps": [
+        { "instruction": "Run OpenCode and configure your provider:" },
+        { "command": "opencode" },
+        { "instruction": "Then type /connect to set up authentication." }
+      ]
+    },
+    {
+      "id": "claude",
+      "name": "Claude Code",
+      "command": "claude",
+      "description": "Anthropic's official CLI",
+      "docsUrl": "https://docs.anthropic.com/en/docs/claude-code",
+      "envVars": ["ANTHROPIC_API_KEY"],
+      "authFiles": [".claude/.credentials.json"],
+      "setupSteps": [
+        { "instruction": "Sign in with your Claude account:" },
+        { "command": "claude" },
+        { "instruction": "Then type /login to authenticate via browser." }
+      ]
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini CLI",
+      "command": "gemini",
+      "description": "Google's AI in your terminal",
+      "docsUrl": "https://github.com/google-gemini/gemini-cli",
+      "envVars": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+      "authFiles": [".gemini/oauth_creds.json", ".gemini/settings.json"],
+      "setupSteps": [
+        { "instruction": "Run Gemini and select your auth method:" },
+        { "command": "gemini" },
+        { "instruction": "Or set: export GEMINI_API_KEY=\"your-key\"" }
+      ]
+    },
+    {
+      "id": "codex",
+      "name": "Codex",
+      "command": "codex",
+      "description": "OpenAI's coding agent",
+      "docsUrl": "https://github.com/openai/codex",
+      "envVars": ["OPENAI_API_KEY"],
+      "authFiles": [".codex/auth.json", ".codex/config.toml"],
+      "setupSteps": [
+        { "instruction": "Sign in with ChatGPT (Plus/Pro/Team):" },
+        { "command": "codex" },
+        { "instruction": "Or set: export OPENAI_API_KEY=\"your-key\"" }
+      ]
+    },
+    {
+      "id": "aider",
+      "name": "Aider",
+      "command": "aider",
+      "description": "AI pair programming",
+      "docsUrl": "https://aider.chat",
+      "envVars": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY"],
+      "authFiles": [],
+      "setupSteps": [
+        { "instruction": "Set your API key for any supported provider:" },
+        { "command": "export ANTHROPIC_API_KEY=\"your-key\"" },
+        { "instruction": "Or: OPENAI_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY" }
+      ]
+    },
+    {
+      "id": "goose",
+      "name": "Goose",
+      "command": "goose",
+      "description": "Block's AI developer agent",
+      "docsUrl": "https://block.github.io/goose",
+      "envVars": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
+      "authFiles": [],
+      "authCheck": "goose",
+      "setupSteps": [
+        { "instruction": "Configure your LLM provider:" },
+        { "command": "goose configure" },
+        { "instruction": "Select \"Configure Providers\" and enter your API key." }
+      ]
+    },
+    {
+      "id": "vibe",
+      "name": "Mistral Vibe",
+      "command": "vibe",
+      "description": "Powered by Devstral",
+      "docsUrl": "https://github.com/mistralai/mistral-vibe",
+      "envVars": ["MISTRAL_API_KEY"],
+      "authFiles": [],
+      "setupSteps": [
+        { "instruction": "Set your Mistral API key:" },
+        { "command": "export MISTRAL_API_KEY=\"your-key\"" },
+        { "instruction": "Get key at console.mistral.ai" }
+      ]
+    },
+    {
+      "id": "amp",
+      "name": "Amp",
+      "command": "amp",
+      "description": "Frontier coding agent",
+      "docsUrl": "https://ampcode.com/manual",
+      "envVars": ["AMP_API_KEY"],
+      "authFiles": [".config/amp/auth.json", ".amp/credentials"],
+      "setupSteps": [
+        { "instruction": "Sign in via browser:" },
+        { "command": "amp login" },
+        { "instruction": "Or set: export AMP_API_KEY=\"your-key\"" }
+      ]
+    },
+    {
+      "id": "auggie",
+      "name": "Augment",
+      "command": "auggie",
+      "description": "Context-aware coding agent",
+      "docsUrl": "https://docs.augmentcode.com/cli/overview",
+      "envVars": ["AUGMENT_SESSION_AUTH"],
+      "authFiles": [],
+      "setupSteps": [
+        { "instruction": "Sign in via browser:" },
+        { "command": "auggie login" }
+      ]
+    },
+    {
+      "id": "factory",
+      "name": "Factory",
+      "command": "droid",
+      "description": "AI for CI/CD automation",
+      "docsUrl": "https://docs.factory.ai",
+      "envVars": ["FACTORY_API_KEY"],
+      "authFiles": [],
+      "setupSteps": [
+        { "instruction": "Run droid - browser auth opens automatically:" },
+        { "command": "droid" }
+      ]
+    },
+    {
+      "id": "kiro",
+      "name": "Kiro",
+      "command": "kiro-cli",
+      "description": "AWS-powered AI CLI",
+      "docsUrl": "https://kiro.dev/docs/cli",
+      "envVars": [],
+      "authFiles": [".kiro/settings/cli.json"],
+      "setupSteps": [
+        { "instruction": "Run Kiro - browser auth opens automatically:" },
+        { "command": "kiro-cli" },
+        { "instruction": "Sign in with GitHub, Google, or AWS Builder ID." }
+      ]
+    },
+    {
+      "id": "qwen",
+      "name": "Qwen Code",
+      "command": "qwen",
+      "description": "Alibaba's coding assistant",
+      "docsUrl": "https://qwenlm.github.io/qwen-code-docs",
+      "envVars": ["QWEN_API_KEY", "OPENAI_API_KEY"],
+      "authFiles": [".qwen/config.json", ".config/qwen/config.json"],
+      "setupSteps": [
+        { "instruction": "Run Qwen and sign in (free tier available):" },
+        { "command": "qwen" },
+        { "instruction": "Or use OpenAI-compatible API with OPENAI_API_KEY" }
+      ]
+    }
+  ]
+}
