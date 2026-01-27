@@ -28,7 +28,8 @@ bE+ROPlYNndcnoDTHerrAAAACXRlc3Qta2V5AQI=
 -----END OPENSSH PRIVATE KEY-----`;
 
 const MOCK_ED25519_PUBLIC = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEbO19FxjwV03SuYxcmorQskbE+ROPlYNndcnoDTHerr test-key";
-const MOCK_RSA_PUBLIC = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDtest test-rsa-key";
+const MOCK_RSA_PUBLIC = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCuYPvEQRrqaGTmnYlr05R0X7I+YvbnJaxkz6o5NsE/msMA9Wu1Wc9RmZDLb4FLumfuRd0RbD0Si0O1gFSTsLfBN32ySNQFqsfd98orpcz7O1OpIKRMdofF0YHVNEWR0EEnHCHhuM/7VIsGitOkzcz60G97TXlx79HZpJHR9shlJGMcRjtFWGAjxISQYc/XuVCsblvYIy58Z4jR2lzoY3i5ouxlaOUM4laWo3lp9rrkotsCjN9YnR84ik0bhGo38ZframJvmT+RusPN4ba84J6FP77KV1ncG8sTja082gC4YH7F8KON43MMG/bo/6zmrcNPmlEZnByVFguNI/HwMV3h test-rsa";
+const MOCK_ECDSA_PUBLIC = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBMnwLirazDe8uqiTQZ3gzte08Wwv13hfvfy+BoqjKdQnKL8gGJigZGCaDl96Ifp2G+6aHN93RyRlp+yc4YSAVYs= test-ecdsa";
 
 function createMockKey(name: string, publicKey: string): void {
   writeFileSync(join(TEST_SSH_DIR, name), MOCK_ED25519_PRIVATE, { mode: 0o600 });
@@ -114,8 +115,25 @@ describe("ssh/keys", () => {
       expect(keys).toEqual([]);
     });
     
-    it("ignores unknown key names", () => {
+    it("finds custom key names", () => {
       createMockKey("my_custom_key", MOCK_ED25519_PUBLIC);
+      
+      const keys = findExistingKeys(TEST_SSH_DIR);
+      expect(keys).toHaveLength(1);
+      expect(keys[0]!.privateKeyPath).toEndWith("my_custom_key");
+    });
+    
+    it("finds ecdsa keys", () => {
+      createMockKey("id_ecdsa", MOCK_ECDSA_PUBLIC);
+      
+      const keys = findExistingKeys(TEST_SSH_DIR);
+      expect(keys).toHaveLength(1);
+      expect(keys[0]!.privateKeyPath).toEndWith("id_ecdsa");
+    });
+    
+    it("ignores invalid public key format", () => {
+      writeFileSync(join(TEST_SSH_DIR, "bad_key"), MOCK_ED25519_PRIVATE, { mode: 0o600 });
+      writeFileSync(join(TEST_SSH_DIR, "bad_key.pub"), "not a valid ssh key", { mode: 0o644 });
       
       const keys = findExistingKeys(TEST_SSH_DIR);
       expect(keys).toEqual([]);

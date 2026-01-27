@@ -1,19 +1,6 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import { getSshDir } from "../utils/paths";
 import { getAllKeyPaths } from "./keys";
-
-const HAVEN_CONFIG_FILE = "config.d/haven.conf";
-
-export function getHavenConfigPath(): string {
-  return `${getSshDir()}/${HAVEN_CONFIG_FILE}`;
-}
-
-function ensureConfigDDir(): void {
-  const configD = `${getSshDir()}/config.d`;
-  if (!existsSync(configD)) {
-    mkdirSync(configD, { recursive: true, mode: 0o700 });
-  }
-}
 
 export function generateHostConfig(alias: string, host: string, port: number, user: string): string {
   const keyPaths = getAllKeyPaths();
@@ -33,9 +20,7 @@ ${identitySection}  ForwardAgent no
 }
 
 export function writeHostConfig(alias: string, host: string, port: number, user: string): void {
-  ensureConfigDDir();
-
-  const configPath = getHavenConfigPath();
+  const configPath = `${getSshDir()}/config`;
   const newConfig = generateHostConfig(alias, host, port, user);
 
   let existingContent = "";
@@ -43,7 +28,8 @@ export function writeHostConfig(alias: string, host: string, port: number, user:
     existingContent = readFileSync(configPath, "utf-8");
   }
 
-  const hostPattern = new RegExp(`^Host ${alias}\\n[\\s\\S]*?(?=^Host |$)`, "gm");
+  // Remove existing host block: match "Host <alias>" then all lines until next "Host " or EOF
+  const hostPattern = new RegExp(`^Host ${alias}\\n(?:(?!^Host ).*\\n?)*`, "gm");
   const updatedContent = existingContent.replace(hostPattern, "");
 
   const finalContent = (updatedContent.trim() + "\n\n" + newConfig).trim() + "\n";
@@ -51,35 +37,19 @@ export function writeHostConfig(alias: string, host: string, port: number, user:
 }
 
 export function removeHostConfig(alias: string): void {
-  const configPath = getHavenConfigPath();
+  const configPath = `${getSshDir()}/config`;
   if (!existsSync(configPath)) {
     return;
   }
 
   const existingContent = readFileSync(configPath, "utf-8");
-  const hostPattern = new RegExp(`^Host ${alias}\\n[\\s\\S]*?(?=^Host |$)`, "gm");
+  const hostPattern = new RegExp(`^Host ${alias}\\n(?:(?!^Host ).*\\n?)*`, "gm");
   const updatedContent = existingContent.replace(hostPattern, "").trim();
 
   if (updatedContent) {
     writeFileSync(configPath, updatedContent + "\n", { mode: 0o600 });
-  } else {
-    unlinkSync(configPath);
   }
-}
-
-export function hasIncludeDirective(): boolean {
-  const mainConfig = `${getSshDir()}/config`;
-  if (!existsSync(mainConfig)) {
-    return false;
-  }
-
-  const content = readFileSync(mainConfig, "utf-8");
-  return /^\s*Include\s+.*config\.d\/\*/.test(content) || 
-         /^\s*Include\s+~\/\.ssh\/config\.d\/\*/.test(content);
-}
-
-export function getIncludeDirective(): string {
-  return "Include ~/.ssh/config.d/*";
+  // Don't delete the config file even if empty - user may have other content
 }
 
 export async function removeHostKey(host: string, port: number): Promise<void> {

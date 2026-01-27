@@ -1,11 +1,6 @@
-import { existsSync, readFileSync, mkdirSync, chmodSync } from "fs";
+import { existsSync, readFileSync, mkdirSync, chmodSync, readdirSync } from "fs";
+import { spawnSync } from "child_process";
 import { getSshDir } from "../utils/paths";
-
-const DEFAULT_KEY_NAMES = [
-  "id_ed25519",
-  "id_rsa",
-  "id_ecdsa",
-];
 
 const HAVEN_KEY_NAME = "haven_ed25519";
 
@@ -15,25 +10,33 @@ export interface SshKeyInfo {
   publicKey: string;
 }
 
+function isValidSshPublicKeyFile(path: string): boolean {
+  const result = spawnSync("ssh-keygen", ["-lf", path], { stdio: "pipe" });
+  return result.status === 0;
+}
+
 export function findExistingKeys(sshDirOverride?: string): SshKeyInfo[] {
   const sshDir = sshDirOverride ?? getSshDir();
+  if (!existsSync(sshDir)) return [];
+
   const keys: SshKeyInfo[] = [];
+  const files = readdirSync(sshDir);
 
-  const keyNames = [...DEFAULT_KEY_NAMES, HAVEN_KEY_NAME];
+  for (const file of files) {
+    if (!file.endsWith(".pub")) continue;
+    const publicKeyPath = `${sshDir}/${file}`;
+    const privateKeyPath = publicKeyPath.slice(0, -4);
 
-  for (const keyName of keyNames) {
-    const privateKeyPath = `${sshDir}/${keyName}`;
-    const publicKeyPath = `${privateKeyPath}.pub`;
+    if (!existsSync(privateKeyPath)) continue;
+    if (!isValidSshPublicKeyFile(publicKeyPath)) continue;
 
-    if (existsSync(privateKeyPath) && existsSync(publicKeyPath)) {
-      try {
-        const publicKey = readFileSync(publicKeyPath, "utf-8").trim();
-        if (publicKey) {
-          keys.push({ privateKeyPath, publicKeyPath, publicKey });
-        }
-      } catch {
-        continue;
+    try {
+      const publicKey = readFileSync(publicKeyPath, "utf-8").trim();
+      if (publicKey) {
+        keys.push({ privateKeyPath, publicKeyPath, publicKey });
       }
+    } catch {
+      continue;
     }
   }
 

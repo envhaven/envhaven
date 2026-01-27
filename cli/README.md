@@ -224,18 +224,17 @@ data/
 ```
 ~/.config/haven/connections.json   # Connection mappings
 ~/.local/share/haven/mutagen/      # Mutagen data
-~/.ssh/config.d/haven.conf         # SSH config (generated per connection)
+~/.ssh/config                       # SSH config (host entries appended per connection)
 ```
 
 ### SSH Keys
 
-Haven CLI uses your existing SSH keys from `~/.ssh/`:
-- `id_ed25519` (preferred)
-- `id_rsa`
-- `id_ecdsa`
-- `haven_ed25519` (auto-generated if needed)
+Haven CLI dynamically discovers SSH keys in `~/.ssh/`:
+- Scans for all `.pub` files where a matching private key exists
+- Validates each key with `ssh-keygen -lf` (filters invalid files)
+- Includes auto-generated `haven_ed25519` if created
 
-All found keys are added to the SSH config, so SSH tries each until one works.
+All valid keys are added to the SSH config, so SSH tries each until one works.
 
 #### No SSH Keys?
 
@@ -314,13 +313,7 @@ The haven key is always the simplest fix — one-time setup, no ongoing maintena
 
 ### SSH Configuration
 
-Haven CLI generates `~/.ssh/config.d/haven.conf`. For this to work, add this line to the **TOP** of `~/.ssh/config`:
-
-```
-Include ~/.ssh/config.d/*
-```
-
-Haven will warn you if this is missing.
+Haven CLI adds host entries directly to `~/.ssh/config`. Each connected workspace gets a unique `Host` entry (e.g., `haven-abc123`) with connection details and identity files.
 
 ### Authorizing Keys on the Workspace
 

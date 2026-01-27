@@ -90,9 +90,10 @@ Stored in `~/.config/haven/connections.json`:
 
 ### SSH Key Handling
 
-The CLI uses the user's existing SSH keys from `~/.ssh/`:
-- Looks for: `id_ed25519`, `id_rsa`, `id_ecdsa`, `haven_ed25519`
-- All found keys are added to the SSH config
+The CLI dynamically discovers SSH keys in `~/.ssh/`:
+- Scans for all `.pub` files where matching private key exists
+- Validates each public key using `ssh-keygen -lf` (filters invalid files)
+- All valid keys are added to the SSH config
 - SSH tries each key until authentication succeeds
 
 #### Why BatchMode Matters
@@ -255,7 +256,7 @@ The haven key option still works — it just means having two authorized keys on
 
 ### SSH Configuration
 
-Haven generates `~/.ssh/config.d/haven.conf` per connection alias:
+Haven adds host entries directly to `~/.ssh/config`. Each connection creates a `Host` block:
 
 ```
 Host haven-abc123
@@ -271,8 +272,7 @@ Host haven-abc123
   ServerAliveCountMax 3
 ```
 
-**Requirements:**
-- Add `Include ~/.ssh/config.d/*` to the TOP of `~/.ssh/config`
+Existing host blocks with the same alias are replaced on reconnect.
 
 ### Mutagen Sync
 

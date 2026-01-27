@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { generateHostConfig, getIncludeDirective } from "../../src/ssh/config";
+import { generateHostConfig } from "../../src/ssh/config";
 
 describe("generateHostConfig", () => {
   it("generates valid SSH config", () => {
@@ -17,11 +17,5 @@ describe("generateHostConfig", () => {
     
     expect(config).toContain("ForwardAgent no");
     expect(config).toContain("ForwardX11 no");
-  });
-});
-
-describe("getIncludeDirective", () => {
-  it("returns correct include directive", () => {
-    expect(getIncludeDirective()).toBe("Include ~/.ssh/config.d/*");
   });
 });

@@ -70,15 +70,6 @@ async function setupSshKeys(): Promise<boolean> {
     return false;
   }
   
-  const sshConfigDir = `${process.env.HOME}/.ssh/config.d`;
-  mkdirSync(sshConfigDir, { recursive: true });
-  
-  const sshConfig = `${process.env.HOME}/.ssh/config`;
-  if (!existsSync(sshConfig) || !(await Bun.file(sshConfig).text()).includes('Include')) {
-    log.info('Adding Include directive to ~/.ssh/config...');
-    const existing = existsSync(sshConfig) ? await Bun.file(sshConfig).text() : '';
-    writeFileSync(sshConfig, `Include ~/.ssh/config.d/*\n\n${existing}`);
-  }
   pass('SSH config ready');
   
   // Clear any stale host keys (container rebuilds generate new keys)
@@ -140,7 +131,6 @@ async function runTests() {
   cleanupStaleSockets();
   
   rmSync(`${process.env.HOME}/.config/haven/connections.json`, { force: true });
-  rmSync(`${process.env.HOME}/.ssh/config.d/haven.conf`, { force: true });
   
   log.header('Test: haven connect');
   const connectResult = await haven('connect', '.', `abc@${config.host}:${config.sshPort}`);
@@ -226,7 +216,6 @@ async function interactiveMode() {
   cleanupStaleSockets();
   
   rmSync(`${process.env.HOME}/.config/haven/connections.json`, { force: true });
-  rmSync(`${process.env.HOME}/.ssh/config.d/haven.conf`, { force: true });
   
   log.header('Step 1: Connect');
   const a1 = await prompt('Continue? [Y/n] ');

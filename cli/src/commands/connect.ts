@@ -18,7 +18,7 @@ import {
   type KeyAnalysis,
   type SshKeyInfo,
 } from "../ssh/keys";
-import { writeHostConfig, hasIncludeDirective, getIncludeDirective, testConnection, getRemoteEnv, removeHostKey } from "../ssh/config";
+import { writeHostConfig, testConnection, getRemoteEnv, removeHostKey } from "../ssh/config";
 import { startSync } from "../sync/mutagen";
 import { parseDuration, formatDuration } from "../utils/duration";
 import { createSpinner, success, error, info, warn, blank, bullet } from "../utils/spinner";
@@ -154,16 +154,6 @@ async function promptForEncryptedKeyResolution(
   process.exit(1);
 }
 
-function checkSshConfig(): void {
-  if (!hasIncludeDirective()) {
-    warn("SSH config may not include Haven configuration.");
-    info("Add this line to the TOP of your ~/.ssh/config:");
-    blank();
-    console.log(`   ${getIncludeDirective()}`);
-    blank();
-  }
-}
-
 function showSshKeyHelp(workspaceUrl?: string): void {
   const havenKey = getHavenPublicKey();
 
@@ -258,7 +248,6 @@ export async function connect(pathArg: string | undefined, options: ConnectOptio
   const workspaceUrl = getWorkspaceUrl(options.target);
   
   await ensureUsableKey(workspaceUrl);
-  checkSshConfig();
 
   if (options.target) {
     const parsed = parseConnectionFromTarget(options.target, localPath);
@@ -294,6 +283,12 @@ export async function connect(pathArg: string | undefined, options: ConnectOptio
     connSpinner.fail("Connection failed");
     blank();
     error(`Cannot connect to ${config.host}:${config.port}`);
+    
+    if (connResult.error) {
+      blank();
+      console.log(`  ${connResult.error.split('\n')[0]}`);
+    }
+    
     blank();
     bullet("Workspace may be stopped");
     bullet("Network/firewall blocking port");
