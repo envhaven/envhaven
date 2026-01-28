@@ -9,6 +9,8 @@ import {
   type ConnectionConfig,
 } from "../config/store";
 import { canonicalPath, contractPath, isDirectory, baseName } from "../utils/paths";
+import { isSuspiciousPath } from "../utils/guards";
+import { hasGitignore } from "../sync/ignore";
 import {
   findExistingKeys,
   hasHavenKey,
@@ -49,6 +51,7 @@ export interface ConnectOptions {
   idleTimeout?: string | undefined;
   resetHostKey?: boolean | undefined;
   target?: string | undefined;
+  useGitignore?: boolean | undefined;
 }
 
 async function prompt(question: string, defaultValue?: string): Promise<string> {
@@ -230,6 +233,16 @@ export async function connect(pathArg: string | undefined, options: ConnectOptio
       process.exit(1);
     }
     
+    if (isSuspiciousPath(localPath)) {
+      blank();
+      warn(`"${contractPath(localPath)}" is unusually broad for a project directory.`);
+      blank();
+      const answer = await prompt("Are you sure you want to sync this path? [y/N]", "N");
+      if (answer.toLowerCase() !== "y") {
+        process.exit(0);
+      }
+    }
+    
     config = getConnection(localPath);
   } else {
     const found = findConnection(process.cwd());
@@ -280,28 +293,56 @@ export async function connect(pathArg: string | undefined, options: ConnectOptio
   const connResult = await testConnection(sshAlias);
 
   if (!connResult.success) {
-    connSpinner.fail("Connection failed");
-    blank();
-    error(`Cannot connect to ${config.host}:${config.port}`);
-    
-    if (connResult.error) {
-      blank();
-      console.log(`  ${connResult.error.split('\n')[0]}`);
-    }
-    
-    blank();
-    bullet("Workspace may be stopped");
-    bullet("Network/firewall blocking port");
-    bullet("SSH key not added to workspace");
-    blank();
-
     if (connResult.error?.includes("Host key verification failed")) {
-      info("Host key may have changed. Try: haven connect --reset-host-key");
+      connSpinner.stop();
+      blank();
+      const answer = await prompt("Connection fingerprint changed. If you recently updated your workspace, this is expected. Reconnect? [Y/n]", "Y");
+      
+      if (answer.toLowerCase() === "n") {
+        blank();
+        info("Run 'haven connect --reset-host-key' when ready to reconnect.");
+        process.exit(1);
+      }
+      
+      await removeHostKey(config.host, config.port);
+      
+      const retrySpinner = createSpinner("Reconnecting...");
+      retrySpinner.start();
+      
+      const retryResult = await testConnection(sshAlias);
+      
+      if (!retryResult.success) {
+        retrySpinner.fail("Connection failed");
+        blank();
+        error(`Cannot connect to ${config.host}:${config.port}`);
+        if (retryResult.error) {
+          blank();
+          console.log(`  ${retryResult.error.split('\n')[0]}`);
+        }
+        process.exit(1);
+      }
+      
+      connSpinner.succeed("SSH connection successful");
     } else {
-      showSshKeyHelp(workspaceUrl);
-    }
+      connSpinner.fail("Connection failed");
+      blank();
+      error(`Cannot connect to ${config.host}:${config.port}`);
+      
+      if (connResult.error) {
+        blank();
+        console.log(`  ${connResult.error.split('\n')[0]}`);
+      }
+      
+      blank();
+      bullet("Workspace may be stopped");
+      bullet("Network/firewall blocking port");
+      bullet("SSH key not added to workspace");
+      blank();
 
-    process.exit(1);
+      showSshKeyHelp(workspaceUrl);
+
+      process.exit(1);
+    }
   }
 
   connSpinner.succeed("SSH connection successful");
@@ -317,11 +358,19 @@ export async function connect(pathArg: string | undefined, options: ConnectOptio
     }
   }
 
+  let useGitignore = options.useGitignore ?? false;
+  
+  if (!useGitignore && hasGitignore(localPath)) {
+    blank();
+    const answer = await prompt("Found .gitignore. Exclude matching files from sync? [Y/n]", "Y");
+    useGitignore = answer.toLowerCase() !== "n";
+  }
+
   const syncSpinner = createSpinner("Starting sync...");
   syncSpinner.start();
 
   try {
-    await startSync(localPath, sshAlias, config, (msg) => syncSpinner.update(msg));
+    await startSync(localPath, sshAlias, config, useGitignore, (msg) => syncSpinner.update(msg));
     syncSpinner.succeed("Sync started");
   } catch (err) {
     syncSpinner.fail("Sync failed");

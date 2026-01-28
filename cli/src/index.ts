@@ -21,6 +21,7 @@ program
   .description("Connect to remote EnvHaven workspace")
   .option("--idle-timeout <duration>", "Override idle timeout (e.g., 30m, 1h, 2h)")
   .option("--reset-host-key", "Remove cached host key (use after workspace rebuild)")
+  .option("--use-gitignore", "Exclude files matching .gitignore patterns from sync")
   .action(async (path: string | undefined, target: string | undefined, options: ConnectOptions) => {
     try {
       await connect(path, { ...options, target });

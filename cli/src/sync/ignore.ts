@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "fs";
 import { resolve } from "path";
 
+const GITIGNORE_FILE = ".gitignore";
 const DEFAULT_IGNORE_PATTERNS = [
   ".git/",
   "node_modules/",
@@ -25,21 +26,8 @@ const DEFAULT_IGNORE_PATTERNS = [
   ".haven/",
 ];
 
-const HAVENIGNORE_FILE = ".havenignore";
-
 export function getDefaultIgnorePatterns(): readonly string[] {
   return DEFAULT_IGNORE_PATTERNS;
-}
-
-export function loadProjectIgnorePatterns(projectRoot: string): string[] {
-  const ignoreFile = resolve(projectRoot, HAVENIGNORE_FILE);
-  
-  if (!existsSync(ignoreFile)) {
-    return [];
-  }
-
-  const content = readFileSync(ignoreFile, "utf-8");
-  return parseIgnoreFile(content);
 }
 
 function parseIgnoreFile(content: string): string[] {
@@ -49,11 +37,26 @@ function parseIgnoreFile(content: string): string[] {
     .filter(line => line.length > 0 && !line.startsWith("#"));
 }
 
-export function getAllIgnorePatterns(projectRoot: string): string[] {
-  const defaultPatterns = [...DEFAULT_IGNORE_PATTERNS];
-  const projectPatterns = loadProjectIgnorePatterns(projectRoot);
+export function hasGitignore(projectRoot: string): boolean {
+  return existsSync(resolve(projectRoot, GITIGNORE_FILE));
+}
+
+export function loadGitignorePatterns(projectRoot: string): string[] {
+  const gitignorePath = resolve(projectRoot, GITIGNORE_FILE);
   
-  const combined = new Set([...defaultPatterns, ...projectPatterns]);
+  if (!existsSync(gitignorePath)) {
+    return [];
+  }
+
+  const content = readFileSync(gitignorePath, "utf-8");
+  return parseIgnoreFile(content);
+}
+
+export function getAllIgnorePatterns(projectRoot: string, useGitignore: boolean = false): string[] {
+  const defaultPatterns = [...DEFAULT_IGNORE_PATTERNS];
+  const gitignorePatterns = useGitignore ? loadGitignorePatterns(projectRoot) : [];
+  
+  const combined = new Set([...defaultPatterns, ...gitignorePatterns]);
   return Array.from(combined);
 }
 

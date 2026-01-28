@@ -30,7 +30,7 @@ function simpleHash(str: string): string {
 
 async function runMutagen(args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const mutagenPath = await ensureMutagenInstalled();
-  
+
   const env = {
     ...process.env,
     MUTAGEN_DATA_DIRECTORY: getMutagenDataDir(),
@@ -55,12 +55,13 @@ export async function startSync(
   localPath: string,
   sshAlias: string,
   config: ConnectionConfig,
+  useGitignore: boolean = false,
   onProgress?: (message: string) => void
 ): Promise<string> {
   await ensureMutagenInstalled(onProgress);
 
   const sessionName = getSyncSessionName(localPath);
-  const ignorePatterns = getAllIgnorePatterns(localPath);
+  const ignorePatterns = getAllIgnorePatterns(localPath, useGitignore);
   const ignoreArgs = buildMutagenIgnoreArgs(ignorePatterns);
 
   const existing = await getSyncSession(localPath);
@@ -169,9 +170,9 @@ export async function getSyncStatus(localPath: string): Promise<SyncStatus> {
 
 function parseSessionStatus(status: string | undefined): SyncStatus["status"] {
   if (!status) return "unknown";
-  
+
   const statusLower = status.toLowerCase();
-  
+
   if (statusLower.includes("watching")) return "watching";
   if (statusLower.includes("scanning")) return "scanning";
   if (statusLower.includes("staging")) return "staging";
@@ -179,7 +180,7 @@ function parseSessionStatus(status: string | undefined): SyncStatus["status"] {
   if (statusLower.includes("saving")) return "saving";
   if (statusLower.includes("halted")) return "halted";
   if (statusLower.includes("disconnected")) return "disconnected";
-  
+
   return "unknown";
 }
 
