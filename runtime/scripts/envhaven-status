@@ -23,23 +23,51 @@ FILLED="●"
 EMPTY="○"
 PIPE="│"
 
-# Path to shared tool definitions (single source of truth)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TOOL_DEFS_JSON="${SCRIPT_DIR}/../../tool-definitions.json"
+# Tool definitions - single source of truth shared with VS Code extension
+TOOL_DEFS_JSON="/opt/envhaven/tool-definitions.json"
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
-has_any_env() {
-  local _val
-  while [[ $# -gt 0 ]]; do
-    eval "_val=\"\${$1:-}\""
+has_nonempty_json() { [[ -f "$1" ]] && [[ -s "$1" ]] && grep -qE '[^{}\[\][:space:]]' "$1" 2>/dev/null; }
+
+# Check auth status for a tool using shared config
+# Returns: 0 if configured, 1 if not
+check_tool_auth() {
+  local tool_id="$1"
+  
+  local tool_config
+  tool_config=$(jq -r ".tools[] | select(.id == \"$tool_id\")" "$TOOL_DEFS_JSON" 2>/dev/null)
+  [[ -z "$tool_config" ]] && return 1
+  
+  # Check env vars
+  local env_vars
+  env_vars=$(echo "$tool_config" | jq -r '.envVars[]?' 2>/dev/null)
+  for var in $env_vars; do
+    eval "_val=\"\${$var:-}\""
     [[ -n "$_val" ]] && return 0
-    shift
   done
+  
+  # Special auth check (e.g., goose needs YAML pattern matching)
+  local auth_check
+  auth_check=$(echo "$tool_config" | jq -r '.authCheck // empty' 2>/dev/null)
+  if [[ "$auth_check" == "goose" ]]; then
+    [[ -f "$HOME/.config/goose/config.yaml" ]] && grep -q 'GOOSE_PROVIDER:' "$HOME/.config/goose/config.yaml" 2>/dev/null && return 0
+  fi
+  
+  # Check auth files
+  local auth_files
+  auth_files=$(echo "$tool_config" | jq -r '.authFiles[]?' 2>/dev/null)
+  for file in $auth_files; do
+    local full_path="$HOME/$file"
+    if [[ "$file" == *.json ]]; then
+      has_nonempty_json "$full_path" && return 0
+    elif [[ -f "$full_path" ]]; then
+      return 0
+    fi
+  done
+  
   return 1
 }
-
-has_nonempty_json() { [[ -f "$1" ]] && [[ -s "$1" ]] && grep -qE '[^{}\[\][:space:]]' "$1" 2>/dev/null; }
 
 get_version() {
   local cmd="$1"
@@ -60,47 +88,6 @@ get_ssh_string() {
   local port="${ENVHAVEN_SSH_PORT:-$([[ "${ENVHAVEN_MANAGED:-}" == "true" ]] && echo 22 || echo 2222)}"
   [[ -z "$host" ]] && host="<host>"
   [[ "$port" == "22" ]] && echo "abc@${host}" || echo "abc@${host} -p ${port}"
-}
-
-# Check auth status for a tool using shared config
-# Args: tool_id
-# Returns: 0 if configured, 1 if not
-check_tool_auth() {
-  local tool_id="$1"
-  
-  # Get tool config from JSON
-  local tool_config
-  tool_config=$(jq -r ".tools[] | select(.id == \"$tool_id\")" "$TOOL_DEFS_JSON" 2>/dev/null)
-  [[ -z "$tool_config" ]] && return 1
-  
-  # Check env vars first
-  local env_vars
-  env_vars=$(echo "$tool_config" | jq -r '.envVars[]?' 2>/dev/null)
-  for var in $env_vars; do
-    eval "_val=\"\${$var:-}\""
-    [[ -n "$_val" ]] && return 0
-  done
-  
-  # Special auth check for goose (requires YAML pattern matching)
-  local auth_check
-  auth_check=$(echo "$tool_config" | jq -r '.authCheck // empty' 2>/dev/null)
-  if [[ "$auth_check" == "goose" ]]; then
-    [[ -f "$HOME/.config/goose/config.yaml" ]] && grep -q 'GOOSE_PROVIDER:' "$HOME/.config/goose/config.yaml" 2>/dev/null && return 0
-  fi
-  
-  # Check auth files
-  local auth_files
-  auth_files=$(echo "$tool_config" | jq -r '.authFiles[]?' 2>/dev/null)
-  for file in $auth_files; do
-    local full_path="$HOME/$file"
-    if [[ "$file" == *.json ]]; then
-      has_nonempty_json "$full_path" && return 0
-    elif [[ -f "$full_path" ]]; then
-      return 0
-    fi
-  done
-  
-  return 1
 }
 
 WORKSPACE_DIR="${DEFAULT_WORKSPACE:-/config/workspace}"
