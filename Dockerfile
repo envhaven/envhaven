@@ -107,7 +107,8 @@ RUN npm install -g @sourcegraph/amp @augmentcode/auggie
 # Playwright (Chromium only for browser automation)
 # ============================================
 ENV PLAYWRIGHT_BROWSERS_PATH="/opt/envhaven/playwright"
-RUN npx -y playwright install --with-deps chromium
+RUN npm install -g playwright
+RUN playwright install --with-deps chromium
 
 RUN curl -fsSL https://cli.kiro.dev/install | bash && \
     mv /config/.local/bin/kiro* /opt/envhaven/bin/ 2>/dev/null || true
@@ -265,7 +266,7 @@ RUN node --version && \
     kiro-cli --version && \
     droid --version && \
     ffmpeg -version && \
-    npx playwright --version
+    playwright --version
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8443/healthz || exit 1
