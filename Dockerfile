@@ -56,6 +56,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     zsh \
     tmux \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================
@@ -102,15 +103,21 @@ RUN npm install -g @anthropic-ai/claude-code
 RUN npm install -g @openai/codex @google/gemini-cli @qwen-code/qwen-code
 RUN npm install -g @sourcegraph/amp @augmentcode/auggie
 
-# Fix permissions so all tools can auto-update at runtime (user abc, uid=1000)
-# /mise: node, python, go, bun, gh, fd, opencode, uv, goose, cloudflared
-# /opt/envhaven: rustup, cargo, uv-tools, kiro, droid, envhaven CLI
-RUN chown -R 1000:1000 /mise /opt/envhaven
+# ============================================
+# Playwright (Chromium only for browser automation)
+# ============================================
+ENV PLAYWRIGHT_BROWSERS_PATH="/opt/envhaven/playwright"
+RUN npx -y playwright install --with-deps chromium
 
 RUN curl -fsSL https://cli.kiro.dev/install | bash && \
     mv /config/.local/bin/kiro* /opt/envhaven/bin/ 2>/dev/null || true
 RUN curl -fsSL https://app.factory.ai/cli | sh && \
     mv /config/.local/bin/droid /opt/envhaven/bin/ 2>/dev/null || true
+
+# Fix permissions so all tools can auto-update at runtime (user abc, uid=1000)
+# /mise: node, python, go, bun, gh, fd, opencode, uv, goose, cloudflared
+# /opt/envhaven: rustup, cargo, uv-tools, playwright, kiro, droid, envhaven CLI
+RUN chown -R 1000:1000 /mise /opt/envhaven
 
 # ============================================
 # VS Code Extension
@@ -256,7 +263,9 @@ RUN node --version && \
     aider --version && \
     goose --version && \
     kiro-cli --version && \
-    droid --version
+    droid --version && \
+    ffmpeg -version && \
+    npx playwright --version
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8443/healthz || exit 1
