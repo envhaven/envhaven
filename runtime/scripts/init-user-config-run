@@ -4,6 +4,10 @@
 mkdir -p /config/.local/share /config/.local/bin /config/.local/state /config/.config /config/.cache
 chown -R abc:abc /config/.local /config/.config /config/.cache
 
+# Ensure tool directories are writable by abc for runtime updates (npm install -g, mise install, etc.)
+# Runs in background to avoid blocking startup - only changes files not already owned by abc
+find /mise /opt/envhaven ! -user abc -exec chown abc:abc {} + 2>/dev/null &
+
 SSHD_CONFIG="/etc/ssh/sshd_config"
 if ! grep -q "^AllowUsers" "$SSHD_CONFIG"; then
     echo "AllowUsers abc" >> "$SSHD_CONFIG"
