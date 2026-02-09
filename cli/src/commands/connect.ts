@@ -172,7 +172,20 @@ function showSshKeyHelp(workspaceUrl?: string): void {
     info(formatKeyInstructions(workspaceUrl));
     blank();
   } else {
-    info("Run 'haven connect' again to generate a Haven key.");
+    const keys = findExistingKeys();
+    if (keys.length > 0) {
+      console.log("━".repeat(60));
+      console.log("");
+      console.log(`  Your public key${keys.length > 1 ? "s" : ""} (add to workspace):`);
+      console.log("");
+      for (const key of keys) {
+        console.log(`  ${key.publicKey}`);
+        console.log("");
+      }
+      console.log("━".repeat(60));
+      blank();
+      info(formatKeyInstructions(workspaceUrl));
+    }
     blank();
   }
 }
