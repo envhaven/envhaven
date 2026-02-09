@@ -217,10 +217,11 @@ COPY runtime/templates/AGENTS.md.selfhosted.template /defaults/AGENTS.md.selfhos
 COPY runtime/scripts/envhaven-welcome.sh /defaults/envhaven-welcome.sh
 COPY runtime/scripts/envhaven-status /opt/envhaven/bin/envhaven
 COPY runtime/scripts/envhaven-version-check /opt/envhaven/bin/envhaven-version-check
+COPY runtime/scripts/tmux-copy-hint /opt/envhaven/bin/tmux-copy-hint
 COPY tool-definitions.json /opt/envhaven/tool-definitions.json
 COPY runtime/scripts/bashrc-additions /defaults/bashrc-additions
 COPY runtime/scripts/zshrc-additions /defaults/zshrc-additions
-RUN chmod +x /defaults/envhaven-welcome.sh /opt/envhaven/bin/envhaven /opt/envhaven/bin/envhaven-version-check
+RUN chmod +x /defaults/envhaven-welcome.sh /opt/envhaven/bin/envhaven /opt/envhaven/bin/envhaven-version-check /opt/envhaven/bin/tmux-copy-hint
 
 # ============================================
 # Environment & Runtime Configuration

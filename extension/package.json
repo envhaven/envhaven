@@ -34,6 +34,17 @@
       {
         "command": "envhaven.setActiveAIExtension",
         "title": "EnvHaven: Set Active AI Extension"
+      },
+      {
+        "command": "envhaven.copyTerminalSelection",
+        "title": "EnvHaven: Copy Terminal Selection"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "envhaven.copyTerminalSelection",
+        "key": "ctrl+shift+c",
+        "when": "terminalFocus"
       }
     ],
     "viewsContainers": {

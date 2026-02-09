@@ -1,7 +1,31 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 import { SidebarProvider } from './sidebar-provider';
 
+const TMUX_CLIPBOARD_FILE = '/tmp/.envhaven-clipboard';
+const EXTENSION_FLAG_FILE = '/tmp/.envhaven-extension-active';
+
 export function activate(context: vscode.ExtensionContext): void {
+  // Signal to tmux that a web client is active (enables copy hint in status bar)
+  fs.writeFileSync(EXTENSION_FLAG_FILE, String(process.pid));
+  context.subscriptions.push({ dispose: () => fs.rmSync(EXTENSION_FLAG_FILE, { force: true }) });
+
+  // Ctrl+Shift+C: copy last tmux selection to browser clipboard
+  context.subscriptions.push(
+    vscode.commands.registerCommand('envhaven.copyTerminalSelection', () => {
+      try {
+        const content = fs.readFileSync(TMUX_CLIPBOARD_FILE, 'utf-8');
+        if (content) {
+          vscode.env.clipboard.writeText(content);
+        }
+      } catch (e: unknown) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+          console.error('[EnvHaven] Clipboard read failed:', e);
+        }
+      }
+    })
+  );
+
   const sidebarProvider = new SidebarProvider(context.extensionUri);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('envhaven.sidebarView', sidebarProvider)

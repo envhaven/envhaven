@@ -1,0 +1,22 @@
+#!/bin/sh
+# Flash copy hint in tmux status bar for 5 seconds.
+# Called by tmux copy bindings via run-shell -b (background).
+# Web clients (extension active): show keyboard shortcut.
+# SSH clients: confirm selection was copied via OSC 52.
+# Uses flock to skip if another hint is already showing.
+
+LOCK="/tmp/.tmux-hint-lock"
+exec 9>"$LOCK"
+flock -n 9 || exit 0
+
+if [ -f /tmp/.envhaven-extension-active ]; then
+  HINT='#[align=left]#[fg=#a78bfa bold]ctrl+shift+c #[fg=#5b5b5b nobold]to copy last selection'
+else
+  HINT='#[align=left]#[fg=#5b5b5b nobold]selection copied'
+fi
+
+ORIG=$(tmux show -gv 'status-format[1]')
+trap 'tmux set -g "status-format[1]" "$ORIG" 2>/dev/null' EXIT
+
+tmux set -g 'status-format[1]' "$HINT"
+sleep 5
