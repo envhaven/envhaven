@@ -157,7 +157,7 @@ async function promptForEncryptedKeyResolution(
   process.exit(1);
 }
 
-function showSshKeyHelp(workspaceUrl?: string): void {
+async function showSshKeyHelp(workspaceUrl?: string): Promise<void> {
   const havenKey = getHavenPublicKey();
 
   if (havenKey) {
@@ -171,17 +171,37 @@ function showSshKeyHelp(workspaceUrl?: string): void {
     blank();
     info(formatKeyInstructions(workspaceUrl));
     blank();
+    info("Already added? Check that workspace is running.");
+    blank();
   } else {
-    const keys = findExistingKeys();
-    if (keys.length > 0) {
+    const analyses = await analyzeKeys();
+    const usableKeys = analyses.filter((a) => a.usable);
+
+    if (usableKeys.length > 0) {
       console.log("━".repeat(60));
       console.log("");
-      console.log(`  Your public key${keys.length > 1 ? "s" : ""} (add to workspace):`);
+      console.log(`  Your public key${usableKeys.length > 1 ? "s" : ""} (add one to workspace):`);
       console.log("");
-      for (const key of keys) {
+      for (const { key } of usableKeys) {
         console.log(`  ${key.publicKey}`);
         console.log("");
       }
+      console.log("━".repeat(60));
+      blank();
+      info(formatKeyInstructions(workspaceUrl));
+      blank();
+      info("Already added? Check that workspace is running.");
+    } else {
+      blank();
+      console.log("🔑 No usable SSH keys. Generating a Haven key...");
+      const key = await generateHavenKey();
+      success(`Created ${contractPath(key.privateKeyPath)}`);
+      console.log("━".repeat(60));
+      console.log("");
+      console.log("  Copy this public key:");
+      console.log("");
+      console.log(`  ${key.publicKey}`);
+      console.log("");
       console.log("━".repeat(60));
       blank();
       info(formatKeyInstructions(workspaceUrl));
@@ -352,7 +372,7 @@ export async function connect(pathArg: string | undefined, options: ConnectOptio
       bullet("SSH key not added to workspace");
       blank();
 
-      showSshKeyHelp(workspaceUrl);
+      await showSshKeyHelp(workspaceUrl);
 
       process.exit(1);
     }
