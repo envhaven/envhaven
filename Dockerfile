@@ -60,6 +60,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================
+# Docker CLI (optional, for socket-mounted Docker access)
+# ============================================
+ARG INSTALL_DOCKER=true
+ENV INSTALL_DOCKER=$INSTALL_DOCKER
+RUN if [ "$INSTALL_DOCKER" = "true" ]; then \
+      curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz \
+      | tar xz --strip-components=1 -C /usr/local/bin docker/docker; \
+    fi
+
+# ============================================
 # SSH Server Configuration
 # ============================================
 RUN mkdir -p /var/run/sshd && \
@@ -266,6 +276,7 @@ RUN node --version && \
     goose --version && \
     kiro-cli --version && \
     droid --version && \
+    ([ "$INSTALL_DOCKER" != "true" ] || docker --version) && \
     ffmpeg -version && \
     playwright --version
 
