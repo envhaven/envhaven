@@ -1,5 +1,10 @@
 #!/usr/bin/with-contenv bash
 
+# Fix Docker socket permissions for non-root access
+if [ -S /var/run/docker.sock ]; then
+    chmod 666 /var/run/docker.sock
+fi
+
 # Ensure XDG directories exist for tools like opencode
 mkdir -p /config/.local/share /config/.local/bin /config/.local/state /config/.config /config/.cache
 chown -R abc:abc /config/.local /config/.config /config/.cache
