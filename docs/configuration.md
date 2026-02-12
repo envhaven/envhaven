@@ -25,6 +25,7 @@ Inherited from [linuxserver/code-server](https://docs.linuxserver.io/images/dock
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ENVHAVEN_MANAGED` | false | Set to `true` for managed hosting mode (affects extension UI) |
+| `ENVHAVEN_DISABLE_WEBUI` | false | Set to `true` to disable the web UI (code-server). SSH access remains available. |
 | `DEFAULT_SHELL` | bash | Set to `zsh` to use zsh as default shell |
 | `HAVEN_IDLE_TIMEOUT` | - | Auto-disconnect Haven CLI sessions after idle period (e.g., `30m`, `2h`, `0` to disable) |
 | `ENVHAVEN_SKIP_WELCOME` | - | Set to `1` to skip auto-attach to tmux on shell start |
@@ -192,12 +193,14 @@ environment:
 
 ## Ports
 
-### EnvHaven Services (always available)
+### EnvHaven Services
 
 | Port | Service |
 |------|---------|
 | 8443 | code-server (VS Code in browser) |
 | 22 | SSH access |
+
+> **Note:** The web UI can be disabled with `ENVHAVEN_DISABLE_WEBUI=true` for SSH-only deployments.
 
 ### User Application Ports (optional)
 
@@ -240,6 +243,31 @@ volumes:
 ```
 
 See `.env.example` in the repository for all available environment variables.
+
+### SSH-Only Mode
+
+For security-focused deployments where you only need terminal access (no web UI):
+
+```yaml
+services:
+  envhaven:
+    image: ghcr.io/envhaven/envhaven:latest
+    container_name: envhaven
+    restart: unless-stopped
+    ports:
+      - "2222:22"     # SSH access only
+    volumes:
+      - envhaven-config:/config
+    environment:
+      - ENVHAVEN_DISABLE_WEBUI=true
+      - SUDO_PASSWORD=yourpassword
+      - PUBLIC_KEY_URL=https://github.com/yourusername.keys
+
+volumes:
+  envhaven-config:
+```
+
+This disables the code-server web UI entirely. Access your environment via SSH or the Haven CLI.
 
 ## Development Configuration
 

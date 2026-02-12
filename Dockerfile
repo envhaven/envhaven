@@ -151,6 +151,7 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/init-extensions/dependencies.d \
              /etc/s6-overlay/s6-rc.d/init-zsh-config/dependencies.d \
              /etc/s6-overlay/s6-rc.d/svc-sshd/dependencies.d \
              /etc/s6-overlay/s6-rc.d/svc-cloudflared/dependencies.d \
+             /etc/s6-overlay/s6-rc.d/svc-webui-gate/dependencies.d \
              /etc/s6-overlay/s6-rc.d/user/contents.d
 
 COPY runtime/scripts/init-extensions-run /etc/s6-overlay/s6-rc.d/init-extensions/run
@@ -160,6 +161,7 @@ COPY runtime/scripts/init-user-config-run /etc/s6-overlay/s6-rc.d/init-user-conf
 COPY runtime/scripts/init-zsh-config-run /etc/s6-overlay/s6-rc.d/init-zsh-config/run
 COPY runtime/scripts/svc-sshd-run /etc/s6-overlay/s6-rc.d/svc-sshd/run
 COPY runtime/scripts/svc-cloudflared-run /etc/s6-overlay/s6-rc.d/svc-cloudflared/run
+COPY runtime/scripts/svc-webui-gate-run /etc/s6-overlay/s6-rc.d/svc-webui-gate/run
 
 RUN for svc in init-extensions init-vscode-settings init-agents-md init-user-config init-zsh-config; do \
         echo "oneshot" > /etc/s6-overlay/s6-rc.d/$svc/type && \
@@ -174,7 +176,10 @@ RUN for svc in init-extensions init-vscode-settings init-agents-md init-user-con
     touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-sshd && \
     echo "longrun" > /etc/s6-overlay/s6-rc.d/svc-cloudflared/type && \
     chmod +x /etc/s6-overlay/s6-rc.d/svc-cloudflared/run && \
-    touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-cloudflared
+    touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-cloudflared && \
+    echo "longrun" > /etc/s6-overlay/s6-rc.d/svc-webui-gate/type && \
+    chmod +x /etc/s6-overlay/s6-rc.d/svc-webui-gate/run && \
+    touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-webui-gate
 
 # ============================================
 # Branding & UI Customization
