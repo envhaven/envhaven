@@ -17,6 +17,10 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
+<p align="center">
+  <img src=".github/product-overview.gif" alt="EnvHaven product overview" width="640">
+</p>
+
 As tools like Claude Code, OpenCode and Codex gain agency, they need full filesystem access to be effective. Running them locally carries risk (`rm -rf` accidents, credential leaks) and friction (installing complex runtimes).
 
 EnvHaven solves this. It's a remote environment that spins up in seconds, with sane defaults and every major AI coding tool and built-in, fully isolated from your personal machine.
