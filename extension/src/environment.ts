@@ -445,15 +445,33 @@ export async function getTmuxWindows(): Promise<TmuxWindow[]> {
   }
 }
 
+async function getExposedPort(isManaged: boolean, workspaceId: string | null, workspaceToken: string | null, apiUrl: string | null): Promise<number> {
+  const fallback = parseInt(process.env.ENVHAVEN_EXPOSED_PORT || '3000', 10);
+  if (!isManaged || !workspaceId || !workspaceToken || !apiUrl) return fallback;
+
+  try {
+    const response = await fetch(`${apiUrl}/v1/internal/workspace/${workspaceId}/status`, {
+      headers: { Authorization: `Bearer ${workspaceToken}` },
+      signal: AbortSignal.timeout(3000),
+    });
+    if (response.ok) {
+      const data = await response.json() as { exposedPort?: number };
+      if (data.exposedPort) return data.exposedPort;
+    }
+  } catch {}
+
+  return fallback;
+}
+
 export async function getWorkspaceInfo(): Promise<WorkspaceInfo> {
   const isManaged = process.env.ENVHAVEN_MANAGED === 'true';
   const workspacePath = process.env.DEFAULT_WORKSPACE || '/config/workspace';
   const ssh = getSshConfig();
   const publicUrl = process.env.ENVHAVEN_PUBLIC_URL || null;
-  const exposedPort = parseInt(process.env.ENVHAVEN_EXPOSED_PORT || '3000', 10);
   const workspaceId = process.env.ENVHAVEN_WORKSPACE_ID || null;
   const workspaceToken = process.env.ENVHAVEN_WORKSPACE_TOKEN || null;
   const apiUrl = process.env.ENVHAVEN_API_URL || null;
+  const exposedPort = await getExposedPort(isManaged, workspaceId, workspaceToken, apiUrl);
 
   const [toolResults, versions, sshEnabled, previewPortOpen, tmuxWindows, versionInfo] = await Promise.all([
     Promise.all(
