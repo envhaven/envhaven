@@ -1,0 +1,30 @@
+#!/usr/bin/with-contenv bash
+
+# Copy default agent configs to user-writable locations (no-clobber)
+# Container IS the sandbox: agents run with max permissions by default
+
+# Claude Code: bypass permissions mode
+CLAUDE_DIR="/config/.claude"
+CLAUDE_SETTINGS="$CLAUDE_DIR/settings.json"
+if [ ! -f "$CLAUDE_SETTINGS" ]; then
+    mkdir -p "$CLAUDE_DIR"
+    cp /defaults/claude-settings.json "$CLAUDE_SETTINGS"
+    chown abc:abc "$CLAUDE_DIR" "$CLAUDE_SETTINGS"
+    echo "Claude Code: bypass permissions installed"
+else
+    echo "Claude Code: settings.json exists, skipping"
+fi
+
+# Codex: yolo mode (no sandbox, no approval)
+CODEX_DIR="/config/.codex"
+CODEX_CONFIG="$CODEX_DIR/config.toml"
+if [ ! -f "$CODEX_CONFIG" ]; then
+    mkdir -p "$CODEX_DIR"
+    cp /defaults/codex-config.toml "$CODEX_CONFIG"
+    chown abc:abc "$CODEX_DIR" "$CODEX_CONFIG"
+    echo "Codex: yolo mode installed"
+else
+    echo "Codex: config.toml exists, skipping"
+fi
+
+echo "Agent config completed"

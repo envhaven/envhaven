@@ -51,7 +51,7 @@
       "description": "OpenAI's coding agent",
       "docsUrl": "https://github.com/openai/codex",
       "envVars": ["OPENAI_API_KEY"],
-      "authFiles": [".codex/auth.json", ".codex/config.toml"],
+      "authFiles": [".codex/auth.json"],
       "setupSteps": [
         { "instruction": "Sign in with ChatGPT (Plus/Pro/Team):" },
         { "command": "codex" },

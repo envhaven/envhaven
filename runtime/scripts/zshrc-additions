@@ -3,3 +3,4 @@
 [ -f /defaults/envhaven-welcome.sh ] && source /defaults/envhaven-welcome.sh
 
 alias envhaven-help='cat /config/workspace/AGENTS.md'
+alias gemini='gemini --yolo'

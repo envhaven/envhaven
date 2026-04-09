@@ -147,6 +147,7 @@ RUN mkdir -p /app/pre-installed-extensions && \
 RUN mkdir -p /etc/s6-overlay/s6-rc.d/init-extensions/dependencies.d \
              /etc/s6-overlay/s6-rc.d/init-vscode-settings/dependencies.d \
              /etc/s6-overlay/s6-rc.d/init-agents-md/dependencies.d \
+             /etc/s6-overlay/s6-rc.d/init-agent-config/dependencies.d \
              /etc/s6-overlay/s6-rc.d/init-user-config/dependencies.d \
              /etc/s6-overlay/s6-rc.d/init-zsh-config/dependencies.d \
              /etc/s6-overlay/s6-rc.d/svc-sshd/dependencies.d \
@@ -157,11 +158,12 @@ COPY runtime/scripts/init-extensions-run /etc/s6-overlay/s6-rc.d/init-extensions
 COPY runtime/scripts/init-vscode-settings-run /etc/s6-overlay/s6-rc.d/init-vscode-settings/run
 COPY runtime/scripts/init-agents-md-run /etc/s6-overlay/s6-rc.d/init-agents-md/run
 COPY runtime/scripts/init-user-config-run /etc/s6-overlay/s6-rc.d/init-user-config/run
+COPY runtime/scripts/init-agent-config-run /etc/s6-overlay/s6-rc.d/init-agent-config/run
 COPY runtime/scripts/init-zsh-config-run /etc/s6-overlay/s6-rc.d/init-zsh-config/run
 COPY runtime/scripts/svc-sshd-run /etc/s6-overlay/s6-rc.d/svc-sshd/run
 COPY runtime/scripts/svc-cloudflared-run /etc/s6-overlay/s6-rc.d/svc-cloudflared/run
 
-RUN for svc in init-extensions init-vscode-settings init-agents-md init-user-config init-zsh-config; do \
+RUN for svc in init-extensions init-vscode-settings init-agents-md init-agent-config init-user-config init-zsh-config; do \
         echo "oneshot" > /etc/s6-overlay/s6-rc.d/$svc/type && \
         echo "/etc/s6-overlay/s6-rc.d/$svc/run" > /etc/s6-overlay/s6-rc.d/$svc/up && \
         chmod +x /etc/s6-overlay/s6-rc.d/$svc/run && \
@@ -229,6 +231,8 @@ COPY runtime/scripts/envhaven-status /opt/envhaven/bin/envhaven
 COPY runtime/scripts/envhaven-version-check /opt/envhaven/bin/envhaven-version-check
 COPY runtime/scripts/tmux-copy-hint /opt/envhaven/bin/tmux-copy-hint
 COPY tool-definitions.json /opt/envhaven/tool-definitions.json
+COPY runtime/templates/claude-settings.json /defaults/claude-settings.json
+COPY runtime/templates/codex-config.toml /defaults/codex-config.toml
 COPY runtime/scripts/bashrc-additions /defaults/bashrc-additions
 COPY runtime/scripts/zshrc-additions /defaults/zshrc-additions
 RUN chmod +x /defaults/envhaven-welcome.sh /opt/envhaven/bin/envhaven /opt/envhaven/bin/envhaven-version-check /opt/envhaven/bin/tmux-copy-hint
@@ -242,6 +246,10 @@ ENV TZ=Etc/UTC
 ENV DEFAULT_WORKSPACE=/config/workspace
 ENV ENVHAVEN_MANAGED=false
 ENV PWA_APPNAME=EnvHaven
+
+# Agent auto-approve: container IS the sandbox, permission prompts add zero value
+ENV AIDER_YES_ALWAYS=true
+ENV OPENCODE_PERMISSION="{\"*\":\"allow\"}"
 
 # Single source of truth for environment (used by SSH, bash, zsh)
 RUN echo 'PATH="/config/.local/bin:/opt/envhaven/bin:/opt/envhaven/cargo/bin:/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' > /etc/environment && \

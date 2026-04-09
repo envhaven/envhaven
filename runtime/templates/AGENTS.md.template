@@ -173,6 +173,20 @@ export FACTORY_API_KEY=...            # Factory/Droid
 
 Add to `~/.zshrc` or `~/.bashrc` for persistence across sessions.
 
+### Auto-Approve Mode
+
+All tools run with maximum permissions by default. The container IS the sandbox; permission prompts inside it add friction with no security value.
+
+| Tool | Mechanism | To Re-enable Prompts |
+|------|-----------|---------------------|
+| Claude Code | `~/.claude/settings.json` | Remove `defaultMode` from settings |
+| OpenCode | `OPENCODE_PERMISSION` env var | `unset OPENCODE_PERMISSION` |
+| Aider | `AIDER_YES_ALWAYS` env var | `unset AIDER_YES_ALWAYS` |
+| Codex | `~/.codex/config.toml` | Remove or edit config file |
+| Gemini CLI | Shell alias (`--yolo`) | `unalias gemini` |
+
+Other tools (Goose, Amp, Kiro, etc.) either have no permission system or auto-approve by default.
+
 ---
 
 ## CLI Tools
