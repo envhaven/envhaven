@@ -357,9 +357,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }
 
   private async _updatePreviewPort(port: number): Promise<void> {
-    const workspaceId = process.env.ENVHAVEN_WORKSPACE_ID;
-    const workspaceToken = process.env.ENVHAVEN_WORKSPACE_TOKEN;
-    const apiUrl = process.env.ENVHAVEN_API_URL;
+    const workspaceId = process.env._ENVHAVEN_WORKSPACE_ID;
+    const workspaceToken = process.env._ENVHAVEN_WORKSPACE_TOKEN;
+    const apiUrl = process.env._ENVHAVEN_API_URL;
 
     if (!workspaceId || !workspaceToken || !apiUrl) {
       this._view?.webview.postMessage({

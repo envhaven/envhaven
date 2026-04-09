@@ -9,15 +9,15 @@ This is an **EnvHaven Managed** workspace with automatic HTTPS and SSH access.
 
 | Service | URL |
 |---------|-----|
-| **Web IDE** | ${ENVHAVEN_PUBLIC_URL} |
-| **Preview** | ${ENVHAVEN_PREVIEW_URL} |
+| **Web IDE** | ${_ENVHAVEN_PUBLIC_URL} |
+| **Preview** | ${_ENVHAVEN_PREVIEW_URL} |
 | **SSH** | `ssh abc@${ENVHAVEN_SSH_HOST}` |
 
 ### Haven CLI Connection
 
 ```bash
 # From your local machine
-haven connect . ${ENVHAVEN_WORKSPACE_NAME}
+haven connect . ${_ENVHAVEN_WORKSPACE_NAME}
 ```
 
 ### Preview URL
@@ -26,7 +26,7 @@ Apps running on **port 3000** (default) are accessible via the preview URL.
 
 | Property | Value |
 |----------|-------|
-| **Preview URL** | ${ENVHAVEN_PREVIEW_URL} |
+| **Preview URL** | ${_ENVHAVEN_PREVIEW_URL} |
 | **Default Port** | 3000 |
 
 Change the port in the EnvHaven extension sidebar if needed.

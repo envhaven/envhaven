@@ -4,8 +4,8 @@
 
 CURRENT="${ENVHAVEN_VERSION:-dev}"
 
-if [[ "${ENVHAVEN_MANAGED:-}" == "true" ]] && [[ -n "${ENVHAVEN_API_URL:-}" ]]; then
-  LATEST=$(curl -sf "$ENVHAVEN_API_URL/v1/version" 2>/dev/null | jq -r '.latest // empty')
+if [[ "${ENVHAVEN_MANAGED:-}" == "true" ]] && [[ -n "${_ENVHAVEN_API_URL:-}" ]]; then
+  LATEST=$(curl -sf "$_ENVHAVEN_API_URL/v1/version" 2>/dev/null | jq -r '.latest // empty')
   
   if [[ -n "$LATEST" ]] && [[ "$CURRENT" != "$LATEST" ]]; then
     echo "$CURRENT ⚡ $LATEST available" > /tmp/envhaven-version-status
