@@ -5,7 +5,6 @@
 
 [settings]
 yes = true
-python_compile = false
 
 [tools]
 node = "22"
