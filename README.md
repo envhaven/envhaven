@@ -21,9 +21,9 @@
   <img src=".github/product-overview.gif" alt="EnvHaven product overview" width="640">
 </p>
 
-As tools like Claude Code, OpenCode and Codex gain agency, they need full system access to be effective. Running them locally carries risk (`rm -rf` accidents, credential leaks) and friction (installing complex runtimes).
+As tools like Claude Code, OpenCode and Codex gain agency, they need full system access to be effective. Running them locally carries risk (`rm -rf` accidents, credential leaks) and friction (installing runtimes, approving every action).
 
-EnvHaven solves this. It's a remote environment that spins up in seconds, with sane defaults and every major AI coding tool and built-in, fully isolated from your personal machine and pre-configured to bypass permissions out of the box.
+EnvHaven is an isolated, remote environment with every major AI coding tool built-in. The container provides the isolation, so all agents ship with full access by default. No approval prompts, no confirmation dialogs. Your local machine stays untouched.
 
 **Workflow Freedom:**
 - **Browser-only** — Deploy the image, open VS Code in your browser, run `opencode`. Zero setup.
@@ -139,7 +139,7 @@ You can also provide your own keys via env vars (`-e ANTHROPIC_API_KEY=...`) or 
 
 ### Zero-Friction Permissions
 
-EnvHaven workspaces are structurally isolated. The default permission prompts from the AI tools add friction without the added value: The container IS the sandbox, so all agents are pre-configured for maximum permissiveness out of the box. No approval prompts, no confirmation dialogs. Agents execute immediately.
+EnvHaven workspaces are structurally isolated. The container provides the isolation, so all agents are pre-configured with full access by default. No approval prompts, no confirmation dialogs. Agents execute immediately.
 
 You can re-enable prompts per tool by editing the relevant config or unsetting the env var. See the in-workspace `AGENTS.md` for details.
 
