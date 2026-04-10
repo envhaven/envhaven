@@ -171,12 +171,12 @@ The CLI enables a hybrid workflow: **Local Editor + Remote Compute**.
 │                            YOUR MACHINE                                │
 │                                                                        │
 │  ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐   │
-│  │   Local Editor  │     │   Haven CLI     │     │  Sync Daemon    │   │
+│  │  Local Editors  │     │    Haven CLI    │     │  Local Builds   │   │
 │  │                 │     │                 │     │                 │   │
-│  │  nvim/lazyvim   │     │  haven connect  │     │                 │   │
-│  │  emacs/doom     │     │  haven status   │     │  Continuous     │   │
-│  │  helix          │     │  haven <cmd>    │     │  bidirectional  │   │
-│  │                 │     │                 │     │  ~200ms latency │   │
+│  │  vim            │     │  haven connect  │     │  binaries       │   │
+│  │  vscode         │     │  haven status   │     │  native apps    │   │
+│  │  zed            │     │  haven <cmd>    │     │  certs+signing  │   │
+│  │                 │     │                 │     │                 │   │
 │  └────────┬────────┘     └────────┬────────┘     └────────┬────────┘   │
 │           │                       │                       │            │
 │           ▼                       ▼                       ▼            │
@@ -184,7 +184,12 @@ The CLI enables a hybrid workflow: **Local Editor + Remote Compute**.
 │  │                    ~/projects/myapp/                             │  │
 │  └──────────────────────────────────────────────────────────────────┘  │
 │                                   ▲                                    │
-│                                   │                                    │
+└───────────────────────────────────┼────────────────────────────────────┘
+                                    │
+                           Files sync in ~200ms
+                        via SSH + Mutagen Protocol
+                                    │
+┌───────────────────────────────────┼────────────────────────────────────┐
 │                                   ▼                                    │
 │  ┌──────────────────────────────────────────────────────────────────┐  │
 │  │                    /config/workspace/myapp/                      │  │

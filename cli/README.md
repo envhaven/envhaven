@@ -169,12 +169,12 @@ haven -- status
 │                            YOUR MACHINE                                │
 │                                                                        │
 │  ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐   │
-│  │   Local Editor  │     │   Haven CLI     │     │  Sync Daemon    │   │
-│  │                 │     │                 │     │   (Mutagen)     │   │
-│  │  nvim/lazyvim   │     │  haven connect  │     │                 │   │
-│  │  emacs/doom     │     │  haven status   │     │  Continuous     │   │
-│  │  helix          │     │  haven <cmd>    │     │  bidirectional  │   │
-│  │                 │     │                 │     │  ~200ms latency │   │
+│  │  Local Editors  │     │    Haven CLI    │     │  Local Builds   │   │
+│  │                 │     │                 │     │                 │   │
+│  │  vim            │     │  haven connect  │     │  binaries       │   │
+│  │  vscode         │     │  haven status   │     │  native apps    │   │
+│  │  zed            │     │  haven <cmd>    │     │  certs+signing  │   │
+│  │                 │     │                 │     │                 │   │
 │  └────────┬────────┘     └────────┬────────┘     └────────┬────────┘   │
 │           │                       │                       │            │
 │           ▼                       ▼                       ▼            │
@@ -184,13 +184,13 @@ haven -- status
 │                                   ▲                                    │
 └───────────────────────────────────┼────────────────────────────────────┘
                                     │
-                         SSH + Mutagen Protocol
-                              (~200ms)
+                           Files sync in ~200ms
+                        via SSH + Mutagen Protocol
                                     │
 ┌───────────────────────────────────┼────────────────────────────────────┐
 │                                   ▼                                    │
 │  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │                    /config/workspace/myapp/                       │  │
+│  │                    /config/workspace/myapp/                      │  │
 │  └──────────────────────────────────────────────────────────────────┘  │
 │           ▲                       ▲                       ▲            │
 │           │                       │                       │            │
