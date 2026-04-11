@@ -27,4 +27,11 @@ else
     echo "Codex: config.toml exists, skipping"
 fi
 
+# Goose: fix log directory ownership (goose crashes if root owns these)
+GOOSE_STATE="/config/.local/state/goose"
+if [ -d "$GOOSE_STATE" ]; then
+    chown -R abc:abc "$GOOSE_STATE"
+    echo "Goose: log directory ownership fixed"
+fi
+
 echo "Agent config completed"
