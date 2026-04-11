@@ -1,2 +1,5 @@
 [install]
 peer = false
+
+[test]
+root = "src/__tests__"

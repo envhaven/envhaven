@@ -41,6 +41,7 @@ Thumbs.db
 test/*.log
 test/tmp/
 .test-config/
+**/test-results/
 
 # Environment files with secrets
 .env
