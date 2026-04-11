@@ -89,6 +89,7 @@ export interface AITool {
   id: string;
   name: string;
   command: string;
+  authCommand: string | null;
   description: string;
   docsUrl: string;
   installed: boolean;
@@ -127,7 +128,6 @@ export interface WorkspaceInfo {
   publicUrl: string | null;
   previewUrl: string | null;
   previewPortOpen: boolean;
-  hasOhMyOpenCode: boolean;
   exposedPort: number;
   workspaceId: string | null;
   workspaceToken: string | null;
@@ -140,6 +140,7 @@ export interface ToolDefinition {
   id: string;
   name: string;
   command: string;
+  authCommand: string | null;
   description: string;
   docsUrl: string;
   envVars: string[];
@@ -291,16 +292,6 @@ export async function checkAuth(def: ToolDefinition): Promise<AuthResult> {
 
   // 5. No detection method available
   return { status: 'unknown', connectedVia: null };
-}
-
-function hasOhMyOpenCode(): boolean {
-  const configPath = path.join(os.homedir(), '.config/opencode/opencode.json');
-  try {
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    return config.plugin?.includes('oh-my-opencode') ?? false;
-  } catch {
-    return false;
-  }
 }
 
 async function isSshEnabled(): Promise<boolean> {
@@ -484,6 +475,7 @@ export async function getWorkspaceInfo(): Promise<WorkspaceInfo> {
           id: def.id,
           name: def.name,
           command: def.command,
+          authCommand: def.authCommand,
           description: def.description,
           docsUrl: def.docsUrl,
           installed,
@@ -518,7 +510,6 @@ export async function getWorkspaceInfo(): Promise<WorkspaceInfo> {
     publicUrl,
     previewUrl: getPreviewUrl(publicUrl),
     previewPortOpen,
-    hasOhMyOpenCode: hasOhMyOpenCode(),
     exposedPort,
     workspaceId,
     workspaceToken,

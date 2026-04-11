@@ -6,168 +6,134 @@
       "id": "opencode",
       "name": "OpenCode",
       "command": "opencode",
+      "authCommand": "opencode providers login",
       "description": "AI coding agent from SST",
       "docsUrl": "https://opencode.ai/docs",
       "envVars": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"],
       "authFiles": [".local/share/opencode/auth.json"],
-      "setupSteps": [
-        { "instruction": "Run OpenCode and configure your provider:" },
-        { "command": "opencode" },
-        { "instruction": "Then type /connect to set up authentication." }
-      ]
+      "setupSteps": []
     },
     {
       "id": "claude",
       "name": "Claude Code",
       "command": "claude",
+      "authCommand": "claude auth login",
       "description": "Anthropic's official CLI",
       "docsUrl": "https://docs.anthropic.com/en/docs/claude-code",
-      "envVars": ["ANTHROPIC_API_KEY"],
+      "envVars": ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
       "authFiles": [".claude/.credentials.json"],
-      "setupSteps": [
-        { "instruction": "Sign in with your Claude account:" },
-        { "command": "claude" },
-        { "instruction": "Then type /login to authenticate via browser." }
-      ]
+      "setupSteps": []
     },
     {
       "id": "gemini",
       "name": "Gemini CLI",
       "command": "gemini",
+      "authCommand": "gemini",
       "description": "Google's AI in your terminal",
       "docsUrl": "https://github.com/google-gemini/gemini-cli",
       "envVars": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
       "authFiles": [".gemini/oauth_creds.json", ".gemini/settings.json"],
-      "setupSteps": [
-        { "instruction": "Run Gemini and select your auth method:" },
-        { "command": "gemini" },
-        { "instruction": "Or set: export GEMINI_API_KEY=\"your-key\"" }
-      ]
+      "setupSteps": []
     },
     {
       "id": "codex",
       "name": "Codex",
       "command": "codex",
+      "authCommand": "codex login --device-auth",
       "description": "OpenAI's coding agent",
       "docsUrl": "https://github.com/openai/codex",
       "envVars": ["OPENAI_API_KEY"],
       "authFiles": [".codex/auth.json"],
-      "setupSteps": [
-        { "instruction": "Sign in with ChatGPT (Plus/Pro/Team):" },
-        { "command": "codex" },
-        { "instruction": "Or set: export OPENAI_API_KEY=\"your-key\"" }
-      ]
+      "setupSteps": []
     },
     {
       "id": "aider",
       "name": "Aider",
       "command": "aider",
+      "authCommand": null,
       "description": "AI pair programming",
       "docsUrl": "https://aider.chat",
       "envVars": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY"],
       "authFiles": [],
-      "setupSteps": [
-        { "instruction": "Set your API key for any supported provider:" },
-        { "command": "export ANTHROPIC_API_KEY=\"your-key\"" },
-        { "instruction": "Or: OPENAI_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY" }
-      ]
+      "setupSteps": []
     },
     {
       "id": "goose",
       "name": "Goose",
       "command": "goose",
+      "authCommand": "goose configure",
       "description": "Block's AI developer agent",
       "docsUrl": "https://block.github.io/goose",
       "envVars": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
       "authFiles": [],
       "authCheck": "goose",
-      "setupSteps": [
-        { "instruction": "Configure your LLM provider:" },
-        { "command": "goose configure" },
-        { "instruction": "Select \"Configure Providers\" and enter your API key." }
-      ]
+      "setupSteps": []
     },
     {
       "id": "vibe",
       "name": "Mistral Vibe",
       "command": "vibe",
+      "authCommand": null,
       "description": "Powered by Devstral",
       "docsUrl": "https://github.com/mistralai/mistral-vibe",
       "envVars": ["MISTRAL_API_KEY"],
       "authFiles": [],
-      "setupSteps": [
-        { "instruction": "Set your Mistral API key:" },
-        { "command": "export MISTRAL_API_KEY=\"your-key\"" },
-        { "instruction": "Get key at console.mistral.ai" }
-      ]
+      "setupSteps": []
     },
     {
       "id": "amp",
       "name": "Amp",
       "command": "amp",
+      "authCommand": "amp login",
       "description": "Frontier coding agent",
       "docsUrl": "https://ampcode.com/manual",
       "envVars": ["AMP_API_KEY"],
       "authFiles": [".config/amp/auth.json", ".amp/credentials"],
-      "setupSteps": [
-        { "instruction": "Sign in via browser:" },
-        { "command": "amp login" },
-        { "instruction": "Or set: export AMP_API_KEY=\"your-key\"" }
-      ]
+      "setupSteps": []
     },
     {
       "id": "auggie",
       "name": "Augment",
       "command": "auggie",
+      "authCommand": "auggie login",
       "description": "Context-aware coding agent",
       "docsUrl": "https://docs.augmentcode.com/cli/overview",
       "envVars": ["AUGMENT_SESSION_AUTH"],
       "authFiles": [],
-      "setupSteps": [
-        { "instruction": "Sign in via browser:" },
-        { "command": "auggie login" }
-      ]
+      "setupSteps": []
     },
     {
       "id": "factory",
       "name": "Factory",
       "command": "droid",
+      "authCommand": null,
       "description": "AI for CI/CD automation",
       "docsUrl": "https://docs.factory.ai",
       "envVars": ["FACTORY_API_KEY"],
       "authFiles": [],
-      "setupSteps": [
-        { "instruction": "Run droid - browser auth opens automatically:" },
-        { "command": "droid" }
-      ]
+      "setupSteps": []
     },
     {
       "id": "kiro",
       "name": "Kiro",
       "command": "kiro-cli",
+      "authCommand": "kiro-cli login",
       "description": "AWS-powered AI CLI",
       "docsUrl": "https://kiro.dev/docs/cli",
       "envVars": [],
       "authFiles": [".kiro/settings/cli.json"],
-      "setupSteps": [
-        { "instruction": "Run Kiro - browser auth opens automatically:" },
-        { "command": "kiro-cli" },
-        { "instruction": "Sign in with GitHub, Google, or AWS Builder ID." }
-      ]
+      "setupSteps": []
     },
     {
       "id": "qwen",
       "name": "Qwen Code",
       "command": "qwen",
+      "authCommand": "qwen",
       "description": "Alibaba's coding assistant",
       "docsUrl": "https://qwenlm.github.io/qwen-code-docs",
       "envVars": ["QWEN_API_KEY", "OPENAI_API_KEY"],
       "authFiles": [".qwen/config.json", ".config/qwen/config.json"],
-      "setupSteps": [
-        { "instruction": "Run Qwen and sign in (free tier available):" },
-        { "command": "qwen" },
-        { "instruction": "Or use OpenAI-compatible API with OPENAI_API_KEY" }
-      ]
+      "setupSteps": []
     }
   ]
 }

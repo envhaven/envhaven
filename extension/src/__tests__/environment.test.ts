@@ -11,6 +11,7 @@ function createToolDef(overrides: Partial<ToolDefinition>): ToolDefinition {
     id: 'test-tool',
     name: 'Test Tool',
     command: 'test',
+    authCommand: null,
     description: 'Test tool',
     docsUrl: 'https://test.com',
     envVars: [],

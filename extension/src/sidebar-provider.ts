@@ -98,19 +98,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           this._runAiTool(message.toolName, message.toolCommand);
           break;
 
-        case 'runSetupCommand':
-          this._runSetupCommand(message.toolName, message.setupCommand);
-          break;
-
         case 'openToolDocs':
           if (message.url) {
             vscode.env.openExternal(vscode.Uri.parse(message.url));
           }
-          break;
-
-        case 'installOhMyOpenCode':
-          await vscode.commands.executeCommand('envhaven.installOhMyOpenCode');
-          await this.refresh();
           break;
 
         case 'copySshCommand':
@@ -204,21 +195,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }
 
   private async _runAiTool(toolName: string, command: string): Promise<void> {
-    const hasSession = await this._runTmuxCommand('tmux has-session -t envhaven');
-    
-    if (hasSession) {
-      await this._runTmuxCommand('tmux new-window -t envhaven -c /config/workspace');
-    } else {
-      await this._runTmuxCommand('tmux new-session -d -s envhaven -c /config/workspace');
-    }
-    
-    await this._runTmuxCommand(`tmux send-keys -t envhaven '${command.replace(/'/g, "'\\''")}' Enter`);
-    await this._refreshTerminalsOnly();
-    
-    this._ensureTerminalVisible();
-  }
-
-  private async _runSetupCommand(toolName: string, command: string): Promise<void> {
     const hasSession = await this._runTmuxCommand('tmux has-session -t envhaven');
     
     if (hasSession) {

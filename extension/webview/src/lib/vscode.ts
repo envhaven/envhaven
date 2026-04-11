@@ -9,9 +9,7 @@ export interface TmuxWindow {
 export interface WebviewToExtensionMessage {
   command:
     | 'runTool'
-    | 'runSetupCommand'
     | 'openToolDocs'
-    | 'installOhMyOpenCode'
     | 'openTerminal'
     | 'refresh'
     | 'openDocs'
@@ -29,7 +27,6 @@ export interface WebviewToExtensionMessage {
   tool?: string;
   toolName?: string;
   toolCommand?: string;
-  setupCommand?: string;
   text?: string;
   url?: string;
   envVar?: string;
@@ -48,22 +45,16 @@ export interface ExtensionToWebviewMessage {
   tmuxWindows?: TmuxWindow[];
 }
 
-export interface SetupStep {
-  instruction?: string;
-  command?: string;
-}
-
 export interface AITool {
   id: string;
   name: string;
   command: string;
+  authCommand: string | null;
   description: string;
   docsUrl: string;
   installed: boolean;
   authStatus: 'ready' | 'needs-auth' | 'unknown';
   connectedVia: string | null;
-  authHint?: string;
-  setupSteps?: SetupStep[];
   envVars?: string[];
 }
 
@@ -90,7 +81,6 @@ export interface WorkspaceInfo {
   publicUrl: string | null;
   previewUrl: string | null;
   previewPortOpen: boolean;
-  hasOhMyOpenCode: boolean;
   exposedPort: number;
   workspaceId: string | null;
   workspaceToken: string | null;
