@@ -101,6 +101,45 @@ log.success('Container is running');
 process.exit(0);
 ```
 
+## Fast Extension Iteration (Hot-Inject)
+
+When a test container (`envhaven-test`) is already running, skip full Docker image rebuilds. Build locally, package a VSIX, and inject it directly:
+
+```bash
+# 1. Build extension (host + webview)
+bun dev/scripts/extension-build.ts
+
+# 2. Run unit tests
+cd extension && bun test
+
+# 3. Package VSIX
+cd extension && npx --yes @vscode/vsce package --out /tmp/envhaven.vsix
+
+# 4. Inject into running container
+docker cp /tmp/envhaven.vsix envhaven-test:/tmp/envhaven.vsix
+docker exec envhaven-test sh -c '
+  EXT_DIR=$(echo /config/extensions/envhaven.envhaven-*)
+  rm -rf "$EXT_DIR"
+  mkdir -p "$EXT_DIR" && cd "$EXT_DIR"
+  unzip -o /tmp/envhaven.vsix "extension/*" >/dev/null 2>&1
+  cp -r extension/* . && rm -rf extension
+'
+
+# 5. Reload sidebar in the browser (or refresh the code-server tab)
+```
+
+**Why this works**: code-server reads extensions from `/config/extensions/` at activation. Replacing the directory contents and reloading the sidebar picks up changes without restarting the container.
+
+**When to use**: Any extension change (webview UI, sidebar-provider logic, environment detection, tool-definitions.json). Saves ~10 minutes vs a full `docker build`.
+
+**When NOT to use**: Changes to the Dockerfile, runtime init scripts, or installed tool versions — those require a full `bun dev/scripts/build.ts`.
+
+**Playwright E2E** can run against the injected extension immediately:
+```bash
+cd extension && npx playwright test --reporter=list
+```
+Playwright config lives at `extension/playwright.config.ts`, tests at `extension/e2e/`.
+
 ## TUI Action Pattern
 
 TUI actions spawn scripts and stream output:
