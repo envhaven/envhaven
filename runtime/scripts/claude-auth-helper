@@ -93,9 +93,9 @@ case "$HTTP_CODE" in
     for i in $(seq 1 5); do
       if claude auth status --text 2>/dev/null | grep -q "Login method"; then
         echo ""
-        echo "  ✓ Login successful! Run 'claude' to start."
+        echo "  ✓ Login successful — starting Claude Code..."
         echo ""
-        exit 0
+        exec claude
       fi
       sleep 1
     done
