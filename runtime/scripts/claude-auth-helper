@@ -1,0 +1,113 @@
+#!/bin/sh
+# Claude Code auth helper for remote/container environments.
+# Runs 'claude auth login' in a hidden tmux pane (for its local callback
+# server), intercepts the auth URL, shows a clean paste prompt, and relays
+# the OAuth callback from inside the container where localhost is reachable.
+
+BROWSER_HELPER="/app/code-server/lib/vscode/bin/helpers/browser.sh"
+AUTH_URL_FILE="/tmp/.eh-auth-url"
+BROWSER_WRAPPER="/tmp/.eh-auth-browser"
+
+cleanup() {
+  tmux kill-window -t envhaven:_auth 2>/dev/null || true
+  rm -f "$AUTH_URL_FILE" "$BROWSER_WRAPPER"
+}
+trap cleanup EXIT INT TERM
+
+rm -f "$AUTH_URL_FILE"
+
+# Browser wrapper: captures the real URL (with localhost callback port),
+# then opens it in the user's browser via code-server.
+cat > "$BROWSER_WRAPPER" << 'EOF'
+#!/bin/sh
+# Save URL immediately so the main script can show the banner first.
+# Delay browser open so the user has time to read the instructions.
+echo "$1" > /tmp/.eh-auth-url
+sleep 4
+[ -x /app/code-server/lib/vscode/bin/helpers/browser.sh ] && \
+  /app/code-server/lib/vscode/bin/helpers/browser.sh "$1" 2>/dev/null
+exit 0
+EOF
+chmod +x "$BROWSER_WRAPPER"
+
+tmux has-session -t envhaven 2>/dev/null || \
+  tmux new-session -d -s envhaven -c /config/workspace
+
+# Start claude auth login in a hidden tmux window — it starts a local
+# callback server and waits. The hidden window provides the TTY it needs.
+tmux new-window -d -t envhaven -n _auth \
+  "BROWSER=$BROWSER_WRAPPER claude auth login 2>/dev/null"
+
+printf "\n  Starting authentication"
+for i in $(seq 1 20); do
+  [ -s "$AUTH_URL_FILE" ] && break
+  printf "."
+  sleep 0.5
+done
+echo ""
+
+if [ ! -s "$AUTH_URL_FILE" ]; then
+  echo ""
+  echo "  Could not start auth flow."
+  echo "  You may already be logged in — check with: claude auth status"
+  echo "  Or try running: claude auth login"
+  exit 1
+fi
+
+AUTH_URL=$(cat "$AUTH_URL_FILE")
+
+if [ ! -x "$BROWSER_HELPER" ]; then
+  echo ""
+  echo "  Open this URL in your browser:"
+  echo ""
+  echo "  $AUTH_URL"
+fi
+
+cat << 'BANNER'
+
+  ┌───────────────────────────────────────────────────┐
+  │  After signing in, you may be redirected to a     │
+  │  page that doesn't load — this is expected.       │
+  │                                                   │
+  │  Copy the URL from your address bar and paste it  │
+  │  below to complete login.                         │
+  └───────────────────────────────────────────────────┘
+
+BANNER
+
+printf "  Paste URL: "
+read -r CALLBACK_URL
+
+if [ -z "$CALLBACK_URL" ]; then
+  echo ""
+  echo "  Cancelled."
+  exit 1
+fi
+
+# Relay the callback to Claude Code's local server inside the container.
+# The browser can't reach localhost:PORT, but curl from here can.
+HTTP_CODE=$(curl -sS -o /dev/null -w "%{http_code}" "$CALLBACK_URL" 2>/dev/null) || HTTP_CODE="000"
+
+case "$HTTP_CODE" in
+  200|302)
+    for i in $(seq 1 5); do
+      if claude auth status --text 2>/dev/null | grep -q "Login method"; then
+        echo ""
+        echo "  ✓ Login successful! Run 'claude' to start."
+        echo ""
+        exit 0
+      fi
+      sleep 1
+    done
+    echo ""
+    echo "  ⚠ Callback accepted but auth not confirmed yet."
+    echo "  Check with: claude auth status"
+    echo ""
+    ;;
+  *)
+    echo ""
+    echo "  ✗ Could not complete login (HTTP $HTTP_CODE)."
+    echo "  Try again, or set ANTHROPIC_API_KEY as an alternative."
+    echo ""
+    ;;
+esac

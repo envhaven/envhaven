@@ -17,7 +17,7 @@
       "id": "claude",
       "name": "Claude Code",
       "command": "claude",
-      "authCommand": "claude auth login",
+      "authCommand": "claude-auth-helper",
       "description": "Anthropic's official CLI",
       "docsUrl": "https://docs.anthropic.com/en/docs/claude-code",
       "envVars": ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],

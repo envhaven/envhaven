@@ -230,12 +230,13 @@ COPY runtime/scripts/envhaven-welcome.sh /defaults/envhaven-welcome.sh
 COPY runtime/scripts/envhaven-status /opt/envhaven/bin/envhaven
 COPY runtime/scripts/envhaven-version-check /opt/envhaven/bin/envhaven-version-check
 COPY runtime/scripts/tmux-copy-hint /opt/envhaven/bin/tmux-copy-hint
+COPY runtime/scripts/claude-auth-helper /opt/envhaven/bin/claude-auth-helper
 COPY tool-definitions.json /opt/envhaven/tool-definitions.json
 COPY runtime/templates/claude-settings.json /defaults/claude-settings.json
 COPY runtime/templates/codex-config.toml /defaults/codex-config.toml
 COPY runtime/scripts/bashrc-additions /defaults/bashrc-additions
 COPY runtime/scripts/zshrc-additions /defaults/zshrc-additions
-RUN chmod +x /defaults/envhaven-welcome.sh /opt/envhaven/bin/envhaven /opt/envhaven/bin/envhaven-version-check /opt/envhaven/bin/tmux-copy-hint
+RUN chmod +x /defaults/envhaven-welcome.sh /opt/envhaven/bin/envhaven /opt/envhaven/bin/envhaven-version-check /opt/envhaven/bin/tmux-copy-hint /opt/envhaven/bin/claude-auth-helper
 
 # ============================================
 # Environment & Runtime Configuration
