@@ -323,65 +323,67 @@ export function SshSection() {
   };
 
   return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-      <CollapsibleTrigger asChild>
-        <button
-          className="flex w-full items-center justify-between rounded-sm px-1 py-1 text-[11px] font-medium text-muted-foreground hover:bg-muted/50 hover:text-foreground group transition-colors cursor-pointer"
-        >
-          <span className="flex items-center gap-1.5">
+    <div className="space-y-2">
+      <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+        <CollapsibleTrigger asChild>
+          <button className="flex w-full items-center gap-2 rounded-md px-1 py-1 text-left hover:bg-accent">
             <ChevronRight
-              className={`h-3.5 w-3.5 transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`}
+              className={`h-3 w-3 shrink-0 text-muted-foreground transition-transform ${
+                isOpen ? 'rotate-90' : ''
+              }`}
             />
-            Remote Access
-          </span>
-        </button>
-      </CollapsibleTrigger>
+            <span className="flex-1 text-[11px] font-semibold uppercase tracking-wide text-section-header">
+              Remote Access
+            </span>
+          </button>
+        </CollapsibleTrigger>
 
-      <CollapsibleContent className="collapsible-content overflow-hidden">
-        <div className="space-y-3 pt-2 pb-1">
-          <div className="flex items-start gap-1.5">
-            <code
-              className="flex-1 min-w-0 break-all rounded-sm bg-muted px-2 py-1.5 font-mono text-[10px] leading-relaxed text-foreground"
-              title={havenCommand}
-            >
-              {havenCommand}
-            </code>
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 shrink-0"
-                    onClick={handleCopy}
-                  >
-                    <Copy className="h-3.5 w-3.5" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Copy Haven command</TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          </div>
-
-          {!workspace.sshConfigured && (
-            <p className="text-[10px] text-yellow-600 dark:text-yellow-500">
-              Set <span className="font-mono">ENVHAVEN_SSH_HOST</span> for correct command
-            </p>
-          )}
-
-          <div className="space-y-2">
-            <div className="space-y-1">
-              <span className="text-[10px] text-muted-foreground">Import public keys from GitHub</span>
-              <GitHubKeysInput />
+        <CollapsibleContent className="collapsible-content overflow-hidden">
+          <div className="ml-1.5 space-y-3 border-l border-border/30 pt-2 pb-1 pl-2">
+            <div className="flex items-start gap-1.5">
+              <code
+                className="flex-1 min-w-0 break-all rounded-sm bg-muted px-2 py-1.5 font-mono text-[10px] leading-relaxed text-foreground"
+                title={havenCommand}
+              >
+                {havenCommand}
+              </code>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 shrink-0"
+                      onClick={handleCopy}
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Copy Haven command</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             </div>
-            <div className="space-y-1">
-              <span className="text-[10px] text-muted-foreground">Or paste a public key directly</span>
-              <SshKeyInput />
+
+            {!workspace.sshConfigured && (
+              <p className="text-[10px] text-yellow-600 dark:text-yellow-500">
+                Set <span className="font-mono">ENVHAVEN_SSH_HOST</span> for correct command
+              </p>
+            )}
+
+            <div className="space-y-2">
+              <div className="space-y-1">
+                <span className="text-[10px] text-muted-foreground">Import public keys from GitHub</span>
+                <GitHubKeysInput />
+              </div>
+              <div className="space-y-1">
+                <span className="text-[10px] text-muted-foreground">Or paste a public key directly</span>
+                <SshKeyInput />
+              </div>
             </div>
           </div>
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
+        </CollapsibleContent>
+      </Collapsible>
+    </div>
   );
 }
 

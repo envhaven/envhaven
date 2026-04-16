@@ -1,15 +1,23 @@
 import { useEffect } from 'react';
 
+import { ExternalLink } from 'lucide-react';
 import { vscode, type ExtensionToWebviewMessage } from './lib/vscode';
 import { useWorkspaceStore } from './stores/workspace-store';
 import { ToolLauncher } from './components/tool-launcher';
 import { TerminalsPanel } from './components/terminals-panel';
+import { ResourcesPanel } from './components/resources-panel';
 import { WorkspaceInfo, SshSection, TryEnvHavenCard, VersionSection } from './components/workspace-info';
 import { Skeleton } from './components/ui/skeleton';
-import { Separator } from './components/ui/separator';
 
 export default function App() {
-  const { isLoading, setWorkspace, workspace, setPortUpdateStatus, updateTerminals } = useWorkspaceStore();
+  const {
+    isLoading,
+    setWorkspace,
+    workspace,
+    setPortUpdateStatus,
+    updateTerminals,
+    setResources,
+  } = useWorkspaceStore();
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent<ExtensionToWebviewMessage>) => {
@@ -24,6 +32,11 @@ export default function App() {
         case 'updateTerminals':
           if (message.tmuxWindows) {
             updateTerminals(message.tmuxWindows);
+          }
+          break;
+        case 'updateResources':
+          if (message.resources) {
+            setResources(message.resources);
           }
           break;
         case 'portUpdateSuccess':
@@ -43,7 +56,7 @@ export default function App() {
     return () => {
       window.removeEventListener('message', handleMessage);
     };
-  }, [setWorkspace, setPortUpdateStatus, updateTerminals]);
+  }, [setWorkspace, setPortUpdateStatus, updateTerminals, setResources]);
 
   const handleOpenDocs = () => {
     vscode.postMessage({ command: 'openDocs' });
@@ -73,28 +86,26 @@ export default function App() {
   const isManaged = workspace?.isManaged ?? false;
 
   return (
-    <div className="flex h-full flex-col p-3">
+    <div className="flex h-full flex-col p-3 pb-6">
       <main className="flex-1 space-y-5">
         <TerminalsPanel />
         <ToolLauncher />
+        <ResourcesPanel />
+        <SshSection />
         <WorkspaceInfo />
       </main>
 
-      <footer className="mt-auto pt-4 space-y-3">
-        <Separator />
-        
+      <footer className="mt-auto space-y-3 pt-4">
         {!isManaged && <VersionSection />}
-        
-        <SshSection />
-        
+
         {!isManaged && <TryEnvHavenCard />}
 
-        <div className="flex gap-3 pt-1">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1 text-[11px] text-muted-foreground">
           <button
-            className="text-[11px] text-link hover:underline"
+            className="inline-flex items-center gap-1 hover:text-foreground hover:underline"
             onClick={handleOpenDocs}
           >
-            Docs
+            <ExternalLink className="h-3 w-3" /> Docs
           </button>
         </div>
       </footer>

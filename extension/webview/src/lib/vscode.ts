@@ -6,6 +6,26 @@ export interface TmuxWindow {
   active: boolean;
 }
 
+export type ProcessCategory = 'pane' | 'user' | 'child';
+
+export interface ProcessInfo {
+  pid: number;
+  ppid: number;
+  starttime: number;
+  name: string;
+  cmd: string;
+  cpuPct: number;
+  memMb: number;
+  category: ProcessCategory;
+}
+
+export interface ResourceSnapshot {
+  cpu: { pct: number; nCpus: number };
+  ram: { usedMb: number; totalMb: number; pct: number };
+  processes: ProcessInfo[];
+  capturedAt: number;
+}
+
 export interface WebviewToExtensionMessage {
   command:
     | 'runTool'
@@ -23,6 +43,7 @@ export interface WebviewToExtensionMessage {
     | 'switchTerminal'
     | 'newTerminal'
     | 'killTerminal'
+    | 'killProcess'
     | 'ready';
   tool?: string;
   toolName?: string;
@@ -35,14 +56,22 @@ export interface WebviewToExtensionMessage {
   username?: string;
   port?: number;
   windowIndex?: number;
+  pid?: number;
+  starttime?: number;
 }
 
 export interface ExtensionToWebviewMessage {
-  command: 'updateWorkspace' | 'portUpdateSuccess' | 'portUpdateError' | 'updateTerminals';
+  command:
+    | 'updateWorkspace'
+    | 'portUpdateSuccess'
+    | 'portUpdateError'
+    | 'updateTerminals'
+    | 'updateResources';
   workspace?: WorkspaceInfo;
   port?: number;
   error?: string;
   tmuxWindows?: TmuxWindow[];
+  resources?: ResourceSnapshot;
 }
 
 export interface AITool {

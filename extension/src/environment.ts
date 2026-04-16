@@ -13,7 +13,7 @@ const DEFAULT_TIMEOUT_MS = 2000;
  * Node's exec timeout only rejects the promise but doesn't kill the spawned process.
  * This is the ONLY way to spawn processes in this module - prevents zombie accumulation.
  */
-function execSafe(command: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<{ stdout: string; stderr: string }> {
+export function execSafe(command: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn('sh', ['-c', command], {
       stdio: ['ignore', 'pipe', 'pipe'],

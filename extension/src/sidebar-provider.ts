@@ -4,14 +4,22 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawn } from 'child_process';
 import { getWorkspaceInfo, getTmuxWindows } from './environment';
+import { snapshot as resourceSnapshot, signalProcess } from './resource-monitor';
+import { TmuxControl } from './tmux-control';
 
 export class SidebarProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'envhaven.sidebarView';
 
   private _view?: vscode.WebviewView;
   private _pollingInterval?: ReturnType<typeof setInterval>;
+  private _tmuxControl = new TmuxControl('envhaven');
 
-  constructor(private readonly _extensionUri: vscode.Uri) {}
+  constructor(private readonly _extensionUri: vscode.Uri) {
+    this._tmuxControl.on((e) => {
+      if (e === 'change') this._refreshTerminalsOnly();
+    });
+    void this._tmuxControl.start();
+  }
 
   // Terminal location helper - uses editor area instead of panel
   private _terminalLocation(preserveFocus: boolean): vscode.TerminalEditorLocationOptions {
@@ -52,8 +60,19 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private async _refreshResources(): Promise<void> {
+    if (!this._view) return;
+    try {
+      const resources = await resourceSnapshot();
+      this._view.webview.postMessage({ command: 'updateResources', resources });
+    } catch {
+      /* silent — next tick retries */
+    }
+  }
+
   public dispose(): void {
     this._stopPolling();
+    this._tmuxControl.dispose();
   }
 
   public resolveWebviewView(
@@ -83,6 +102,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         case 'ready': {
           this._refreshTerminalsOnly();
           this.refresh();
+          this._refreshResources();
           const hasOpenEditors = vscode.window.visibleTextEditors.length > 0;
           const hasOpenTerminals = vscode.window.terminals.length > 0;
           if (!hasOpenEditors && !hasOpenTerminals) {
@@ -175,15 +195,36 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         case 'openPlatform':
           vscode.env.openExternal(vscode.Uri.parse('https://envhaven.com'));
           break;
+
+        case 'killProcess': {
+          if (typeof message.pid !== 'number' || typeof message.starttime !== 'number') break;
+          const { pid, starttime } = message;
+          const term = signalProcess(pid, starttime, 'SIGTERM');
+          if (!term.ok) {
+            vscode.window.showWarningMessage(
+              `Cannot terminate PID ${pid}: ${term.reason ?? 'unknown'}`
+            );
+            break;
+          }
+          await this._refreshResources();
+          setTimeout(async () => {
+            const kill = signalProcess(pid, starttime, 'SIGKILL');
+            if (kill.ok) await this._refreshResources();
+          }, 2000);
+          break;
+        }
       }
     });
   }
 
   private _startPolling(): void {
     if (this._pollingInterval) return;
+    // Terminal state is pushed via tmux control mode; this poll is only a
+    // safety net + the cadence for workspace info and /proc snapshots.
     this._pollingInterval = setInterval(() => {
       this._refreshTerminalsOnly();
       this.refresh();
+      this._refreshResources();
     }, 5000);
   }
 
@@ -233,6 +274,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   private async _switchTmuxWindow(index: number): Promise<void> {
     await this._runTmuxCommand(`tmux select-window -t envhaven:${index}`);
     await this._refreshTerminalsOnly();
+    this._ensureTerminalVisible();
   }
 
   private async _newTmuxWindow(): Promise<void> {
