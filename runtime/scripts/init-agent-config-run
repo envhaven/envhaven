@@ -15,6 +15,17 @@ else
     echo "Claude Code: settings.json exists, skipping"
 fi
 
+# Claude Code: skip first-launch onboarding (theme + login-method pickers).
+# Auth lives in .claude/.credentials.json; this file only gates onboarding UI.
+CLAUDE_CONFIG="/config/.claude.json"
+if [ ! -f "$CLAUDE_CONFIG" ]; then
+    cp /defaults/claude-config.json "$CLAUDE_CONFIG"
+    chown abc:abc "$CLAUDE_CONFIG"
+    echo "Claude Code: onboarding pre-seeded"
+else
+    echo "Claude Code: .claude.json exists, skipping"
+fi
+
 # Codex: yolo mode (no sandbox, no approval)
 CODEX_DIR="/config/.codex"
 CODEX_CONFIG="$CODEX_DIR/config.toml"

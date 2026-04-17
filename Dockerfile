@@ -233,6 +233,7 @@ COPY runtime/scripts/tmux-copy-hint /opt/envhaven/bin/tmux-copy-hint
 COPY runtime/scripts/claude-auth-helper /opt/envhaven/bin/claude-auth-helper
 COPY tool-definitions.json /opt/envhaven/tool-definitions.json
 COPY runtime/templates/claude-settings.json /defaults/claude-settings.json
+COPY runtime/templates/claude-config.json /defaults/claude-config.json
 COPY runtime/templates/codex-config.toml /defaults/codex-config.toml
 COPY runtime/scripts/bashrc-additions /defaults/bashrc-additions
 COPY runtime/scripts/zshrc-additions /defaults/zshrc-additions
