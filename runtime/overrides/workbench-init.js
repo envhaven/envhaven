@@ -55,7 +55,8 @@
       {"id":"workbench.panel.chat","pinned":true,"visible":false,"order":1},
       {"id":"workbench.viewContainer.agentSessions","pinned":true,"visible":false,"order":6}
     ]),
-    "workbench.panel.alignment": "center"
+    "workbench.panel.alignment": "center",
+    "welcomeOnboarding.state": "true"
   };
 
   function applyDefaults() {

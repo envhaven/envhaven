@@ -77,6 +77,7 @@
     "editor.tabSize": 4
   },
   "chat.commandCenter.enabled": false,
+  "chat.disableAIFeatures": true,
   "workbench.statusBar.visible": false,
   "terminal.integrated.hideOnStartup": "never",
   "window.title": "${dirty}${activeEditorShort}${separator}${rootName} — EnvHaven",
