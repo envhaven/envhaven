@@ -16,16 +16,12 @@ trap cleanup EXIT INT TERM
 
 rm -f "$AUTH_URL_FILE"
 
-# Browser wrapper: captures the real URL (with localhost callback port),
-# then opens it in the user's browser via code-server.
+# Browser wrapper: captures the real auth URL (with localhost callback port)
+# that claude hands to $BROWSER. The main script opens it after the user
+# has read the instructions and confirmed with Enter.
 cat > "$BROWSER_WRAPPER" << 'EOF'
 #!/bin/sh
-# Save URL immediately so the main script can show the banner first.
-# Delay browser open so the user has time to read the instructions.
 echo "$1" > /tmp/.eh-auth-url
-sleep 4
-[ -x /app/code-server/lib/vscode/bin/helpers/browser.sh ] && \
-  /app/code-server/lib/vscode/bin/helpers/browser.sh "$1" 2>/dev/null
 exit 0
 EOF
 chmod +x "$BROWSER_WRAPPER"
@@ -38,13 +34,13 @@ tmux has-session -t envhaven 2>/dev/null || \
 tmux new-window -d -t envhaven -n _auth \
   "BROWSER=$BROWSER_WRAPPER claude auth login 2>/dev/null"
 
-printf "\n  Starting authentication"
+# Wait (silently) for claude auth login to emit the URL via BROWSER_WRAPPER.
+# Typical latency is well under a second; 10s is the upper bound before we
+# assume something went wrong and show the error path below.
 for i in $(seq 1 20); do
   [ -s "$AUTH_URL_FILE" ] && break
-  printf "."
   sleep 0.5
 done
-echo ""
 
 if [ ! -s "$AUTH_URL_FILE" ]; then
   echo ""
@@ -56,24 +52,30 @@ fi
 
 AUTH_URL=$(cat "$AUTH_URL_FILE")
 
-if [ ! -x "$BROWSER_HELPER" ]; then
+cat << 'BANNER'
+
+  ┌───────────────────────────────────────────────────┐
+  │  Quick sign-in to Claude:                         │
+  │                                                   │
+  │  1. Click Open when prompted.                     │
+  │  2. Authorize Claude Code for this workspace.     │
+  │  3. The final page will be blank — copy its URL   │
+  │     and paste it here to finish.                  │
+  └───────────────────────────────────────────────────┘
+
+BANNER
+
+if [ -x "$BROWSER_HELPER" ]; then
+  printf "  Press Enter to start... "
+  read -r _
+  "$BROWSER_HELPER" "$AUTH_URL" >/dev/null 2>&1 &
+else
   echo ""
   echo "  Open this URL in your browser:"
   echo ""
   echo "  $AUTH_URL"
+  echo ""
 fi
-
-cat << 'BANNER'
-
-  ┌───────────────────────────────────────────────────┐
-  │  After signing in, you may be redirected to a     │
-  │  page that doesn't load — this is expected.       │
-  │                                                   │
-  │  Copy the URL from your address bar and paste it  │
-  │  below to complete login.                         │
-  └───────────────────────────────────────────────────┘
-
-BANNER
 
 printf "  Paste URL: "
 read -r CALLBACK_URL
