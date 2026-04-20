@@ -1,0 +1,25 @@
+#!/usr/bin/with-contenv bash
+# Web UI gate service - disables code-server if ENVHAVEN_DISABLE_WEBUI=true
+
+if [ "${ENVHAVEN_DISABLE_WEBUI:-}" != "true" ]; then
+    # Web UI enabled (default), this service not needed
+    s6-svc -Od .
+    exit 0
+fi
+
+echo "ENVHAVEN_DISABLE_WEBUI=true: Disabling web UI..."
+
+# Wait for code-server service to exist
+while [ ! -d /run/service/svc-code-server ]; do
+    sleep 0.5
+done
+
+# Bring down code-server and keep it down
+s6-svc -d /run/service/svc-code-server
+echo "Web UI disabled"
+
+# Monitor and keep code-server down (in case something tries to restart it)
+while true; do
+    sleep 5
+    s6-svc -d /run/service/svc-code-server 2>/dev/null
+done
