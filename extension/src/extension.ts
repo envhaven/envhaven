@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import { SidebarProvider } from './sidebar-provider';
+import { showCommandPalette } from './command-palette';
 
 const TMUX_CLIPBOARD_FILE = '/tmp/.envhaven-clipboard';
 const EXTENSION_FLAG_FILE = '/tmp/.envhaven-extension-active';
@@ -35,6 +36,12 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('envhaven.refreshSidebar', () => {
       sidebarProvider.refresh();
     })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('envhaven.openCommandPalette', () =>
+      showCommandPalette(sidebarProvider)
+    )
   );
 
   setTimeout(() => {

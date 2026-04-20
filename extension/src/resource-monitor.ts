@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from 'fs';
+import { readFileSync, readdirSync, statfsSync } from 'fs';
 import { execSafe } from './environment';
 
 export type ProcessCategory = 'pane' | 'user' | 'child';
@@ -25,9 +25,16 @@ export interface RamStats {
   pct: number;
 }
 
+export interface DiskStats {
+  usedGb: number;
+  totalGb: number;
+  pct: number;
+}
+
 export interface ResourceSnapshot {
   cpu: CpuStats;
   ram: RamStats;
+  disk: DiskStats;
   processes: ProcessInfo[];
   capturedAt: number;
 }
@@ -126,6 +133,8 @@ export async function snapshot(): Promise<ResourceSnapshot> {
   const usedKb = Math.max(0, memTotalKb - availKb);
   const ramPct = clamp((usedKb / memTotalKb) * 100, 0, 100);
 
+  const disk = readDiskStats('/');
+
   return {
     cpu: { pct: cpuPct, nCpus },
     ram: {
@@ -133,9 +142,40 @@ export async function snapshot(): Promise<ResourceSnapshot> {
       totalMb: Math.round(memTotalKb / 1024),
       pct: ramPct,
     },
+    disk,
     processes,
     capturedAt: Date.now(),
   };
+}
+
+/**
+ * Whole-disk usage via statfs. Root filesystem is the right target in both
+ * envhaven deployment shapes: on managed VMs the disk quota is enforced
+ * against `/`, and on self-hosted containers the overlay + `/config` volume
+ * live on the same underlying device the user cares about filling up.
+ */
+function readDiskStats(mountPoint: string): DiskStats {
+  try {
+    const s = statfsSync(mountPoint);
+    const totalBytes = Number(s.blocks) * s.bsize;
+    const freeBytes = Number(s.bavail) * s.bsize;
+    const usedBytes = Math.max(0, totalBytes - freeBytes);
+    const gb = 1024 * 1024 * 1024;
+    const totalGb = totalBytes > 0 ? totalBytes / gb : 0;
+    const usedGb = totalBytes > 0 ? usedBytes / gb : 0;
+    const pct = totalBytes > 0 ? clamp((usedBytes / totalBytes) * 100, 0, 100) : 0;
+    return {
+      usedGb: Math.round(usedGb * 10) / 10,
+      totalGb: Math.round(totalGb * 10) / 10,
+      pct,
+    };
+  } catch (err) {
+    // statfs can fail if the mount point disappears mid-syscall or the fs
+    // driver returns EIO. Log so it's visible in the extension host output
+    // rather than silently painting 0% in the sidebar.
+    console.warn(`envhaven: statfs(${mountPoint}) failed`, err);
+    return { usedGb: 0, totalGb: 0, pct: 0 };
+  }
 }
 
 export function signalProcess(

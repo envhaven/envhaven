@@ -1,12 +1,19 @@
 import { useEffect } from 'react';
 
-import { ExternalLink } from 'lucide-react';
+import { ArrowUpCircle, Cloud, ExternalLink, Plug } from 'lucide-react';
 import { vscode, type ExtensionToWebviewMessage } from './lib/vscode';
-import { useWorkspaceStore } from './stores/workspace-store';
+import { useWorkspaceStore, YOUNG_WORKSPACE_MAX_AGE_SEC } from './stores/workspace-store';
 import { ToolLauncher } from './components/tool-launcher';
 import { TerminalsPanel } from './components/terminals-panel';
 import { ResourcesPanel } from './components/resources-panel';
-import { WorkspaceInfo, SshSection, TryEnvHavenCard, VersionSection } from './components/workspace-info';
+import { WorkspaceInfo } from './components/workspace-info';
+import { SkillsPanel } from './components/skills-panel';
+import { OnboardingCard } from './components/onboarding-card';
+import { SshSheet } from './components/ssh-sheet';
+import { ProcessSheet } from './components/process-sheet';
+import { SkillsSheet } from './components/skills-sheet';
+import { AiToolsSheet } from './components/ai-tools-sheet';
+import { FooterChip } from './components/ui/footer-chip';
 import { Skeleton } from './components/ui/skeleton';
 
 export default function App() {
@@ -17,6 +24,16 @@ export default function App() {
     setPortUpdateStatus,
     updateTerminals,
     setResources,
+    setOpenSheet,
+    setInstalledSkills,
+    setSkillSearchResults,
+    setInstallInFlight,
+    setRemoveInFlight,
+    setSkillMarkdown,
+    setSshKeyOp,
+    markDocsOpened,
+    isFreshWorkspace,
+    getWorkspaceAgeSec,
   } = useWorkspaceStore();
 
   useEffect(() => {
@@ -47,6 +64,45 @@ export default function App() {
           setPortUpdateStatus('error', message.error);
           setTimeout(() => setPortUpdateStatus('idle'), 3000);
           break;
+        case 'updateInstalledSkills':
+          if (message.installedSkills) {
+            setInstalledSkills(message.installedSkills);
+          }
+          break;
+        case 'skillSearchResult':
+          if (typeof message.query === 'string' && message.results) {
+            setSkillSearchResults(message.query, message.results, message.error);
+          }
+          break;
+        case 'skillMarkdownResult':
+          if (message.source && message.skillId) {
+            const key = `${message.source}/${message.skillId}`;
+            setSkillMarkdown(key, message.markdown, message.frontmatter, message.error);
+          }
+          break;
+        case 'skillInstallComplete':
+          if (message.source && message.skillId) {
+            const key = `${message.source}/${message.skillId}`;
+            setInstallInFlight(key, false);
+          }
+          break;
+        case 'skillRemoveComplete':
+          if (message.skillName) {
+            setRemoveInFlight(message.skillName, false);
+          }
+          break;
+        case 'sshKeyResult':
+          if (message.sshKeyOpSource && typeof message.success === 'boolean') {
+            setSshKeyOp(message.sshKeyOpSource, {
+              status: message.success ? 'success' : 'error',
+              error: message.error,
+              lastTs: Date.now(),
+            });
+          }
+          break;
+        case 'openSheet':
+          if (message.sheet) setOpenSheet(message.sheet);
+          break;
       }
     };
 
@@ -56,11 +112,19 @@ export default function App() {
     return () => {
       window.removeEventListener('message', handleMessage);
     };
-  }, [setWorkspace, setPortUpdateStatus, updateTerminals, setResources]);
-
-  const handleOpenDocs = () => {
-    vscode.postMessage({ command: 'openDocs' });
-  };
+  }, [
+    setWorkspace,
+    setPortUpdateStatus,
+    updateTerminals,
+    setResources,
+    setInstalledSkills,
+    setSkillSearchResults,
+    setInstallInFlight,
+    setRemoveInFlight,
+    setSkillMarkdown,
+    setSshKeyOp,
+    setOpenSheet,
+  ]);
 
   if (isLoading) {
     return (
@@ -84,31 +148,99 @@ export default function App() {
   }
 
   const isManaged = workspace?.isManaged ?? false;
+  const sshEnabled = !!workspace?.sshEnabled;
+  const updateAvailable = !!workspace?.version?.updateAvailable;
+  const currentVersion = workspace?.version?.current ?? null;
+  const latestVersion = workspace?.version?.latest ?? null;
+
+  const isFresh = isFreshWorkspace();
+  const ageSec = getWorkspaceAgeSec();
+  // When age is unknown (marker missing), err on the side of the "older user"
+  // UX: hide first-run chips rather than nag an established user.
+  const isYoungWorkspace = ageSec !== null && ageSec < YOUNG_WORKSPACE_MAX_AGE_SEC;
+  const showTryChip = !isManaged && isYoungWorkspace;
+  const showDocsChip = isYoungWorkspace;
+
+  const handleOpenDocs = () => {
+    markDocsOpened();
+    vscode.postMessage({ command: 'openDocs' });
+  };
+
+  const handleOpenPlatform = () => {
+    vscode.postMessage({ command: 'openPlatform' });
+  };
+
+  const handleCopyPullCommand = () => {
+    vscode.postMessage({
+      command: 'copyToClipboard',
+      text: 'docker pull ghcr.io/envhaven/envhaven:latest',
+    });
+  };
 
   return (
-    <div className="flex h-full flex-col p-3 pb-6">
+    <div className="flex h-full flex-col p-3 pb-3">
       <main className="flex-1 space-y-5">
-        <TerminalsPanel />
-        <ToolLauncher />
-        <ResourcesPanel />
-        <SshSection />
-        <WorkspaceInfo />
+        {isFresh ? (
+          <>
+            <OnboardingCard />
+            <TerminalsPanel />
+            <ToolLauncher />
+          </>
+        ) : (
+          <>
+            <TerminalsPanel />
+            <ToolLauncher />
+            <WorkspaceInfo />
+            <ResourcesPanel />
+            <SkillsPanel />
+          </>
+        )}
       </main>
 
-      <footer className="mt-auto space-y-3 pt-4">
-        {!isManaged && <VersionSection />}
+      <footer className="mt-auto flex flex-wrap items-center gap-1 pt-4">
+        {sshEnabled && !isFresh && (
+          <FooterChip
+            icon={<Plug className="h-3 w-3" />}
+            onClick={() => setOpenSheet('ssh')}
+          >
+            SSH
+          </FooterChip>
+        )}
 
-        {!isManaged && <TryEnvHavenCard />}
+        {updateAvailable && !isManaged && (
+          <FooterChip
+            icon={<ArrowUpCircle className="h-3 w-3" />}
+            onClick={handleCopyPullCommand}
+            variant="warning"
+            title={`Update: ${currentVersion} → ${latestVersion}\nClick to copy docker pull command`}
+          >
+            {currentVersion}→{latestVersion}
+          </FooterChip>
+        )}
 
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1 text-[11px] text-muted-foreground">
-          <button
-            className="inline-flex items-center gap-1 hover:text-foreground hover:underline"
+        {showTryChip && (
+          <FooterChip
+            icon={<Cloud className="h-3 w-3" />}
+            onClick={handleOpenPlatform}
+          >
+            Try EnvHaven Managed
+          </FooterChip>
+        )}
+
+        {showDocsChip && (
+          <FooterChip
+            icon={<ExternalLink className="h-3 w-3" />}
             onClick={handleOpenDocs}
           >
-            <ExternalLink className="h-3 w-3" /> Docs
-          </button>
-        </div>
+            Docs
+          </FooterChip>
+        )}
       </footer>
+
+      <SshSheet />
+      <ProcessSheet />
+      <SkillsSheet />
+      <AiToolsSheet />
     </div>
   );
 }

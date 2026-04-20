@@ -11,6 +11,7 @@
       "docsUrl": "https://opencode.ai/docs",
       "envVars": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"],
       "authFiles": [".local/share/opencode/auth.json"],
+      "skillsAgent": "opencode",
       "setupSteps": []
     },
     {
@@ -22,6 +23,7 @@
       "docsUrl": "https://docs.anthropic.com/en/docs/claude-code",
       "envVars": ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
       "authFiles": [".claude/.credentials.json"],
+      "skillsAgent": "claude-code",
       "setupSteps": []
     },
     {
@@ -33,6 +35,7 @@
       "docsUrl": "https://github.com/google-gemini/gemini-cli",
       "envVars": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
       "authFiles": [".gemini/oauth_creds.json", ".gemini/settings.json"],
+      "skillsAgent": "gemini-cli",
       "setupSteps": []
     },
     {
@@ -44,6 +47,7 @@
       "docsUrl": "https://github.com/openai/codex",
       "envVars": ["OPENAI_API_KEY"],
       "authFiles": [".codex/auth.json"],
+      "skillsAgent": "codex",
       "setupSteps": []
     },
     {
@@ -67,6 +71,7 @@
       "envVars": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
       "authFiles": [],
       "authCheck": "goose",
+      "skillsAgent": "goose",
       "setupSteps": []
     },
     {
@@ -78,6 +83,7 @@
       "docsUrl": "https://github.com/mistralai/mistral-vibe",
       "envVars": ["MISTRAL_API_KEY"],
       "authFiles": [],
+      "skillsAgent": "mistral-vibe",
       "setupSteps": []
     },
     {
@@ -89,6 +95,7 @@
       "docsUrl": "https://ampcode.com/manual",
       "envVars": ["AMP_API_KEY"],
       "authFiles": [".config/amp/auth.json", ".amp/credentials"],
+      "skillsAgent": "amp",
       "setupSteps": []
     },
     {
@@ -100,6 +107,7 @@
       "docsUrl": "https://docs.augmentcode.com/cli/overview",
       "envVars": ["AUGMENT_SESSION_AUTH"],
       "authFiles": [],
+      "skillsAgent": "augment",
       "setupSteps": []
     },
     {
@@ -111,6 +119,7 @@
       "docsUrl": "https://docs.factory.ai",
       "envVars": ["FACTORY_API_KEY"],
       "authFiles": [],
+      "skillsAgent": "droid",
       "setupSteps": []
     },
     {
@@ -122,6 +131,7 @@
       "docsUrl": "https://kiro.dev/docs/cli",
       "envVars": [],
       "authFiles": [".kiro/settings/cli.json"],
+      "skillsAgent": "kiro-cli",
       "setupSteps": []
     },
     {
@@ -133,7 +143,65 @@
       "docsUrl": "https://qwenlm.github.io/qwen-code-docs",
       "envVars": ["QWEN_API_KEY", "OPENAI_API_KEY"],
       "authFiles": [".qwen/config.json", ".config/qwen/config.json"],
+      "skillsAgent": "qwen-code",
       "setupSteps": []
     }
-  ]
+  ],
+  "envVarMeta": {
+    "ANTHROPIC_API_KEY": {
+      "placeholder": "sk-ant-...",
+      "hint": "Pay-per-use. Get key at console.anthropic.com",
+      "url": "https://console.anthropic.com/settings/keys"
+    },
+    "CLAUDE_CODE_OAUTH_TOKEN": {
+      "placeholder": "sk-ant-oat01-...",
+      "hint": "Uses your Claude subscription. Run `claude setup-token` locally to generate.",
+      "url": null
+    },
+    "OPENAI_API_KEY": {
+      "placeholder": "sk-...",
+      "hint": "Pay-per-use. Get key at platform.openai.com",
+      "url": "https://platform.openai.com/api-keys"
+    },
+    "GEMINI_API_KEY": {
+      "placeholder": "AIza...",
+      "hint": "Free tier available. Get key at aistudio.google.com",
+      "url": "https://aistudio.google.com/apikey"
+    },
+    "GOOGLE_API_KEY": {
+      "placeholder": "AIza...",
+      "hint": "Same format as GEMINI_API_KEY. Get key at aistudio.google.com",
+      "url": "https://aistudio.google.com/apikey"
+    },
+    "OPENROUTER_API_KEY": {
+      "placeholder": "sk-or-...",
+      "hint": "Unified API for hundreds of models. Get key at openrouter.ai",
+      "url": "https://openrouter.ai/keys"
+    },
+    "MISTRAL_API_KEY": {
+      "placeholder": "Paste key...",
+      "hint": "Pay-per-use. Get key at console.mistral.ai",
+      "url": "https://console.mistral.ai/api-keys"
+    },
+    "AMP_API_KEY": {
+      "placeholder": "Paste token...",
+      "hint": "Access token from ampcode.com settings",
+      "url": "https://ampcode.com/settings"
+    },
+    "AUGMENT_SESSION_AUTH": {
+      "placeholder": "Paste session JSON...",
+      "hint": "Run `auggie login` then `auggie token print` to generate.",
+      "url": null
+    },
+    "FACTORY_API_KEY": {
+      "placeholder": "Paste key...",
+      "hint": "Get key from your Factory account at app.factory.ai",
+      "url": "https://app.factory.ai"
+    },
+    "QWEN_API_KEY": {
+      "placeholder": "Paste key...",
+      "hint": "Get key from Alibaba Cloud DashScope console",
+      "url": "https://dashscope.console.aliyun.com"
+    }
+  }
 }

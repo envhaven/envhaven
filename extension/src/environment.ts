@@ -134,6 +134,11 @@ export interface WorkspaceInfo {
   apiUrl: string | null;
   tmuxWindows: TmuxWindow[];
   version: VersionInfo;
+  /** ISO timestamp of workspace first boot, or null when the marker is missing. */
+  createdAt: string | null;
+  /** Placeholder/hint/url per env var name. Shipped to the webview so the
+   *  API-key input can render copy without duplicating the mapping. */
+  envVarMeta: Record<string, EnvVarMeta>;
 }
 
 export interface ToolDefinition {
@@ -146,10 +151,30 @@ export interface ToolDefinition {
   envVars: string[];
   authFiles: string[];
   authCheck?: 'goose';
+  /**
+   * The kebab-case agent id `npx skills add -a <agent>` accepts. Absent when
+   * skills.sh doesn't support this tool (e.g. aider) — install flow reports
+   * it as unsupported.
+   */
+  skillsAgent?: string;
   setupSteps: SetupStep[];
 }
 
-const TOOL_DEFINITIONS: ToolDefinition[] = toolDefinitionsJson.tools as ToolDefinition[];
+export const TOOL_DEFINITIONS: ToolDefinition[] = toolDefinitionsJson.tools as ToolDefinition[];
+
+/**
+ * Per-env-var UI metadata (placeholder, hint, signup URL) for the API-key
+ * input in the webview. Keyed by env var name, shared across tools — e.g.
+ * `ANTHROPIC_API_KEY` is used by both opencode and claude. Source of truth
+ * is tool-definitions.json so new providers only need one file edit.
+ */
+export interface EnvVarMeta {
+  placeholder: string;
+  hint: string;
+  url: string | null;
+}
+export const ENV_VAR_META: Record<string, EnvVarMeta> =
+  (toolDefinitionsJson as { envVarMeta?: Record<string, EnvVarMeta> }).envVarMeta ?? {};
 
 async function commandExists(cmd: string): Promise<boolean> {
   const cached = staticCache.tools.get(cmd);
@@ -204,6 +229,14 @@ function getCachedRcEnvVars(): Map<string, string> {
     staticCache.rcEnvVars = parseRcEnvVars();
   }
   return staticCache.rcEnvVars;
+}
+
+export function invalidateRcEnvVarsCache(): void {
+  staticCache.rcEnvVars = null;
+}
+
+export function getToolDefinitionById(id: string): ToolDefinition | undefined {
+  return TOOL_DEFINITIONS.find((t) => t.id === id);
 }
 
 function getSetEnvVar(varNames: string[]): string | null {
@@ -412,8 +445,11 @@ async function getVersionInfo(isManaged: boolean, apiUrl: string | null): Promis
         }
       }
     }
-  } catch { }
-  
+  } catch {
+    /* network/registry failure — leave `latest` null, the UI just won't show
+       an update prompt this poll cycle and we'll retry on the next refresh */
+  }
+
   const updateAvailable = !!(current && latest && current !== latest);
   
   return { current, latest, updateAvailable };
@@ -449,9 +485,27 @@ async function getExposedPort(isManaged: boolean, workspaceId: string | null, wo
       const data = await response.json() as { exposedPort?: number };
       if (data.exposedPort) return data.exposedPort;
     }
-  } catch {}
+  } catch {
+    /* managed API unreachable — fall back to ENVHAVEN_EXPOSED_PORT/default */
+  }
 
   return fallback;
+}
+
+// The `init-user-config-run` s6 script touches this marker on first boot and
+// leaves it alone afterwards, so its mtime is the workspace's true creation
+// time — persisted across container restarts on the /config volume.
+// Deliberately no fallback to /proc/uptime or Date.now(): both reset on restart
+// and would mis-flag a long-running workspace as brand new.
+const WORKSPACE_CREATED_MARKER = '/config/.workspace-created';
+
+function getWorkspaceCreatedAt(): string | null {
+  try {
+    const stat = fs.statSync(WORKSPACE_CREATED_MARKER);
+    return new Date(stat.mtimeMs).toISOString();
+  } catch {
+    return null;
+  }
 }
 
 export async function getWorkspaceInfo(): Promise<WorkspaceInfo> {
@@ -463,6 +517,7 @@ export async function getWorkspaceInfo(): Promise<WorkspaceInfo> {
   const workspaceToken = process.env._ENVHAVEN_WORKSPACE_TOKEN || null;
   const apiUrl = process.env._ENVHAVEN_API_URL || null;
   const exposedPort = await getExposedPort(isManaged, workspaceId, workspaceToken, apiUrl);
+  const createdAt = getWorkspaceCreatedAt();
 
   const [toolResults, versions, sshEnabled, previewPortOpen, tmuxWindows, versionInfo] = await Promise.all([
     Promise.all(
@@ -516,5 +571,7 @@ export async function getWorkspaceInfo(): Promise<WorkspaceInfo> {
     apiUrl,
     tmuxWindows,
     version: versionInfo,
+    createdAt,
+    envVarMeta: ENV_VAR_META,
   };
 }

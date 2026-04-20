@@ -38,6 +38,10 @@
       {
         "command": "envhaven.copyTerminalSelection",
         "title": "EnvHaven: Copy Terminal Selection"
+      },
+      {
+        "command": "envhaven.openCommandPalette",
+        "title": "EnvHaven: Open Command Palette"
       }
     ],
     "keybindings": [
@@ -45,6 +49,12 @@
         "command": "envhaven.copyTerminalSelection",
         "key": "ctrl+shift+c",
         "when": "terminalFocus"
+      },
+      {
+        "command": "envhaven.openCommandPalette",
+        "key": "ctrl+k",
+        "mac": "cmd+k",
+        "when": "activeViewlet == 'workbench.view.extension.envhaven-sidebar' || focusedView == 'envhaven.sidebarView'"
       }
     ],
     "viewsContainers": {

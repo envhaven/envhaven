@@ -3,9 +3,23 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { spawn } from 'child_process';
-import { getWorkspaceInfo, getTmuxWindows } from './environment';
+import {
+  getWorkspaceInfo,
+  getTmuxWindows,
+  invalidateRcEnvVarsCache,
+  getToolDefinitionById,
+} from './environment';
 import { snapshot as resourceSnapshot, signalProcess } from './resource-monitor';
 import { TmuxControl } from './tmux-control';
+import {
+  listInstalledSkills,
+  searchSkillsSh,
+  fetchSkillMarkdown,
+  parseSkillFrontmatter,
+  stripSkillFrontmatter,
+  installSkill as runInstallSkill,
+  removeSkill as runRemoveSkill,
+} from './skillsService';
 
 export class SidebarProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'envhaven.sidebarView';
@@ -50,6 +64,22 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  public postToWebview(message: { command: string } & Record<string, unknown>): void {
+    this._view?.webview.postMessage(message);
+  }
+
+  // Public actions. The webview triggers these via messages; the native command
+  // palette calls them directly. Keeping one dispatch surface (the message
+  // switch below) routed to these methods avoids a second palette-specific
+  // switch that would drift out of sync.
+  public openSheet(sheet: 'ssh' | 'process' | 'skills' | 'tools'): void {
+    this._view?.webview.postMessage({ command: 'openSheet', sheet });
+  }
+
+  public openTerminal(): void {
+    this._getOrCreateTerminal('Terminal', false).show(false);
+  }
+
   private async _refreshTerminalsOnly(): Promise<void> {
     if (this._view) {
       const tmuxWindows = await getTmuxWindows();
@@ -67,6 +97,21 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       this._view.webview.postMessage({ command: 'updateResources', resources });
     } catch {
       /* silent — next tick retries */
+    }
+  }
+
+  private async _refreshInstalledSkills(): Promise<void> {
+    if (!this._view) return;
+    try {
+      const installedSkills = await listInstalledSkills();
+      this._view.webview.postMessage({
+        command: 'updateInstalledSkills',
+        installedSkills,
+      });
+    } catch (err) {
+      // `npx skills` missing or network-broken — the sidebar will show an
+      // empty Skills panel. Log so devs can see why in the webview console.
+      console.warn('envhaven: listInstalledSkills failed', err);
     }
   }
 
@@ -103,6 +148,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           this._refreshTerminalsOnly();
           this.refresh();
           this._refreshResources();
+          void this._refreshInstalledSkills();
           const hasOpenEditors = vscode.window.visibleTextEditors.length > 0;
           const hasOpenTerminals = vscode.window.terminals.length > 0;
           if (!hasOpenEditors && !hasOpenTerminals) {
@@ -115,7 +161,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         }
 
         case 'runTool':
-          this._runAiTool(message.toolName, message.toolCommand);
+          this.runAiTool(message.toolCommand);
           break;
 
         case 'openToolDocs':
@@ -125,8 +171,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           break;
 
         case 'copySshCommand':
-          await vscode.env.clipboard.writeText(message.command);
-          vscode.window.showInformationMessage('SSH command copied to clipboard');
+          if (typeof message.text === 'string' && message.text) {
+            await vscode.env.clipboard.writeText(message.text);
+            vscode.window.showInformationMessage('SSH command copied to clipboard');
+          } else {
+            console.warn('envhaven: copySshCommand received with no text field', message);
+          }
           break;
 
         case 'copyToClipboard':
@@ -145,6 +195,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           if (message.envVar && message.apiKey) {
             await this._setApiKey(message.envVar, message.apiKey);
             await this.refresh();
+          }
+          break;
+
+        case 'signOutTool':
+          if (typeof message.toolId === 'string' && message.toolId) {
+            await this._signOutTool(message.toolId);
           }
           break;
 
@@ -168,12 +224,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
         case 'switchTerminal':
           if (typeof message.windowIndex === 'number') {
-            await this._switchTmuxWindow(message.windowIndex);
+            await this.switchTmuxWindow(message.windowIndex);
           }
           break;
 
         case 'newTerminal':
-          await this._newTmuxWindow();
+          await this.newTmuxWindow();
           break;
 
         case 'killTerminal':
@@ -213,6 +269,130 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           }, 2000);
           break;
         }
+
+        case 'searchSkills': {
+          const query = typeof message.query === 'string' ? message.query : '';
+          try {
+            const results = await searchSkillsSh(query);
+            this._view?.webview.postMessage({
+              command: 'skillSearchResult',
+              query,
+              results,
+            });
+          } catch (err) {
+            this._view?.webview.postMessage({
+              command: 'skillSearchResult',
+              query,
+              results: [],
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+          break;
+        }
+
+        case 'installSkill': {
+          const source = typeof message.source === 'string' ? message.source : '';
+          const skillId = typeof message.skillId === 'string' ? message.skillId : '';
+          if (!source || !skillId) break;
+          // Scope the install to tools the user has actually authenticated.
+          const workspace = await getWorkspaceInfo();
+          const connectedIds = workspace.aiTools
+            .filter((t) => t.installed && t.authStatus === 'ready')
+            .map((t) => t.id);
+          const res = await runInstallSkill(source, skillId, connectedIds);
+          // Refresh the installed list BEFORE clearing the loading flag so the
+          // webview never has a moment where the button is re-enabled but the
+          // list hasn't caught up yet.
+          await this._refreshInstalledSkills();
+          this._view?.webview.postMessage({
+            command: 'skillInstallComplete',
+            source,
+            skillId,
+            success: res.ok,
+            error: res.error,
+          });
+          if (res.ok) {
+            const agentList = res.agents.join(', ');
+            const skippedNote =
+              res.unsupportedAgents.length > 0
+                ? ` (skipped unsupported: ${res.unsupportedAgents.join(', ')})`
+                : '';
+            vscode.window.showInformationMessage(
+              `Installed ${skillId} for ${agentList}${skippedNote}`
+            );
+          } else {
+            vscode.window.showErrorMessage(
+              `Failed to install ${skillId}: ${res.error ?? 'unknown'}`
+            );
+          }
+          break;
+        }
+
+        case 'fetchSkillMarkdown': {
+          const source = typeof message.source === 'string' ? message.source : '';
+          const skillId = typeof message.skillId === 'string' ? message.skillId : '';
+          if (!source || !skillId) break;
+          try {
+            const raw = await fetchSkillMarkdown(source, skillId);
+            const frontmatter = parseSkillFrontmatter(raw);
+            const markdown = stripSkillFrontmatter(raw);
+            this._view?.webview.postMessage({
+              command: 'skillMarkdownResult',
+              source,
+              skillId,
+              markdown,
+              frontmatter,
+            });
+          } catch (err) {
+            this._view?.webview.postMessage({
+              command: 'skillMarkdownResult',
+              source,
+              skillId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+          break;
+        }
+
+        case 'removeSkill': {
+          const skillName = typeof message.skillName === 'string' ? message.skillName : '';
+          const skillPath = typeof message.skillPath === 'string' ? message.skillPath : '';
+          if (!skillName || !skillPath) break;
+          const res = await runRemoveSkill(skillPath);
+          // Refresh first so the row has disappeared from the list before the
+          // webview clears its removing flag — otherwise the row re-enables
+          // for a tick and can be clicked again.
+          await this._refreshInstalledSkills();
+          this._view?.webview.postMessage({
+            command: 'skillRemoveComplete',
+            skillName,
+            success: res.ok,
+            error: res.error,
+          });
+          if (res.ok) {
+            vscode.window.showInformationMessage(`Removed ${skillName}`);
+          } else {
+            vscode.window.showErrorMessage(`Failed to remove ${skillName}: ${res.error ?? 'unknown error'}`);
+          }
+          break;
+        }
+
+        case 'refreshInstalledSkills':
+          await this._refreshInstalledSkills();
+          break;
+
+        case 'openSkillInEditor': {
+          const skillPath = typeof message.skillPath === 'string' ? message.skillPath : '';
+          if (!skillPath) break;
+          const mdPath = path.join(skillPath, 'SKILL.md');
+          try {
+            const doc = await vscode.workspace.openTextDocument(mdPath);
+            await vscode.window.showTextDocument(doc);
+          } catch (err) {
+            vscode.window.showErrorMessage(`Cannot open ${mdPath}: ${err}`);
+          }
+          break;
+        }
       }
     });
   }
@@ -235,7 +415,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async _runAiTool(toolName: string, command: string): Promise<void> {
+  public async runAiTool(command: string): Promise<void> {
     const hasSession = await this._runTmuxCommand('tmux has-session -t envhaven');
     
     if (hasSession) {
@@ -271,13 +451,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private async _switchTmuxWindow(index: number): Promise<void> {
+  public async switchTmuxWindow(index: number): Promise<void> {
     await this._runTmuxCommand(`tmux select-window -t envhaven:${index}`);
     await this._refreshTerminalsOnly();
     this._ensureTerminalVisible();
   }
 
-  private async _newTmuxWindow(): Promise<void> {
+  public async newTmuxWindow(): Promise<void> {
     const hasSession = await this._runTmuxCommand('tmux has-session -t envhaven');
     if (hasSession) {
       await this._runTmuxCommand('tmux new-window -t envhaven -c /config/workspace');
@@ -333,14 +513,105 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
     if (zshUpdated || bashUpdated) {
       process.env[envVar] = apiKey;
+      invalidateRcEnvVarsCache();
 
-      const files = [zshUpdated && '.zshrc', bashUpdated && '.bashrc'].filter(Boolean).join(' and ');
+      const updated = [zshUpdated && '.zshrc', bashUpdated && '.bashrc'].filter(Boolean) as string[];
+      const files = updated.join(' and ');
       vscode.window.showInformationMessage(
-        `${envVar} saved to ${files}. Reload terminal or run: source ~/.zshrc`
+        `${envVar} saved to ${files}. Reload terminal or run: source ~/${updated[0]}`
       );
     } else {
       vscode.window.showErrorMessage(`Failed to save ${envVar} to rc files`);
     }
+  }
+
+  /**
+   * Disconnect a tool by:
+   *  - removing every `export <envVar>=...` line for that tool from ~/.zshrc and
+   *    ~/.bashrc (the reverse of _setApiKey),
+   *  - deleting the entries in process.env so checkAuth doesn't see stale values,
+   *  - invalidating the rc-env-var cache so the next auth check re-parses fresh,
+   *  - deleting every auth file the tool's definition lists (e.g. claude's
+   *    ~/.claude/.credentials.json), matching what an explicit CLI logout would
+   *    remove.
+   * The tool's installed state is left alone — this is auth-only.
+   */
+  private async _signOutTool(toolId: string): Promise<void> {
+    const def = getToolDefinitionById(toolId);
+    if (!def) {
+      vscode.window.showErrorMessage(`Unknown tool: ${toolId}`);
+      return;
+    }
+
+    const homeDir = os.homedir();
+    const removedEnvVars: string[] = [];
+    const removedFiles: string[] = [];
+
+    // 1. Strip `export VAR=...` lines for this tool from both rc files,
+    //    track which ones we actually removed so the toast tells the truth.
+    for (const envVar of def.envVars) {
+      const marker = `export ${envVar}=`;
+      let strippedFromRc = false;
+      for (const rc of ['.zshrc', '.bashrc']) {
+        const rcPath = path.join(homeDir, rc);
+        try {
+          if (!fs.existsSync(rcPath)) continue;
+          const content = fs.readFileSync(rcPath, 'utf-8');
+          const lines = content.split('\n');
+          const kept = lines.filter((line) => !line.startsWith(marker));
+          if (kept.length !== lines.length) {
+            fs.writeFileSync(rcPath, kept.join('\n'));
+            strippedFromRc = true;
+          }
+        } catch (err) {
+          // Continue so one unreadable/unwritable rc file doesn't prevent
+          // cleaning the other. Log so issues are visible during debugging.
+          console.warn(`envhaven: failed to strip ${envVar} from ${rcPath}`, err);
+        }
+      }
+      const wasInProcessEnv = process.env[envVar] !== undefined;
+      if (wasInProcessEnv) delete process.env[envVar];
+      if (strippedFromRc || wasInProcessEnv) removedEnvVars.push(envVar);
+    }
+
+    // 2. Delete the auth files the tool definition lists. Resolve each path
+    //    and assert it stays under $HOME so a malformed tool-def entry with
+    //    `..` segments can't walk out and unlink arbitrary files.
+    const homeBoundary = homeDir.endsWith(path.sep) ? homeDir : homeDir + path.sep;
+    for (const rel of def.authFiles) {
+      const full = path.resolve(homeDir, rel);
+      if (full !== homeDir && !full.startsWith(homeBoundary)) {
+        console.warn(
+          `envhaven: refusing to delete auth file outside $HOME: ${rel} resolved to ${full}`
+        );
+        continue;
+      }
+      try {
+        if (fs.existsSync(full)) {
+          fs.unlinkSync(full);
+          removedFiles.push(rel);
+        }
+      } catch (err) {
+        console.warn(`envhaven: failed to delete auth file ${full}`, err);
+      }
+    }
+
+    // 3. Rebuild the rc-env-var cache so the next checkAuth gets fresh data.
+    invalidateRcEnvVarsCache();
+
+    // 4. Push a refresh so the sidebar reflects the new authStatus.
+    await this.refresh();
+
+    const summary = [
+      removedEnvVars.length > 0 ? `cleared ${removedEnvVars.join(', ')}` : null,
+      removedFiles.length > 0 ? `removed ${removedFiles.join(', ')}` : null,
+    ]
+      .filter(Boolean)
+      .join(', ');
+
+    vscode.window.showInformationMessage(
+      summary ? `Signed out of ${def.name} — ${summary}` : `Signed out of ${def.name}`
+    );
   }
 
   private async _setSshKey(publicKey: string): Promise<void> {
@@ -360,18 +631,36 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       const keyLine = publicKey.trim();
       if (content.includes(keyLine)) {
         vscode.window.showInformationMessage('SSH key already configured');
+        this._postSshKeyResult('paste', true);
         return;
       }
 
-      const newContent = content.length > 0 && !content.endsWith('\n') 
-        ? `${content}\n${keyLine}\n` 
+      const newContent = content.length > 0 && !content.endsWith('\n')
+        ? `${content}\n${keyLine}\n`
         : `${content}${keyLine}\n`;
 
       fs.writeFileSync(authorizedKeysPath, newContent, { mode: 0o600 });
       vscode.window.showInformationMessage('SSH public key added to authorized_keys');
+      this._postSshKeyResult('paste', true);
+      await this.refresh();
     } catch (err) {
-      vscode.window.showErrorMessage(`Failed to save SSH key: ${err}`);
+      const message = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(`Failed to save SSH key: ${message}`);
+      this._postSshKeyResult('paste', false, message);
     }
+  }
+
+  private _postSshKeyResult(
+    sshKeyOpSource: 'github' | 'paste',
+    success: boolean,
+    error?: string
+  ): void {
+    this._view?.webview.postMessage({
+      command: 'sshKeyResult',
+      sshKeyOpSource,
+      success,
+      error,
+    });
   }
 
   private async _updatePreviewPort(port: number): Promise<void> {
@@ -423,23 +712,25 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   private async _importGitHubKeys(username: string): Promise<void> {
     const url = `https://github.com/${username}.keys`;
-    
+
     try {
       const response = await fetch(url);
       if (!response.ok) {
-        if (response.status === 404) {
-          vscode.window.showErrorMessage(`GitHub user "${username}" not found or has no public keys`);
-        } else {
-          vscode.window.showErrorMessage(`Failed to fetch keys: HTTP ${response.status}`);
-        }
+        const errMsg = response.status === 404
+          ? `GitHub user "${username}" not found or has no public keys`
+          : `Failed to fetch keys: HTTP ${response.status}`;
+        vscode.window.showErrorMessage(errMsg);
+        this._postSshKeyResult('github', false, errMsg);
         return;
       }
 
       const keys = await response.text();
       const keyLines = keys.trim().split('\n').filter(line => line.startsWith('ssh-'));
-      
+
       if (keyLines.length === 0) {
-        vscode.window.showErrorMessage(`No SSH keys found for GitHub user "${username}"`);
+        const errMsg = `No SSH keys found for GitHub user "${username}"`;
+        vscode.window.showErrorMessage(errMsg);
+        this._postSshKeyResult('github', false, errMsg);
         return;
       }
 
@@ -467,6 +758,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
       if (added === 0) {
         vscode.window.showInformationMessage(`All ${keyLines.length} keys from @${username} already configured`);
+        this._postSshKeyResult('github', true);
         return;
       }
 
@@ -474,8 +766,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       vscode.window.showInformationMessage(
         `Imported ${added} SSH key${added > 1 ? 's' : ''} from github.com/${username}`
       );
+      this._postSshKeyResult('github', true);
+      await this.refresh();
     } catch (err) {
-      vscode.window.showErrorMessage(`Failed to import GitHub keys: ${err}`);
+      const message = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(`Failed to import GitHub keys: ${message}`);
+      this._postSshKeyResult('github', false, message);
     }
   }
 
@@ -496,7 +792,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src ${webview.cspSource}; img-src ${webview.cspSource} data:;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src ${webview.cspSource}; img-src ${webview.cspSource} data:; frame-src https://*.envhaven.app;">
     <link rel="stylesheet" href="${styleUri}">
     <title>EnvHaven</title>
 </head>

@@ -64,4 +64,15 @@ if [[ -x /opt/envhaven/bin/envhaven-version-check ]]; then
   /opt/envhaven/bin/envhaven-version-check &
 fi
 
+# Mark the workspace's first boot. The sidebar extension reads this mtime as
+# the workspace creation time to show onboarding for fresh workspaces (< 30 min)
+# and hide first-run chips on older ones (> 7 days). Only created once —
+# subsequent boots preserve the original timestamp, so restarting the container
+# does NOT re-trigger the onboarding UI.
+WORKSPACE_CREATED_MARKER="/config/.workspace-created"
+if [ ! -e "$WORKSPACE_CREATED_MARKER" ]; then
+    touch "$WORKSPACE_CREATED_MARKER"
+    chown abc:abc "$WORKSPACE_CREATED_MARKER"
+fi
+
 echo "User configuration completed"

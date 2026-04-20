@@ -22,8 +22,35 @@ export interface ProcessInfo {
 export interface ResourceSnapshot {
   cpu: { pct: number; nCpus: number };
   ram: { usedMb: number; totalMb: number; pct: number };
+  disk: { usedGb: number; totalGb: number; pct: number };
   processes: ProcessInfo[];
   capturedAt: number;
+}
+
+// NOTE: these 3 interfaces mirror extension/src/skillsService.ts. The webview
+// (Vite) and extension (esbuild) are separate bundles, so the types must be
+// re-declared here. If you change a field, update both sites.
+export interface InstalledSkill {
+  name: string;
+  description: string;
+  source: string | null;
+  path: string;
+  agents: string[];
+}
+
+export interface SkillsShResult {
+  id: string;
+  skillId: string;
+  name: string;
+  installs: number;
+  source: string;
+}
+
+export interface SkillFrontmatter {
+  name?: string;
+  description?: string;
+  source?: string;
+  license?: string;
 }
 
 export interface WebviewToExtensionMessage {
@@ -44,6 +71,13 @@ export interface WebviewToExtensionMessage {
     | 'newTerminal'
     | 'killTerminal'
     | 'killProcess'
+    | 'searchSkills'
+    | 'fetchSkillMarkdown'
+    | 'installSkill'
+    | 'removeSkill'
+    | 'refreshInstalledSkills'
+    | 'openSkillInEditor'
+    | 'signOutTool'
     | 'ready';
   tool?: string;
   toolName?: string;
@@ -58,6 +92,12 @@ export interface WebviewToExtensionMessage {
   windowIndex?: number;
   pid?: number;
   starttime?: number;
+  query?: string;
+  source?: string;
+  skillId?: string;
+  skillName?: string;
+  skillPath?: string;
+  toolId?: string;
 }
 
 export interface ExtensionToWebviewMessage {
@@ -66,12 +106,30 @@ export interface ExtensionToWebviewMessage {
     | 'portUpdateSuccess'
     | 'portUpdateError'
     | 'updateTerminals'
-    | 'updateResources';
+    | 'updateResources'
+    | 'updateInstalledSkills'
+    | 'skillSearchResult'
+    | 'skillMarkdownResult'
+    | 'skillInstallComplete'
+    | 'skillRemoveComplete'
+    | 'sshKeyResult'
+    | 'openSheet';
   workspace?: WorkspaceInfo;
   port?: number;
   error?: string;
   tmuxWindows?: TmuxWindow[];
   resources?: ResourceSnapshot;
+  installedSkills?: InstalledSkill[];
+  query?: string;
+  results?: SkillsShResult[];
+  source?: string;
+  skillId?: string;
+  skillName?: string;
+  markdown?: string;
+  frontmatter?: SkillFrontmatter;
+  success?: boolean;
+  sheet?: 'ssh' | 'process' | 'skills' | 'tools';
+  sshKeyOpSource?: 'github' | 'paste';
 }
 
 export interface AITool {
@@ -116,6 +174,15 @@ export interface WorkspaceInfo {
   apiUrl: string | null;
   tmuxWindows: TmuxWindow[];
   version: VersionInfo;
+  /** ISO timestamp of workspace first boot, or null when the marker is missing. */
+  createdAt: string | null;
+  envVarMeta: Record<string, EnvVarMeta>;
+}
+
+export interface EnvVarMeta {
+  placeholder: string;
+  hint: string;
+  url: string | null;
 }
 
 class VSCodeAPI {

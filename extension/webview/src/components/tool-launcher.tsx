@@ -1,85 +1,28 @@
-import { useState, useEffect } from 'react';
-import { ExternalLink, Check, ChevronRight, EllipsisVertical, Info } from 'lucide-react';
+import { useState } from 'react';
+import { ExternalLink, Check, ChevronRight, EllipsisVertical, Info, LogOut } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 import { Separator } from './ui/separator';
-import { Collapsible, CollapsibleTrigger, CollapsibleContent } from './ui/collapsible';
+import { Section, SectionHeader, SectionBody } from './ui/section';
+import { Row } from './ui/row';
+import { StatusDot } from './ui/status-dot';
 import { ToolIcon } from './tool-icons';
+import { AgentAvatars } from './agent-avatars';
+import { cn } from '../lib/utils';
 import { useWorkspaceStore } from '../stores/workspace-store';
-import { vscode, type AITool } from '../lib/vscode';
+import { vscode, type AITool, type EnvVarMeta } from '../lib/vscode';
 
-interface EnvVarMeta {
-  placeholder: string;
-  hint: string;
-  url: string | null;
-}
-
-const ENV_VAR_META: Record<string, EnvVarMeta> = {
-  ANTHROPIC_API_KEY: {
-    placeholder: 'sk-ant-...',
-    hint: 'Pay-per-use. Get key at console.anthropic.com',
-    url: 'https://console.anthropic.com/settings/keys',
-  },
-  CLAUDE_CODE_OAUTH_TOKEN: {
-    placeholder: 'sk-ant-oat01-...',
-    hint: 'Uses your Claude subscription. Run `claude setup-token` locally to generate.',
-    url: null,
-  },
-  OPENAI_API_KEY: {
-    placeholder: 'sk-...',
-    hint: 'Pay-per-use. Get key at platform.openai.com',
-    url: 'https://platform.openai.com/api-keys',
-  },
-  GEMINI_API_KEY: {
-    placeholder: 'AIza...',
-    hint: 'Free tier available. Get key at aistudio.google.com',
-    url: 'https://aistudio.google.com/apikey',
-  },
-  GOOGLE_API_KEY: {
-    placeholder: 'AIza...',
-    hint: 'Same format as GEMINI_API_KEY. Get key at aistudio.google.com',
-    url: 'https://aistudio.google.com/apikey',
-  },
-  OPENROUTER_API_KEY: {
-    placeholder: 'sk-or-...',
-    hint: 'Unified API for hundreds of models. Get key at openrouter.ai',
-    url: 'https://openrouter.ai/keys',
-  },
-  MISTRAL_API_KEY: {
-    placeholder: 'Paste key...',
-    hint: 'Pay-per-use. Get key at console.mistral.ai',
-    url: 'https://console.mistral.ai/api-keys',
-  },
-  AMP_API_KEY: {
-    placeholder: 'Paste token...',
-    hint: 'Access token from ampcode.com settings',
-    url: 'https://ampcode.com/settings',
-  },
-  AUGMENT_SESSION_AUTH: {
-    placeholder: 'Paste session JSON...',
-    hint: 'Run `auggie login` then `auggie token print` to generate.',
-    url: null,
-  },
-  FACTORY_API_KEY: {
-    placeholder: 'Paste key...',
-    hint: 'Get key from your Factory account at app.factory.ai',
-    url: 'https://app.factory.ai',
-  },
-  QWEN_API_KEY: {
-    placeholder: 'Paste key...',
-    hint: 'Get key from Alibaba Cloud DashScope console',
-    url: 'https://dashscope.console.aliyun.com',
-  },
-};
-
+// Fallback shown for env vars not listed in tool-definitions.json's envVarMeta
+// block. Should be rare — adding a new provider means editing that JSON.
 const DEFAULT_META: EnvVarMeta = { placeholder: 'Paste key...', hint: '', url: null };
 
 function ApiKeyInput({ envVar, onSaved }: { envVar: string; onSaved?: () => void }) {
   const [value, setValue] = useState('');
   const [saved, setSaved] = useState(false);
-  const meta = ENV_VAR_META[envVar] || DEFAULT_META;
+  const metaMap = useWorkspaceStore((s) => s.workspace?.envVarMeta);
+  const meta = metaMap?.[envVar] ?? DEFAULT_META;
 
   const handleSave = () => {
     if (!value.trim()) return;
@@ -113,7 +56,7 @@ function ApiKeyInput({ envVar, onSaved }: { envVar: string; onSaved?: () => void
           onClick={handleSave}
           disabled={!value.trim()}
         >
-          {saved ? <Check className="h-3.5 w-3.5 text-success" /> : <Check className="h-3.5 w-3.5" />}
+          <Check className={cn('h-3.5 w-3.5', saved && 'text-success')} />
         </Button>
         <TooltipProvider>
           <Tooltip>
@@ -149,7 +92,7 @@ function ApiKeyInput({ envVar, onSaved }: { envVar: string; onSaved?: () => void
   );
 }
 
-function ToolRow({ tool }: { tool: AITool }) {
+export function ToolRow({ tool }: { tool: AITool }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const isReady = tool.authStatus === 'ready';
   const isApiKeyOnly = !isReady && !tool.authCommand;
@@ -165,24 +108,23 @@ function ToolRow({ tool }: { tool: AITool }) {
     }
   };
 
-  return (
-    <div
-      onClick={handleRowClick}
-      className="group flex h-9 cursor-pointer items-center gap-2 rounded-md border border-border bg-muted/30 px-2 hover:bg-accent"
-    >
-      <ToolIcon id={tool.id} className="h-4 w-4 shrink-0" />
-      <span className="flex-1 truncate text-sm font-medium">{tool.name}</span>
-
+  const label = (
+    <div className="flex items-center gap-2 min-w-0">
+      <span className="truncate font-medium">{tool.name}</span>
       {!isReady && (
-        <span className="hidden text-[10px] text-muted-foreground group-hover:inline">
+        <span className="hidden shrink-0 text-[10px] text-muted-foreground group-hover:inline">
           {isApiKeyOnly ? 'Set key' : 'Sign in'}
         </span>
       )}
+    </div>
+  );
 
+  const trailing = (
+    <>
       <TooltipProvider>
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className={`h-2 w-2 shrink-0 rounded-full ${isReady ? 'bg-success' : 'bg-muted-foreground/40'}`} />
+            <StatusDot variant={isReady ? 'success' : 'idle'} />
           </TooltipTrigger>
           <TooltipContent>
             {isReady ? (tool.connectedVia ? `${tool.connectedVia} is set` : 'Ready') : 'Needs setup'}
@@ -226,65 +168,100 @@ function ToolRow({ tool }: { tool: AITool }) {
               ))}
             </>
           )}
+
+          {isReady && (
+            <>
+              <Separator className="my-1" />
+              <button
+                onClick={() => {
+                  vscode.postMessage({ command: 'signOutTool', toolId: tool.id });
+                  setMenuOpen(false);
+                }}
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-destructive hover:bg-destructive/10"
+              >
+                <LogOut className="h-4 w-4" />
+                Sign out
+              </button>
+            </>
+          )}
         </PopoverContent>
       </Popover>
+    </>
+  );
+
+  return (
+    <Row
+      onClick={handleRowClick}
+      bordered
+      className="h-9"
+      leading={<ToolIcon id={tool.id} className="h-4 w-4" />}
+      label={label}
+      trailing={trailing}
+    />
+  );
+}
+
+function AiToolsEmptyState({
+  toolNames,
+  onBrowse,
+}: {
+  toolNames: string[];
+  onBrowse: () => void;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-md border border-dashed border-border/50 px-4 py-5 text-center">
+      <AgentAvatars agents={toolNames} size="md" max={3} />
+      <div className="space-y-0.5">
+        <p className="text-sm font-medium text-foreground">Sign in to an AI tool</p>
+        <p className="text-[11px] text-muted-foreground">
+          All {toolNames.length} are built-in.
+        </p>
+      </div>
+      <Button variant="default" size="sm" className="h-7 gap-1 text-xs" onClick={onBrowse}>
+        Browse tools
+        <ChevronRight className="h-3 w-3" />
+      </Button>
     </div>
   );
 }
 
 export function ToolLauncher() {
-  const { workspace, getConnectedTools, getDisconnectedTools } = useWorkspaceStore();
-
-  const connectedTools = workspace ? getConnectedTools() : [];
-  const disconnectedTools = workspace ? getDisconnectedTools() : [];
-  const [isOpen, setIsOpen] = useState(connectedTools.length === 0);
-
-  useEffect(() => {
-    if (connectedTools.length > 0) setIsOpen(false);
-  }, [connectedTools.length]);
+  const { workspace, getConnectedTools, getDisconnectedTools, setOpenSheet } = useWorkspaceStore();
 
   if (!workspace) return null;
+
+  const connectedTools = getConnectedTools();
+  const disconnectedTools = getDisconnectedTools();
+
   if (connectedTools.length === 0 && disconnectedTools.length === 0) return null;
 
-  const hasConnectedTools = connectedTools.length > 0;
+  const manageAction = (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="h-5 gap-1 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
+      onClick={() => setOpenSheet('tools')}
+    >
+      Manage
+      <ChevronRight className="h-3 w-3" />
+    </Button>
+  );
 
   return (
-    <div className="space-y-2">
-      <h3 className="text-[11px] font-semibold uppercase tracking-wide text-section-header">
-        AI Tools
-      </h3>
-
-      <div className="space-y-1">
-        {connectedTools.map((tool) => (
-          <ToolRow key={tool.id} tool={tool} />
-        ))}
-
-        {hasConnectedTools && disconnectedTools.length > 0 ? (
-          <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-            <CollapsibleTrigger asChild>
-              <button className="flex w-full items-center justify-between rounded-sm px-1 py-1 text-[11px] font-medium text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors cursor-pointer">
-                <span className="flex items-center gap-1.5">
-                  <ChevronRight
-                    className={`h-3.5 w-3.5 transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`}
-                  />
-                  More Tools ({disconnectedTools.length})
-                </span>
-              </button>
-            </CollapsibleTrigger>
-            <CollapsibleContent className="collapsible-content overflow-hidden">
-              <div className="space-y-1 pt-1">
-                {disconnectedTools.map((tool) => (
-                  <ToolRow key={tool.id} tool={tool} />
-                ))}
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
-        ) : (
-          disconnectedTools.map((tool) => (
+    <Section data-section="ai-tools">
+      <SectionHeader title="AI Tools" action={manageAction} />
+      {connectedTools.length === 0 ? (
+        <AiToolsEmptyState
+          toolNames={workspace.aiTools.map((t) => t.name)}
+          onBrowse={() => setOpenSheet('tools')}
+        />
+      ) : (
+        <SectionBody>
+          {connectedTools.map((tool) => (
             <ToolRow key={tool.id} tool={tool} />
-          ))
-        )}
-      </div>
-    </div>
+          ))}
+        </SectionBody>
+      )}
+    </Section>
   );
 }
