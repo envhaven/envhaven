@@ -9,28 +9,25 @@ chown abc:abc /config/workspace
 mkdir -p /config/go
 chown -R abc:abc /config/go
 
-generate_agents_md() {
+if [ ! -f "$AGENTS_FILE" ]; then
     export USER_NAME="abc"
     export WORKSPACE_PATH="/config/workspace"
-    
-    # Generate base template
     envsubst < /defaults/AGENTS.md.template > "$AGENTS_FILE"
-    
-    # Append mode-specific section
     if [ "${ENVHAVEN_MANAGED:-false}" = "true" ]; then
         envsubst < /defaults/AGENTS.md.managed.template >> "$AGENTS_FILE"
     else
         envsubst < /defaults/AGENTS.md.selfhosted.template >> "$AGENTS_FILE"
     fi
-    
     chown abc:abc "$AGENTS_FILE"
-    
-    # Create CLAUDE.md copy for Claude Code compatibility
-    # (copy instead of symlink - Claude Code may not follow symlinks)
-    cp "$AGENTS_FILE" "$CLAUDE_FILE"
-    chown abc:abc "$CLAUDE_FILE"
-}
+    echo "AGENTS.md generated (managed=${ENVHAVEN_MANAGED:-false})"
+else
+    echo "AGENTS.md exists, skipping"
+fi
 
-generate_agents_md
-echo "AGENTS.md generated (managed=${ENVHAVEN_MANAGED:-false})"
-echo "CLAUDE.md created (copy of AGENTS.md)"
+if [ ! -e "$CLAUDE_FILE" ] && [ ! -L "$CLAUDE_FILE" ]; then
+    ln -s AGENTS.md "$CLAUDE_FILE"
+    chown -h abc:abc "$CLAUDE_FILE"
+    echo "CLAUDE.md → AGENTS.md (symlink)"
+else
+    echo "CLAUDE.md exists, skipping"
+fi
