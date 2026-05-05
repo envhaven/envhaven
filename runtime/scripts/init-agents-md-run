@@ -28,6 +28,10 @@ if [ ! -e "$CLAUDE_FILE" ] && [ ! -L "$CLAUDE_FILE" ]; then
     ln -s AGENTS.md "$CLAUDE_FILE"
     chown -h abc:abc "$CLAUDE_FILE"
     echo "CLAUDE.md → AGENTS.md (symlink)"
+elif [ -f "$CLAUDE_FILE" ] && [ ! -L "$CLAUDE_FILE" ] && cmp -s "$AGENTS_FILE" "$CLAUDE_FILE"; then
+    ln -sf AGENTS.md "$CLAUDE_FILE"
+    chown -h abc:abc "$CLAUDE_FILE"
+    echo "CLAUDE.md → AGENTS.md (migrated from copy)"
 else
     echo "CLAUDE.md exists, skipping"
 fi
