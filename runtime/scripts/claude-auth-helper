@@ -1,66 +1,50 @@
 #!/bin/sh
-# Claude Code auth helper for remote/container environments.
-# Runs 'claude auth login' in a hidden tmux pane (for its local callback
-# server), intercepts the auth URL, shows a clean paste prompt, and relays
-# the OAuth callback from inside the container where localhost is reachable.
+# Claude Code subscription auth helper for remote/container environments.
+# Drives Anthropic's OAuth PKCE flow directly so the user pastes a short
+# code (shown on the success page), not a localhost callback URL. Writes
+# ~/.claude/.credentials.json in the format Claude Code expects.
+#
+# OAuth constants (CLIENT_ID, REDIRECT_URI, SCOPES) and the credentials
+# file shape mirror Hermes' run_hermes_oauth_login_pure() in
+# NousResearch/hermes-agent → agent/anthropic_adapter.py. That is the
+# canonical reference for unofficial Claude Code OAuth — if Anthropic
+# rotates any of these values or changes the response shape, check
+# Hermes upstream for the updated values before guessing.
 
+CLIENT_ID="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+AUTHORIZE_URL="https://claude.ai/oauth/authorize"
+TOKEN_URL="https://console.anthropic.com/v1/oauth/token"
+REDIRECT_URI="https://console.anthropic.com/oauth/code/callback"
+SCOPES="org:create_api_key user:profile user:inference"
 BROWSER_HELPER="/app/code-server/lib/vscode/bin/helpers/browser.sh"
-AUTH_URL_FILE="/tmp/.eh-auth-url"
-BROWSER_WRAPPER="/tmp/.eh-auth-browser"
+CREDS_FILE="$HOME/.claude/.credentials.json"
 
-cleanup() {
-  tmux kill-window -t envhaven:_auth 2>/dev/null || true
-  rm -f "$AUTH_URL_FILE" "$BROWSER_WRAPPER"
-}
-trap cleanup EXIT INT TERM
+b64url() { base64 -w0 | tr '/+' '_-' | tr -d '='; }
+urlenc() { jq -sRr @uri; }
 
-rm -f "$AUTH_URL_FILE"
+VERIFIER=$(openssl rand 32 | b64url)
+CHALLENGE=$(printf '%s' "$VERIFIER" | openssl dgst -sha256 -binary | b64url)
 
-# Browser wrapper: captures the real auth URL (with localhost callback port)
-# that claude hands to $BROWSER. The main script opens it after the user
-# has read the instructions and confirmed with Enter.
-cat > "$BROWSER_WRAPPER" << 'EOF'
-#!/bin/sh
-echo "$1" > /tmp/.eh-auth-url
-exit 0
-EOF
-chmod +x "$BROWSER_WRAPPER"
-
-tmux has-session -t envhaven 2>/dev/null || \
-  tmux new-session -d -s envhaven -c /config/workspace
-
-# Start claude auth login in a hidden tmux window — it starts a local
-# callback server and waits. The hidden window provides the TTY it needs.
-tmux new-window -d -t envhaven -n _auth \
-  "BROWSER=$BROWSER_WRAPPER claude auth login 2>/dev/null"
-
-# Wait (silently) for claude auth login to emit the URL via BROWSER_WRAPPER.
-# Typical latency is well under a second; 10s is the upper bound before we
-# assume something went wrong and show the error path below.
-for i in $(seq 1 20); do
-  [ -s "$AUTH_URL_FILE" ] && break
-  sleep 0.5
-done
-
-if [ ! -s "$AUTH_URL_FILE" ]; then
-  echo ""
-  echo "  Could not start auth flow."
-  echo "  You may already be logged in — check with: claude auth status"
-  echo "  Or try running: claude auth login"
-  exit 1
-fi
-
-AUTH_URL=$(cat "$AUTH_URL_FILE")
+# Reuse verifier as state — Anthropic returns the auth code as <code>#<state>,
+# so we get the verifier back and can confirm flow integrity.
+AUTH_URL="$AUTHORIZE_URL?code=true"
+AUTH_URL="$AUTH_URL&client_id=$CLIENT_ID"
+AUTH_URL="$AUTH_URL&response_type=code"
+AUTH_URL="$AUTH_URL&redirect_uri=$(printf '%s' "$REDIRECT_URI" | urlenc)"
+AUTH_URL="$AUTH_URL&scope=$(printf '%s' "$SCOPES" | urlenc)"
+AUTH_URL="$AUTH_URL&code_challenge=$CHALLENGE"
+AUTH_URL="$AUTH_URL&code_challenge_method=S256"
+AUTH_URL="$AUTH_URL&state=$VERIFIER"
 
 cat << 'BANNER'
 
   ┌───────────────────────────────────────────────────┐
-  │  Quick sign-in to Claude:                         │
+  │  Sign in to Claude (Pro/Max subscription):        │
   │                                                   │
   │  1. Click Open when prompted.                     │
   │  2. Authorize Claude Code for this workspace.     │
-  │  3. The final page will be blank — copy its URL   │
-  │     and paste it here to finish.                  │
+  │  3. Copy the code shown on the success page,      │
+  │     then paste it here to finish.                 │
   └───────────────────────────────────────────────────┘
 
 BANNER
@@ -77,39 +61,66 @@ else
   echo ""
 fi
 
-printf "  Paste URL: "
-read -r CALLBACK_URL
-
-if [ -z "$CALLBACK_URL" ]; then
+printf "  Paste code: "
+read -r AUTH_CODE
+if [ -z "${AUTH_CODE:-}" ]; then
   echo ""
   echo "  Cancelled."
   exit 1
 fi
 
-# Relay the callback to Claude Code's local server inside the container.
-# The browser can't reach localhost:PORT, but curl from here can.
-HTTP_CODE=$(curl -sS -o /dev/null -w "%{http_code}" "$CALLBACK_URL" 2>/dev/null) || HTTP_CODE="000"
+CODE=${AUTH_CODE%%#*}
+STATE=${AUTH_CODE#*#}
+[ "$STATE" = "$AUTH_CODE" ] && STATE=""
 
-case "$HTTP_CODE" in
-  200|302)
-    for i in $(seq 1 5); do
-      if claude auth status --text 2>/dev/null | grep -q "Login method"; then
-        echo ""
-        echo "  ✓ Login successful — starting Claude Code..."
-        echo ""
-        exec claude
-      fi
-      sleep 1
-    done
-    echo ""
-    echo "  ⚠ Callback accepted but auth not confirmed yet."
-    echo "  Check with: claude auth status"
-    echo ""
-    ;;
-  *)
-    echo ""
-    echo "  ✗ Could not complete login (HTTP $HTTP_CODE)."
-    echo "  Try again, or set ANTHROPIC_API_KEY as an alternative."
-    echo ""
-    ;;
-esac
+REQUEST_BODY=$(jq -n \
+  --arg client_id "$CLIENT_ID" \
+  --arg code "$CODE" \
+  --arg state "$STATE" \
+  --arg redirect_uri "$REDIRECT_URI" \
+  --arg verifier "$VERIFIER" \
+  '{grant_type:"authorization_code",
+    client_id:$client_id, code:$code, state:$state,
+    redirect_uri:$redirect_uri, code_verifier:$verifier}')
+
+RESPONSE=$(curl -sS -X POST "$TOKEN_URL" \
+  -H "Content-Type: application/json" \
+  -H "User-Agent: claude-cli (external, cli)" \
+  -d "$REQUEST_BODY")
+
+ACCESS_TOKEN=$(printf '%s' "$RESPONSE" | jq -r '.access_token // empty')
+REFRESH_TOKEN=$(printf '%s' "$RESPONSE" | jq -r '.refresh_token // empty')
+EXPIRES_IN=$(printf '%s' "$RESPONSE" | jq -r '.expires_in // 3600')
+
+if [ -z "$ACCESS_TOKEN" ]; then
+  ERROR=$(printf '%s' "$RESPONSE" | jq -r '.error_description // .error // .')
+  echo ""
+  echo "  ✗ Login failed: $ERROR"
+  echo "  Try again, or set ANTHROPIC_API_KEY as an alternative."
+  echo ""
+  exit 1
+fi
+
+NOW_MS=$(( $(date +%s) * 1000 ))
+EXPIRES_AT_MS=$(( NOW_MS + EXPIRES_IN * 1000 ))
+
+mkdir -p "$HOME/.claude"
+EXISTING="{}"
+[ -f "$CREDS_FILE" ] && EXISTING=$(cat "$CREDS_FILE")
+
+printf '%s' "$EXISTING" | jq \
+  --arg access "$ACCESS_TOKEN" \
+  --arg refresh "$REFRESH_TOKEN" \
+  --argjson expires_at "$EXPIRES_AT_MS" \
+  '.claudeAiOauth = {
+    accessToken: $access,
+    refreshToken: $refresh,
+    expiresAt: $expires_at,
+    scopes: ["org:create_api_key","user:profile","user:inference"]
+  }' > "$CREDS_FILE.tmp" && mv "$CREDS_FILE.tmp" "$CREDS_FILE"
+chmod 600 "$CREDS_FILE"
+
+echo ""
+echo "  ✓ Login successful — starting Claude Code..."
+echo ""
+exec claude
