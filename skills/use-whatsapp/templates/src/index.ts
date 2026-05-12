@@ -1,7 +1,8 @@
 import 'dotenv/config';
-import { readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { chmodSync, readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
-import { startWhatsApp, type GroupAdd, type IncomingMessage, type WhatsAppHandle } from './whatsapp.ts';
+import { ageAttachments, startWhatsApp, type GroupAdd, type IncomingMessage, type WhatsAppHandle } from './whatsapp.ts';
 import { ask, ageAllJournals, flushOneJid, loadAllSessions, loadLastReset, saveLastReset, safeJid, tierForAge, type AskOpts } from './claude.ts';
 import { toWhatsApp, chunk } from './format.ts';
 import { startCronScheduler, type CronEntry } from './crons.ts';
@@ -29,6 +30,10 @@ const RESET_HOUR = Number(process.env.DAILY_RESET_HOUR ?? '5'); // local time
 const CRON_TIMEZONE = process.env.CRON_TIMEZONE?.trim() || Intl.DateTimeFormat().resolvedOptions().timeZone;
 const SOUL_PATH = resolve(CWD, 'SOUL.md');
 const TOOLS_PATH = resolve(CWD, 'TOOLS.md');
+
+// Read-only tool set for `restricted` senders. Mirrors the enumeration the
+// system-prompt addendum spells out, so prose and SDK gate agree.
+const RESTRICTED_TOOLS = ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'] as const;
 
 // Re-read on every message so Claude can edit allowed-groups.json via its
 // file tools and the change takes effect immediately; no restart.
@@ -99,6 +104,11 @@ if (initialAny.length === 0) {
   console.error('   Add at least one LID. After someone messages the bot, their LID appears in the "Ignored message" log.');
   process.exit(1);
 }
+
+// `.env` carries the role assignments. If it was copied from .env.example
+// with default umask the mode is 644; tighten to 600 on boot so the secret
+// material isn't world-readable. Missing-file or already-tight: ignore.
+try { chmodSync(ENV_PATH, 0o600); } catch { /* fine */ }
 
 console.log(
   `Whitelist (initial): owner=${initialRoles.ownerLid || '(none)'} ` +
@@ -357,7 +367,7 @@ async function handle(wa: WhatsAppHandle, msg: IncomingMessage, seq: number): Pr
   noteActivity(msg.jid);
 
   const quotedNote = msg.quoted ? ` (replying to "${truncate(msg.quoted.text, 40)}")` : '';
-  console.log(`[${msg.senderNumber}/${role}] →${quotedNote} ${msg.text.slice(0, 80)}${msg.text.length > 80 ? '…' : ''}`);
+  console.log(`[${msg.senderNumber}/${role}] →${quotedNote} ${msg.text.length} chars`);
 
   // Typing indicator is a UX nicety; a transient Baileys "Connection Closed"
   // here must not abort the reply. The await ask() that follows can buy time
@@ -374,8 +384,15 @@ async function handle(wa: WhatsAppHandle, msg: IncomingMessage, seq: number): Pr
   // only piece that swaps within a group chat). In 1:1 chats the order is
   // moot; in groups it preserves journal/group-privacy cache hits across
   // owner / full / restricted senders.
+  //
+  // `tools` is the SDK's actual restriction hook (vs `allowedTools` which
+  // only auto-approves under non-bypassPermissions modes); set it for
+  // restricted senders so Bash/Edit/Write/NotebookEdit are not in the
+  // model's context for those turns. Owner/full keep the SDK default
+  // (claude_code preset).
   const perCallOpts: AskOpts = {
     ...askOpts,
+    ...(role === 'restricted' ? { tools: RESTRICTED_TOOLS } : {}),
     systemPromptAppend:
       SYSTEM_PROMPT_APPEND +
       buildGroupPrivacyAddendum(msg.isGroup) +
@@ -482,6 +499,17 @@ async function performFlush(): Promise<{ flushed: number; skipped: number; durat
     }
   }
   await ageAllJournals(askOpts);
+  // Attachments follow the same decision tree as memory: an attachment whose
+  // basename is referenced from SOUL/TOOLS/CLAUDE, the journal, or auto-memory
+  // is kept; otherwise it ages out at the same 28-day window as the journal.
+  // Auto-memory directory mirrors Claude Code's encoding: replace `/` in the
+  // absolute cwd with `-`. Verified against the actual layout under
+  // `~/.claude/projects/`.
+  const autoMemoryDir = resolve(homedir(), '.claude', 'projects', CWD.replaceAll('/', '-'), 'memory');
+  const { deleted, kept } = await ageAttachments({ cwd: CWD, journalDir: JOURNAL_DIR, autoMemoryDir });
+  if (deleted > 0 || kept > 0) {
+    console.log(`[reset] attachments: aged=${deleted} kept-by-reference=${kept}`);
+  }
   await saveLastReset(Date.now());
   return { flushed, skipped, durationMs: Date.now() - start };
 }

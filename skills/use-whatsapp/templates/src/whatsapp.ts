@@ -9,6 +9,7 @@ import {
   type proto,
 } from '@whiskeysockets/baileys';
 import { writeFileSync, mkdirSync } from 'node:fs';
+import { readdir, readFile, rmdir, stat, unlink } from 'node:fs/promises';
 import { dirname, extname, resolve } from 'node:path';
 import qrcode from 'qrcode-terminal';
 import { pino } from 'pino';
@@ -139,9 +140,83 @@ async function downloadAttachment(
   mkdirSync(dir, { recursive: true });
   const buf = (await downloadMediaMessage(m, 'buffer', {})) as Buffer;
   const abs = resolve(dir, `${id}.${ext}`);
-  writeFileSync(abs, buf);
-  console.log(`  ↘ saved ${kind} → ${abs} (${buf.length} bytes)`);
+  writeFileSync(abs, buf, { mode: 0o600 });
+  console.log(`  ↘ saved ${kind} (${buf.length} bytes)`);
   return abs;
+}
+
+// Recursive .md walk, callback-style so the caller can build a single
+// concatenated corpus without holding all paths in memory.
+async function walkMarkdown(dir: string, onText: (text: string) => void): Promise<void> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    const p = resolve(dir, e.name);
+    if (e.isDirectory()) {
+      await walkMarkdown(p, onText);
+    } else if (e.isFile() && e.name.endsWith('.md')) {
+      try { onText(await readFile(p, 'utf-8')); } catch { /* unreadable */ }
+    }
+  }
+}
+
+// Age attachments under data/attachments/. An attachment survives if:
+//   (a) its mtime is within maxDays (still recent), OR
+//   (b) its basename appears anywhere in the durable-memory corpus
+//       (SOUL/TOOLS/CLAUDE at cwd, recursive journal, recursive auto-memory).
+// Same retention window as JOURNAL_DROP_DAYS so both data classes share one
+// decision tree. Called from performFlush() once per daily reset.
+export async function ageAttachments(opts: {
+  cwd: string;
+  journalDir: string;
+  autoMemoryDir: string;
+  maxDays?: number;
+}): Promise<{ deleted: number; kept: number }> {
+  const maxDays = opts.maxDays ?? 28;
+  const cutoffMs = Date.now() - maxDays * 86_400_000;
+
+  const parts: string[] = [];
+  for (const name of ['SOUL.md', 'TOOLS.md', 'CLAUDE.md']) {
+    try { parts.push(await readFile(resolve(opts.cwd, name), 'utf-8')); } catch { /* missing */ }
+  }
+  await walkMarkdown(opts.journalDir, (t) => parts.push(t));
+  await walkMarkdown(opts.autoMemoryDir, (t) => parts.push(t));
+  const corpus = parts.join('\n');
+
+  let jidDirs: string[];
+  try {
+    jidDirs = await readdir(ATTACHMENTS_DIR);
+  } catch {
+    return { deleted: 0, kept: 0 };
+  }
+  let deleted = 0;
+  let kept = 0;
+  for (const jidName of jidDirs) {
+    const jidDir = resolve(ATTACHMENTS_DIR, jidName);
+    let files: string[];
+    try {
+      files = await readdir(jidDir);
+    } catch {
+      continue;
+    }
+    let surviving = 0;
+    for (const name of files) {
+      const file = resolve(jidDir, name);
+      let mtimeMs: number;
+      try { mtimeMs = (await stat(file)).mtimeMs; } catch { continue; }
+      if (mtimeMs >= cutoffMs) { surviving++; continue; }
+      if (corpus.includes(name)) { kept++; surviving++; continue; }
+      try { await unlink(file); deleted++; } catch { surviving++; }
+    }
+    if (surviving === 0) {
+      try { await rmdir(jidDir); } catch { /* not empty or already gone */ }
+    }
+  }
+  return { deleted, kept };
 }
 
 async function extractMessageContent(m: proto.IWebMessageInfo): Promise<string | null> {

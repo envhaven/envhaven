@@ -96,7 +96,7 @@ export async function saveLastReset(ts: number): Promise<void> {
   await writeFile(LAST_RESET_FILE, JSON.stringify({ timestamp: ts, iso: new Date(ts).toISOString() }, null, 2));
 }
 
-export type AskOpts = { cwd?: string; model?: string; systemPromptAppend?: string };
+export type AskOpts = { cwd?: string; model?: string; systemPromptAppend?: string; tools?: readonly string[] };
 type AskResult = { text: string; sessionId: string; cost: number; turns: number };
 
 // Heuristic detector for "the session id you tried to resume isn't valid
@@ -134,6 +134,7 @@ async function askInner(jid: string, prompt: string, opts: AskOpts, attempt: num
     ...(opts.systemPromptAppend
       ? { systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const, append: opts.systemPromptAppend } }
       : {}),
+    ...(opts.tools ? { tools: [...opts.tools] } : {}),
     ...(existing ? { resume: existing } : { sessionId }),
   };
 
@@ -282,6 +283,7 @@ async function compactJournalEntry(
     ...(opts.systemPromptAppend
       ? { systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const, append: opts.systemPromptAppend } }
       : {}),
+    ...(opts.tools ? { tools: [...opts.tools] } : {}),
   };
   const q = query({ prompt: buildCompactPrompt(absPath, fromTier, toTier), options });
   for await (const msg of q) {
@@ -358,7 +360,7 @@ export async function flushOneJid(
 ): Promise<{ turns: number; reply: string }> {
   const r = await ask(jid, buildFlushPrompt(jid, sessionId), opts);
   await clearSession(jid);
-  console.log(`[flush] ${jid}: ${r.turns} turns; ${r.text.slice(0, 200).replace(/\s+/g, ' ')}`);
+  console.log(`[flush] ${jid}: ${r.turns} turns, ${r.text.length} chars`);
   return { turns: r.turns, reply: r.text };
 }
 

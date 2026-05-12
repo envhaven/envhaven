@@ -14,7 +14,7 @@ The bridge runs as a Node process. Step 6 launches it in a tmux window so the QR
 - Full Claude Code agent loop in WhatsApp (Bash, file edits, web fetch, all tools).
 - Conversation context preserved per WhatsApp chat (SDK session resume).
 - Daily session reset at 5am with pre-flush memory extraction. The flush prompt is structured as a **strict decision tree** (journal / SOUL / feedback-mem / project-mem / reference-mem / TOOLS / CLAUDE) with an anti-redundancy rule, so the same fact never lands in two places.
-- **Three-role LID-based whitelist** (re-read on every message, no restart when edited). `OWNER_LID`: one LID with full trust plus authority to mutate the whitelist via natural language. `WHITELIST_NUMBERS`: comma-separated full-trust LIDs (everything the owner can do, except whitelist edits). `RESTRICTED_LIDS`: read-only LIDs (Claude refuses Bash, Edit, Write, NotebookEdit on their behalf). Enforcement is via the per-message system prompt addendum; heuristic, not a hardened sandbox.
+- **Three-role LID-based whitelist** (re-read on every message, no restart when edited). `OWNER_LID`: one LID with full trust plus authority to mutate the whitelist via natural language. `WHITELIST_NUMBERS`: comma-separated full-trust LIDs (everything the owner can do, except whitelist edits). `RESTRICTED_LIDS`: read-only LIDs. Restricted senders are hard-gated at the SDK level — the bridge passes `tools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch']` to the Agent SDK `query()` call for those turns, so `Bash`, `Edit`, `Write`, `NotebookEdit` are not in the model's context. The per-message system-prompt addendum remains as defense in depth.
 - Read receipts (blue ticks) on incoming messages.
 - Typing indicator while Claude is working.
 - Markdown → WhatsApp formatting (bold, italic, strikethrough, code blocks, bullets) with chunking for long replies.
@@ -35,6 +35,32 @@ The user wants to message Claude Code from their phone. Triggers:
 - "/use-whatsapp"
 
 Do NOT use this skill for: business-API integrations (this uses linked-device, not the official WhatsApp Business API), sending automated outbound messages (this is bidirectional chat), or installing **adjacent agent services** (transcription daemons, YouTube transcript fetchers, Camofox, OCR pipelines, etc.); those are user-driven, ad-hoc, sibling-dir installs documented in `templates/TOOLS.md` → "Adjacent services". The skill builds the bridge and stops there.
+
+## Security model
+
+This skill stands up a remote control channel for Claude Code. Anyone whose WhatsApp LID is whitelisted gets the bridge's host as if it were their shell, mediated by Claude running with `bypassPermissions`. Treat installing this skill the way you treat handing out an SSH key.
+
+**Intended use:** a single owner (you) drives Claude Code from your phone, on a host you control. Personal homelabs, dev workstations, self-hosted containers where you are the only operator.
+
+**Not suitable for:** shared production hosts, multi-tenant environments, hosts holding third-party data, or any setting where "Claude can run arbitrary `Bash`" is not a property you actively want.
+
+**What is enforced:**
+
+- Group chats are ignored by default; only owner/full-trust senders can auto-allow a group by adding the bot.
+- Sender-role gate runs before any Claude call (no tokens spent on un-whitelisted traffic).
+- Restricted role is hard-gated at the SDK level: the `tools` option on the Agent SDK `query()` call restricts the model to `Read`, `Glob`, `Grep`, `WebFetch`, `WebSearch`. `Bash`, `Edit`, `Write`, `NotebookEdit` are not in the model's context for those senders. The system-prompt role addendum remains as defense in depth.
+- Group privacy addendum instructs Claude to abstract paths, secrets, and architecture details whenever the conversation runs in a group.
+- `.env` is `chmod 600`-ed on boot in case it was copied from `.env.example` with a looser umask.
+- Media attachments are written `mode 0600` and aged out on the daily flush after 28 days, unless their basename is referenced from SOUL/TOOLS/CLAUDE, the journal, or auto-memory (same decision tree as memory itself).
+- Log lines never contain message text or reply previews; only sender ID, role, and counts.
+
+**What is NOT enforced (deliberately):**
+
+- `bypassPermissions` is the design, not a bug. Owner and full-trust senders get full tools. If you wouldn't let this sender run `sudo` on the host, do not whitelist them.
+- The `restricted` role's intent (read-only) is enforced via the SDK `tools` gate, but the role assignment itself lives in `.env`. An attacker with write access to `.env` can promote themselves; the boot-time chmod is hygiene, not a substitute for filesystem-level protection.
+- No rate-limiting per sender. This is a personal bridge, not a public endpoint.
+
+See `templates/TOOLS.md` → *Security model and threat scope* for the full threat enumeration.
 
 ## Wizard pacing
 
