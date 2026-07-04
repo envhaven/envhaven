@@ -34,7 +34,7 @@ export interface SkillsShResult {
   id: string;
   skillId: string;
   name: string;
-  installs: number;
+  installs?: number; // absent for first-party skills (no install counter exists)
   source: string;
 }
 
@@ -146,6 +146,99 @@ export async function searchSkillsSh(query: string): Promise<SkillsShResult[]> {
   const results = Array.isArray(data.skills) ? data.skills : [];
   searchCache.set(q, { results, ts: Date.now() });
   return results;
+}
+
+const ENVHAVEN_SKILLS_SOURCE = 'envhaven/envhaven';
+const ENVHAVEN_SKILL_PATH_RE = /^skills\/[^/]+\/SKILL\.md$/;
+
+let envhavenSkillsCache: { results: SkillsShResult[]; ts: number } | null = null;
+
+/**
+ * Fetch EnvHaven's own first-party skills from the `envhaven/envhaven` repo.
+ * Layout is `skills/<name>/SKILL.md`; we enumerate the tree (1 API call) and
+ * read each SKILL.md frontmatter via the raw host (free, off the API limit),
+ * mapping to the same shape as skills.sh so the UI stays uniform. The
+ * frontmatter `name` is the install id (`npx skills add … --skill <name>`),
+ * exactly like skills.sh ids, so `installSkill` needs no special-casing.
+ */
+export async function fetchEnvhavenSkills(): Promise<SkillsShResult[]> {
+  if (envhavenSkillsCache && Date.now() - envhavenSkillsCache.ts < SEARCH_CACHE_TTL_MS) {
+    return envhavenSkillsCache.results;
+  }
+  const url = `${GITHUB_API_BASE}/repos/${ENVHAVEN_SKILLS_SOURCE}/git/trees/HEAD?recursive=1`;
+  const res = await fetch(url, { headers: githubHeaders(), signal: AbortSignal.timeout(10000) });
+  if (!res.ok) {
+    throw new Error(`EnvHaven skills tree fetch failed: HTTP ${res.status}`);
+  }
+  const data = (await res.json()) as { tree?: Array<{ path: string; type: string }> };
+  const paths = (data.tree ?? [])
+    .filter((e) => e.type === 'blob' && ENVHAVEN_SKILL_PATH_RE.test(e.path))
+    .map((e) => e.path);
+  const results = (
+    await Promise.all(
+      paths.map(async (p): Promise<SkillsShResult | null> => {
+        try {
+          const raw = await fetchRawSkillMd(ENVHAVEN_SKILLS_SOURCE, p);
+          const name = parseSkillFrontmatter(raw).name ?? p.split('/')[1];
+          if (!name) return null;
+          // No `installs`: first-party skills have no install counter, and the
+          // UI hides the stat for entries without one rather than showing a
+          // fabricated zero.
+          return {
+            id: `${ENVHAVEN_SKILLS_SOURCE}/${name}`,
+            skillId: name,
+            name,
+            source: ENVHAVEN_SKILLS_SOURCE,
+          };
+        } catch {
+          return null;
+        }
+      })
+    )
+  ).filter((s): s is SkillsShResult => s !== null);
+  results.sort((a, b) => a.name.localeCompare(b.name));
+  envhavenSkillsCache = { results, ts: Date.now() };
+  return results;
+}
+
+/**
+ * Search skills.sh and EnvHaven's first-party skills together. EnvHaven
+ * results come first and are de-duplicated against skills.sh by
+ * (source, skillId). The literal query `envhaven` lists every EnvHaven skill;
+ * any other query includes the EnvHaven skills whose name matches. One source
+ * failing is tolerated (the other still renders); only a double failure throws.
+ */
+export async function searchAllSkills(query: string): Promise<SkillsShResult[]> {
+  const q = query.trim();
+  if (q.length < 2) return [];
+  const lq = q.toLowerCase();
+
+  const [shOutcome, envOutcome] = await Promise.allSettled([
+    searchSkillsSh(q),
+    fetchEnvhavenSkills(),
+  ]);
+
+  if (shOutcome.status === 'rejected' && envOutcome.status === 'rejected') {
+    const fmt = (r: unknown) => (r instanceof Error ? r.message : String(r));
+    throw new Error(
+      `skill search failed: skills.sh: ${fmt(shOutcome.reason)}; envhaven: ${fmt(envOutcome.reason)}`
+    );
+  }
+
+  const shSkills = shOutcome.status === 'fulfilled' ? shOutcome.value : [];
+  const allEnv = envOutcome.status === 'fulfilled' ? envOutcome.value : [];
+  const envSkills =
+    lq === 'envhaven' ? allEnv : allEnv.filter((s) => s.name.toLowerCase().includes(lq));
+
+  const seen = new Set<string>();
+  const merged: SkillsShResult[] = [];
+  for (const s of [...envSkills, ...shSkills]) {
+    const key = `${s.source}/${s.skillId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(s);
+  }
+  return merged;
 }
 
 export interface InstallResult {

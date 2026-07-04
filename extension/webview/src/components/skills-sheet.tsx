@@ -17,13 +17,15 @@ import { Input } from './ui/input';
 import { Button } from './ui/button';
 import { EmptyState } from './ui/empty-state';
 import { useWorkspaceStore } from '../stores/workspace-store';
+import { cn } from '../lib/utils';
 import {
   vscode,
   type InstalledSkill,
   type SkillsShResult,
 } from '../lib/vscode';
 
-const POPULAR_QUERIES = ['react', 'typescript', 'design', 'docker', 'review', 'testing'];
+const POPULAR_QUERIES = ['envhaven', 'react', 'typescript', 'design', 'docker', 'review', 'testing'];
+const ENVHAVEN_SOURCE = 'envhaven/envhaven';
 
 function formatInstalls(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -62,24 +64,35 @@ function SkillResultCard({
   };
   const { skillInstalling } = useWorkspaceStore();
   const installing = !!skillInstalling[SKILL_KEY(result.source, result.skillId)];
+  const firstParty = result.source === ENVHAVEN_SOURCE;
 
   return (
     <button
       onClick={() => onOpen(target)}
-      className="group flex w-full min-w-0 flex-col gap-1 overflow-hidden rounded-md border border-border bg-muted/20 p-3 text-left transition-colors hover:border-primary/40 hover:bg-accent/50"
+      className={cn(
+        'group flex w-full min-w-0 flex-col gap-1 overflow-hidden rounded-md border bg-muted/20 p-3 text-left transition-colors hover:border-primary/40 hover:bg-accent/50',
+        firstParty ? 'border-primary/30' : 'border-border'
+      )}
     >
       <div className="flex w-full min-w-0 items-start justify-between gap-2">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <span className="min-w-0 flex-1 truncate text-sm font-medium">{result.name}</span>
         </div>
-        <div className="flex shrink-0 items-center gap-1 font-mono text-[10px] tabular-nums text-muted-foreground">
-          <ArrowDownToLine className="h-3 w-3" />
-          {formatInstalls(result.installs)}
-        </div>
+        {result.installs !== undefined && (
+          <div className="flex shrink-0 items-center gap-1 font-mono text-[10px] tabular-nums text-muted-foreground">
+            <ArrowDownToLine className="h-3 w-3" />
+            {formatInstalls(result.installs)}
+          </div>
+        )}
       </div>
       <div className="flex w-full min-w-0 items-center justify-between gap-2">
-        <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+        <span
+          className={cn(
+            'min-w-0 flex-1 truncate text-[11px]',
+            firstParty ? 'text-primary/80' : 'text-muted-foreground'
+          )}
+        >
           {result.source}
         </span>
         {installed ? (
@@ -284,6 +297,7 @@ function SkillDetail({
     });
   };
 
+  const firstParty = target.source === ENVHAVEN_SOURCE;
   const description = entry?.frontmatter?.description;
 
   return (
@@ -357,13 +371,15 @@ function SkillDetail({
             <span />
           )}
           <div className="flex items-center gap-4">
-            <button
-              onClick={handleOpenOnSkillsSh}
-              className="inline-flex items-center gap-1 text-muted-foreground transition-colors hover:text-foreground"
-            >
-              skills.sh
-              <ExternalLink className="h-3 w-3" />
-            </button>
+            {!firstParty && (
+              <button
+                onClick={handleOpenOnSkillsSh}
+                className="inline-flex items-center gap-1 text-muted-foreground transition-colors hover:text-foreground"
+              >
+                skills.sh
+                <ExternalLink className="h-3 w-3" />
+              </button>
+            )}
             <button
               onClick={handleOpenOnGithub}
               className="inline-flex items-center gap-1 text-muted-foreground transition-colors hover:text-foreground"
@@ -394,10 +410,10 @@ function SkillDetail({
                 variant="ghost"
                 size="sm"
                 className="h-7 gap-1 text-xs"
-                onClick={handleOpenOnSkillsSh}
+                onClick={firstParty ? handleOpenOnGithub : handleOpenOnSkillsSh}
               >
                 <ExternalLink className="h-3 w-3" />
-                View on skills.sh
+                {firstParty ? 'View on GitHub' : 'View on skills.sh'}
               </Button>
             </div>
           ) : entry?.content ? (
@@ -420,13 +436,18 @@ function SkillDetail({
 function BrowseEmptyState({ onPick }: { onPick: (q: string) => void }) {
   return (
     <div className="space-y-3 py-8">
-      <p className="text-center text-xs text-muted-foreground">Type to search skills.sh</p>
+      <p className="text-center text-xs text-muted-foreground">Search EnvHaven and community skills</p>
       <div className="flex flex-wrap justify-center gap-1.5">
         {POPULAR_QUERIES.map((q) => (
           <button
             key={q}
             onClick={() => onPick(q)}
-            className="rounded-full border border-border bg-muted/20 px-2.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-primary/40 hover:bg-accent/50 hover:text-foreground"
+            className={cn(
+              'rounded-full border px-2.5 py-0.5 text-[11px] transition-colors',
+              q === 'envhaven'
+                ? 'border-primary/40 bg-primary/10 font-medium text-primary hover:border-primary/60 hover:bg-primary/15'
+                : 'border-border bg-muted/20 text-muted-foreground hover:border-primary/40 hover:bg-accent/50 hover:text-foreground'
+            )}
           >
             {q}
           </button>
@@ -543,7 +564,7 @@ export function SkillsSheet() {
                   ) : results === undefined ? (
                     <div className="flex items-center gap-2 py-8 text-xs text-muted-foreground justify-center">
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      Searching skills.sh…
+                      Searching skills…
                     </div>
                   ) : results.length === 0 ? (
                     <div className="py-8 text-center text-xs text-muted-foreground">

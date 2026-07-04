@@ -42,7 +42,7 @@ export interface SkillsShResult {
   id: string;
   skillId: string;
   name: string;
-  installs: number;
+  installs?: number; // absent for first-party skills (no install counter exists)
   source: string;
 }
 

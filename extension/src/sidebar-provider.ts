@@ -13,7 +13,7 @@ import { snapshot as resourceSnapshot, signalProcess } from './resource-monitor'
 import { TmuxControl } from './tmux-control';
 import {
   listInstalledSkills,
-  searchSkillsSh,
+  searchAllSkills,
   fetchSkillMarkdown,
   parseSkillFrontmatter,
   stripSkillFrontmatter,
@@ -273,7 +273,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         case 'searchSkills': {
           const query = typeof message.query === 'string' ? message.query : '';
           try {
-            const results = await searchSkillsSh(query);
+            const results = await searchAllSkills(query);
             this._view?.webview.postMessage({
               command: 'skillSearchResult',
               query,
