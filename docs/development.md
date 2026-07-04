@@ -148,6 +148,14 @@ eh    # Press 't' → 'e'
 bun dev/scripts/test-extension.ts
 ```
 
+### Console Server Tests
+
+```bash
+cd console && go vet ./... && go test -race -count=1 ./...
+```
+
+CI runs the same on every pull request. The suite covers both auth modes (platform JWT and web password), the session pump wire protocol, and pins the vendored xterm assets byte-for-byte (see `console/ui/assets/LICENSE`).
+
 ## Project Structure
 
 ```

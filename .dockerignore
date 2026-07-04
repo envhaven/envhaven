@@ -15,6 +15,9 @@ extension/node_modules
 extension/out
 extension/*.vsix
 
+# Console build artifact (rebuilt in Docker; churns via the dev test loop)
+console/console
+
 # Test scripts (not needed in image)
 test/
 

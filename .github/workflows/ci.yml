@@ -69,6 +69,24 @@ jobs:
           docker exec test-ssh pgrep sshd || exit 1
           docker rm -f test-ssh
 
+      - name: Test browser terminal
+        run: |
+          # With a password: the documented login -> cookie -> token flow works
+          # end to end through the real s6-launched binary.
+          docker run -d --name test-console -e PASSWORD=test envhaven:test
+          # Without a password: the gate holds and port 7681 never opens.
+          docker run -d --name test-nopass envhaven:test
+          sleep 15
+          docker exec test-console bash -c '
+            set -e
+            [ "$(curl -s -o /dev/null -w "%{http_code}" -d password=wrong http://localhost:7681/__console/login)" = 401 ]
+            [ "$(curl -s -o /dev/null -w "%{http_code}" -c /tmp/cj -d password=test http://localhost:7681/__console/login)" = 204 ]
+            curl -sf -b /tmp/cj http://localhost:7681/__console/token | grep -qE "^[0-9]+\."
+            curl -sf http://localhost:7681/__console/ui | grep -q "EnvHaven Terminal"
+          '
+          docker exec test-nopass bash -c '! curl -s --max-time 2 http://localhost:7681/'
+          docker rm -f test-console test-nopass
+
       - name: Test runtimes
         run: |
           docker run --rm envhaven:test bash -c "
@@ -127,3 +145,27 @@ jobs:
 
       - name: Test extension build
         run: bun dev/scripts/test-extension.ts
+
+  console:
+    name: Console
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          # `stable` keeps CI on a security-supported toolchain with nothing to
+          # bump, matching the Dockerfile's console-builder policy. go.mod's
+          # `go 1.22` directive is the language minimum, not the toolchain.
+          go-version: stable
+          cache-dependency-path: console/go.sum
+
+      - name: Vet
+        run: go vet ./...
+        working-directory: console
+
+      - name: Test
+        run: go test -race -count=1 ./...
+        working-directory: console

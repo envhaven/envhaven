@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EnvHaven Terminal</title>
+<link rel="stylesheet" href="/__console/assets/xterm.css">
+<style>
+  html, body { height: 100%; margin: 0; background: #1e1e1e; color: #ccc; font-family: system-ui, sans-serif; }
+  #term { position: absolute; inset: 0; padding: 6px; }
+  #term.hide { display: none; }
+  #login { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; }
+  #login.show { display: flex; }
+  form { background: #252526; padding: 24px; border-radius: 8px; display: flex; flex-direction: column; gap: 12px; min-width: 260px; }
+  h1 { font-size: 15px; margin: 0 0 4px; font-weight: 600; color: #eee; }
+  input { padding: 8px; border-radius: 4px; border: 1px solid #3c3c3c; background: #1e1e1e; color: #eee; font-size: 14px; }
+  button { padding: 8px; border: 0; border-radius: 4px; background: #0e639c; color: #fff; font-size: 14px; cursor: pointer; }
+  button:hover { background: #1177bb; }
+  .err { color: #f48771; font-size: 13px; min-height: 16px; }
+  /* While a predicted cursor is shown, neutralize xterm's real cursor DECORATION
+     only — background, accent colour, outline, blink — never the cell itself: in
+     the DOM renderer the cursor cell contains the character, so opacity/visibility
+     would blank every cell the trailing real cursor passes through. The #term id
+     is load-bearing: xterm's own non-blinking block rule carries !important behind
+     a six-class selector (and the blink class drops during activity, which is
+     exactly when the trailing cursor shows), so only an id out-specifies it. */
+  #term.eh-hide-cursor .xterm-cursor {
+    background-color: transparent !important;
+    color: inherit !important;
+    outline: none !important;
+    box-shadow: none !important;
+    border: none !important;
+    animation: none !important;
+  }
+</style>
+</head>
+<body>
+<div id="term"></div>
+<div id="login">
+  <form id="loginForm">
+    <h1>EnvHaven Terminal</h1>
+    <input id="password" type="password" placeholder="Password" autocomplete="current-password" autofocus>
+    <button type="submit">Connect</button>
+    <div class="err" id="err"></div>
+  </form>
+</div>
+<script src="/__console/assets/xterm.js"></script>
+<script src="/__console/assets/addon-fit.js"></script>
+<script>
+(function () {
+  // Wire protocol (shared with the managed dashboard client): every binary frame
+  // is [type][payload]; 0x00 = terminal bytes (both directions), 0x01 = a resize
+  // request carrying {cols,rows} JSON, browser to server only.
+  var DATA = 0x00, RESIZE = 0x01, PGATE = 0x02;
+  var enc = new TextEncoder();
+
+  var termEl = document.getElementById('term');
+  var loginEl = document.getElementById('login');
+  var errEl = document.getElementById('err');
+  var pwEl = document.getElementById('password');
+
+  var term = new Terminal({ cursorBlink: true, fontSize: 13, theme: { background: '#1e1e1e' }, allowProposedApi: true });
+  var fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(termEl);
+  fit.fit();
+
+  // Clipboard bridge. tmux already emits OSC 52 (ESC]52;;<base64>BEL) on every
+  // copy because the xterm-256color terminfo carries the Ms capability and the
+  // tmux config sets `set-clipboard on`; we just have to catch it here and write
+  // to the browser clipboard. Write-only on purpose: the '?' read form is ignored
+  // so nothing running in the pty can read the operator's clipboard.
+  //
+  // navigator.clipboard needs a secure context (https, or localhost), and a
+  // gesture-less write only lands on Chromium with the permission granted, so
+  // this is best-effort. The right-click handler below runs inside a real user
+  // gesture and covers plain http://<lan-ip>; tmux also mirrors every selection
+  // to /tmp/.envhaven-clipboard for the IDE extension regardless.
+  function writeClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(function () {});
+    }
+  }
+  term.parser.registerOscHandler(52, function (data) {
+    var i = data.indexOf(';'); // data is "<Pc>;<Pd>"; the 52; identifier is already stripped
+    if (i === -1) return true;
+    var pd = data.slice(i + 1);
+    if (pd === '' || pd === '?') return true;
+    try {
+      var bytes = Uint8Array.from(atob(pd), function (c) { return c.charCodeAt(0); });
+      writeClipboard(new TextDecoder().decode(bytes)); // fresh decoder; never reuse the socket's streaming decoder
+    } catch (e) { /* not valid base64; ignore */ }
+    return true;
+  });
+  termEl.addEventListener('contextmenu', function (e) {
+    if (!term.hasSelection()) return; // nothing selected: let the native menu open
+    e.preventDefault();
+    writeClipboard(term.getSelection());
+  });
+
+  // ── Predictive echo (zero-latency input) ──────────────────────────────────
+  // Each printable keystroke is painted instantly over the xterm screen, never
+  // touching the authoritative grid or cursor, so tmux's repaint can never be knocked
+  // out of sync. The optimistic state is ONE burst — `predicted` — snapshotted from
+  // the confirmed grid when it opens: `line` is the expected row content left of the
+  // cursor, which edits apply to (append on insert, pop on delete); `tail` is the
+  // known content right of it, which cursor moves shuttle into and out of; `floor`
+  // is the leftmost column predictions may reach. render() diffs `line` against the
+  // live grid and draws the difference; reconcile() only ever asks "does the grid
+  // now equal the line up to the cursor?".
+  //
+  // Per-keystroke bookkeeping is deliberately absent. The server applies keystrokes
+  // in order, so with inserts alone every intermediate echo state is a prefix of the
+  // predicted line and per-key checks would be sound; a deletion breaks that
+  // monotonicity (the echo of a char a later backspace removes passes through states
+  // that contradict newer predictions), so any per-key instantaneous test mis-confirms
+  // or mis-kills around deletes. Whole-line matching is immune: contradictory
+  // intermediates simply stay covered by the overlay until the echo stream converges,
+  // or an echo-patience deadline snaps back to server truth.
+  //
+  // SAFETY: a predicted character must never be painted where a secret is typed.
+  // The server watches the active tmux pane and sends a one-byte gate frame
+  // (0x02: 1 = safe, 0 = unsafe); the browser ADMITS a keystroke into the burst
+  // only while serverSafe is true, and a server "unsafe" clears everything pending.
+  // It starts false and re-arms only on an explicit server "safe", so a prediction
+  // can never precede the server's judgement of the pane. Every newline also
+  // disarms locally, so a password typed ahead in the same burst as its command
+  // (e.g. `sudo x`⏎`hunter2`⏎) is never drawn before the server re-inspects. A
+  // burst that exists at the local disarm is kept: it repaints only keystrokes that
+  // were typed while safe and are already on screen.
+  // Predictive echo is OPT-IN. Append ?echo=1 to the URL to turn on zero-latency
+  // local echo; without the parameter, or with ?echo=0, the page is a plain
+  // server-echo terminal that never draws a predicted character. The safety gate
+  // below still applies whenever echo is on.
+  var echoEnabled = new URLSearchParams(location.search).get('echo') === '1';
+  var serverSafe = false;  // the sole gate; set by the 0x02 frame, default-off fail-safe
+  var inputLen = 0;        // count of the user's own typed chars on the current line; a
+                           // predicted delete may never reach below this (never the prompt/output)
+  var predicted = null;    // the open edit burst: {absRow, line, sampled} — expected row content
+                           // up to the cursor; null while no optimism is pending
+  var rttEma = 0;          // smoothed ms round-trip of confirmed bursts, sizes the give-up timeout
+
+  // The server tells us when the active pane stops being a safe place to draw (a
+  // password/passphrase/PIN prompt, a running command, a remote or nested session,
+  // copy-mode). On "unsafe" we also drop any pending overlays so nothing lingers
+  // into a secret context.
+  function setSafe(s) {
+    if (s === serverSafe) return;
+    serverSafe = s;
+    if (!s) resetPredictions();
+  }
+
+  // A predicted char is drawn as our OWN absolutely-positioned span over the
+  // xterm screen (xterm decorations do not render glyph text reliably), so it is
+  // guaranteed visible yet still never touches the authoritative grid or cursor.
+  // Geometry comes straight from the screen element's measured cell size.
+  var predOverlay = null; // the single z-index:10 layer that holds all optimistic drawing
+  function overlay() {
+    if (predOverlay && predOverlay.isConnected) return predOverlay;
+    var screen = termEl.querySelector('.xterm-screen');
+    if (!screen) return null;
+    predOverlay = document.createElement('div');
+    predOverlay.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:10';
+    glyphLine = coverLine = predCursor = null; // children of a replaced overlay are detached; rebuild them
+    screen.appendChild(predOverlay);
+    return predOverlay;
+  }
+
+  // xterm's exact CSS cell size (pinned build), so an overlay glyph lands on the
+  // same pixel as the real one and does not wiggle when it settles. Falls back to
+  // the averaged screen size if the internal shape ever moves.
+  function cellDims() {
+    try {
+      var c = term._core._renderService.dimensions.css.cell;
+      if (c && c.width) return [c.width, c.height];
+    } catch (e) { /* fall through */ }
+    var s = termEl.querySelector('.xterm-screen');
+    return s ? [s.clientWidth / term.cols, s.clientHeight / term.rows] : [9, 17];
+  }
+
+  // xterm's DOM renderer stretches every cell to exactly cell.width by applying
+  // letter-spacing = cell.width - measured('W') to the rows. A real glyph therefore
+  // advances by charWidth + that spacing, which is NOT col*cell.width once charWidth
+  // differs even slightly from the cached 'W' — the gap accumulates left-to-right.
+  // Painting a predicted glyph at col*cell.width thus drifts a fraction of a pixel
+  // from where xterm will land the real one, so it visibly shifts as it settles. We
+  // avoid the drift entirely by flowing the run through the browser's own layout with
+  // this exact spacing (getComputedStyle rounds it, which reintroduces the drift).
+  function exactLetterSpacing(cw) {
+    try {
+      var w = term._core._renderService._renderer.value._widthCache.get('W', false, false);
+      if (w) return cw - w;
+    } catch (e) { /* fall through */ }
+    var s = termEl.querySelector('.xterm-rows span[style*="letter-spacing"]');
+    return s && s.style.letterSpacing ? parseFloat(s.style.letterSpacing) : 0;
+  }
+
+  // Whether the application has hidden the caret (DECTCEM, ESC[?25l). xterm stops
+  // painting .xterm-cursor when this is set, so we must not draw our predicted block
+  // over it either. Fails toward drawing if the internal shape ever moves.
+  function cursorHidden() {
+    try { return term._core._coreService.isCursorHidden; } catch (e) { return false; }
+  }
+
+  // Match the real text so predictions look native under any theme: read the
+  // foreground colour and font off the live xterm rows.
+  var styleFg = '', styleFF = '', styleFS = '', styleBg = '';
+  function refreshStyle() {
+    var rows = termEl.querySelector('.xterm-rows');
+    var cs = rows ? getComputedStyle(rows) : null;
+    styleFg = (term.options.theme && term.options.theme.foreground) || (cs && cs.color) || '#ffffff';
+    styleFF = (cs && cs.fontFamily) || 'monospace';
+    styleFS = (cs && cs.fontSize) || '13px';
+    styleBg = (term.options.theme && term.options.theme.background) || (cs && cs.backgroundColor) || '#1e1e1e';
+  }
+
+  // ── One renderer for the whole optimistic view ────────────────────────────
+  // Predicted glyphs, delete covers, and the cursor are ALL rebuilt from
+  // `predicted.line` by render(), laid out by the browser's own text engine so every
+  // glyph lands on the exact pixel xterm will use (no per-cell arithmetic, no
+  // settle-drift). We never touch the authoritative grid or the real cursor: as the
+  // server's echo catches up, the divergence point moves right and each rebuild lets
+  // the real glyphs beneath show through.
+  var glyphLine = null, coverLine = null, predCursor = null;
+  var owningNow = false, lastEditAt = 0, releaseTimer = 0;
+  var lastMeasureS = null, lastMeasureGx = 0; // cache the cursor's measured x by predicted text
+  var CURSOR_GRACE = 250; // keep owning the cursor this long after the last keystroke,
+                          // so a burst of edits never hands it back mid-stream (no flicker)
+
+  function lineCss(top, cw, ch, z) {
+    return 'position:absolute;left:0;top:' + top + 'px;white-space:pre;line-height:' + ch +
+      'px;font-family:' + styleFF + ';font-size:' + styleFS + ';letter-spacing:' + exactLetterSpacing(cw) + 'px;z-index:' + z;
+  }
+
+  // We own the cursor only while actively editing — an edit burst still open, or
+  // within a short grace of the last keystroke. Outside that window we release to
+  // xterm's real cursor, so blink, focus, and cursor-hide (DECTCEM) stay xterm's job
+  // and we never fight it during plain output. serverSafe is deliberately NOT
+  // consulted here: it gates what may ENTER the burst (predict) and a server
+  // "unsafe" clears the burst (setSafe), so an open burst is always safe to show —
+  // hiding it at the local newline disarm would un-paint a submitted line's tail
+  // while its echo is still in flight.
+  function owning() {
+    return echoEnabled && ws && ws.readyState === 1 &&
+      (predicted !== null || (performance.now() - lastEditAt) < CURSOR_GRACE);
+  }
+  function releaseCursor() {
+    if (glyphLine) glyphLine.style.display = 'none';
+    if (coverLine) coverLine.style.display = 'none';
+    if (predCursor) predCursor.style.display = 'none';
+    if (owningNow) { owningNow = false; termEl.classList.remove('eh-hide-cursor'); }
+    lastMeasureS = null; // drop the cached x; cell width may differ next session (resize)
+  }
+
+  function render() {
+    var ov = overlay(); if (!ov) return;
+    if (!owning()) { releaseCursor(); return; }
+    if (!styleFg) refreshStyle();
+    var dm = cellDims(), cw = dm[0], ch = dm[1];
+    var b = term.buffer.active, absRow = b.baseY + b.cursorY, cursorX = b.cursorX;
+    var line = b.getLine(absRow);
+    var base = line ? line.translateToString(false, 0, cursorX) : ''; // grid content, cols [0, cursorX)
+    // The predicted text up to the cursor. A burst on another row (the line scrolled
+    // under us) draws nothing extra: s = base degrades to just the block cursor.
+    var s = predicted && predicted.absRow === absRow ? predicted.line : base;
+    // First column where the prediction diverges from the grid: everything to its
+    // left is already correct on screen, so draw nothing there.
+    var div = 0, m = Math.min(s.length, base.length);
+    while (div < m && s.charCodeAt(div) === base.charCodeAt(div)) div++;
+    var fg = s.slice(div);                // predicted new glyphs to paint (inserts / overwrites)
+    if (!glyphLine) {
+      glyphLine = document.createElement('div');
+      coverLine = document.createElement('div');
+      predCursor = document.createElement('div');
+      ov.appendChild(glyphLine); ov.appendChild(coverLine); ov.appendChild(predCursor);
+    }
+    var top = b.cursorY * ch;
+    // Cover (z-index 1, behind the glyphs): of the grid cells between the predicted
+    // cursor and the real one, paint out ONLY those whose expected char (the tail)
+    // differs from what the grid shows — glyphs the model deleted, awaiting their
+    // erase echo. Cells the cursor merely stepped left over still hold their
+    // content and must stay visible. Same flow as the grid => each cover is exactly
+    // as wide as the glyph it hides, so no sliver escapes.
+    var coverFrom = Math.max(div, s.length), anyCover = false;
+    if (cursorX > coverFrom) {
+      coverLine.style.cssText = lineCss(top, cw, ch, 1);
+      coverLine.textContent = '';
+      var cpre = document.createElement('span'); cpre.style.color = 'transparent'; cpre.textContent = base.slice(0, coverFrom);
+      coverLine.appendChild(cpre);
+      for (var j = coverFrom, runStart = coverFrom, hideRun = null; j <= cursorX; j++) {
+        var hide = j < cursorX &&
+          !(predicted && predicted.absRow === absRow && predicted.tail[j - s.length] === base[j]);
+        if (hideRun === null) { hideRun = hide; runStart = j; continue; }
+        if (j < cursorX && hide === hideRun) continue;
+        var cspan = document.createElement('span'); cspan.textContent = base.slice(runStart, j);
+        if (hideRun) { cspan.style.color = styleBg; cspan.style.background = styleBg; anyCover = true; }
+        else { cspan.style.color = 'transparent'; }
+        coverLine.appendChild(cspan);
+        hideRun = hide; runStart = j;
+      }
+      // A pane that paints its OWN cursor (Claude Code: an inverse-video cell at its
+      // insertion point) leaves that cell stale at the REAL cursor while ours has
+      // already moved left. Repaint just that cell in plain video until the echo
+      // catches up. Gated on the inverse attribute so legitimately styled content
+      // (dim ghost text, syntax colours) is never touched.
+      if (predicted && predicted.absRow === absRow) {
+        var cc = line && line.getCell(cursorX);
+        if (cc && cc.isInverse()) {
+          var patch = document.createElement('span');
+          patch.style.color = styleFg; patch.style.background = styleBg;
+          patch.textContent = cc.getChars() || ' ';
+          coverLine.appendChild(patch);
+          anyCover = true;
+        }
+      }
+    }
+    coverLine.style.display = anyCover ? 'block' : 'none';
+    // Glyphs (z-index 2, on top): transparent prefix so the run flows onto the right
+    // columns, then the predicted characters in the foreground colour on a SOLID
+    // background — a doomed grid glyph beneath (erase echo still in flight) must not
+    // show through and overlap the prediction drawn over its cell.
+    glyphLine.style.cssText = lineCss(top, cw, ch, 2);
+    glyphLine.textContent = '';
+    var gpre = document.createElement('span'); gpre.style.color = 'transparent'; gpre.textContent = s.slice(0, div);
+    var gvis = document.createElement('span'); gvis.style.color = styleFg; gvis.style.background = styleBg; gvis.textContent = fg;
+    glyphLine.appendChild(gpre); glyphLine.appendChild(gvis);
+    glyphLine.style.display = 'block';
+    // Cursor (z-index 3): an OPAQUE block at the predicted column = the right edge of
+    // the whole predicted line, showing the char it sits on in inverse video like a
+    // real block cursor. Opaque so a half-deleted glyph can never show through it.
+    // Its x is the flowed width of `s`, cached by that text so identical predicted
+    // content does not force a layout read every frame. Suppressed when the application
+    // itself hid the caret (DECTCEM), so we never draw a block where xterm shows none.
+    if (cursorHidden()) {
+      predCursor.style.display = 'none';
+    } else {
+      var gx;
+      if (s === lastMeasureS) { gx = lastMeasureGx; }
+      else {
+        var screen = termEl.querySelector('.xterm-screen');
+        gx = glyphLine.getBoundingClientRect().right - screen.getBoundingClientRect().left;
+        lastMeasureS = s; lastMeasureGx = gx;
+      }
+      predCursor.style.cssText = 'position:absolute;pointer-events:none;z-index:3;left:' + gx + 'px;top:' + top +
+        'px;width:' + cw + 'px;height:' + ch + 'px;background:' + styleFg + ';color:' + styleBg +
+        ';font-family:' + styleFF + ';font-size:' + styleFS + ';line-height:' + ch + 'px;white-space:pre';
+      predCursor.textContent = (predicted && predicted.absRow === absRow
+        ? predicted.tail[0]
+        : line && line.translateToString(false, cursorX, cursorX + 1)) || '';
+      predCursor.style.display = 'block';
+    }
+    if (!owningNow) { owningNow = true; termEl.classList.add('eh-hide-cursor'); }
+  }
+  var refresh = render; // predict()/predictBackspace() ask for a redraw through this name
+
+  // Re-check ownership after the grace window even if no further server output arrives
+  // to trigger a render. The tick also reconciles, so a burst that never converges
+  // (a server stall, a pane that echoes differently) ages out by its timeout and the
+  // overlay releases instead of hanging on screen; it re-arms until ownership ends.
+  function armRelease() {
+    if (releaseTimer) clearTimeout(releaseTimer);
+    releaseTimer = setTimeout(function () {
+      releaseTimer = 0;
+      reconcile();                // release a confirmed burst, or time out a stalled one
+      render();                   // repaint what remains, or release if the burst closed
+      if (owning()) armRelease(); // keep ticking until we truly stop owning the cursor
+    }, CURSOR_GRACE + 20);
+  }
+  function touchEdit() { lastEditAt = performance.now(); armRelease(); }
+
+  // Rebuild the overlay AFTER every xterm paint: as the echo lands, the divergence
+  // point moves right and the run and covers shrink onto the freshly painted real
+  // glyphs with no gap, and the cursor tracks the real one when idle.
+  term.onRender(function () { render(); });
+
+  // Open an edit burst: snapshot the whole row. [0,cursor) becomes `line`, the
+  // predicted content left of the cursor that edits apply to; the rest becomes
+  // `tail`, the known content cursor moves shuttle into and out of. `floor` is the
+  // leftmost column predictions may reach: inputLen columns left of the cursor.
+  // Opened at the input's end that is exactly where the user's input starts; opened
+  // mid-input it can only be too far LEFT (inputLen counts own chars on both sides
+  // of the cursor), so an over-navigation stays possible and is corrected by the
+  // echo like any other mispredict. Refuses when the row holds wide (2-column)
+  // glyphs: string indices would stop matching grid columns and both the drawing
+  // and the whole-line match would misalign. (Predicted chars are ASCII-only.)
+  function startBurst() {
+    var b = term.buffer.active, absRow = b.baseY + b.cursorY;
+    var line = b.getLine(absRow);
+    var row = line ? line.translateToString(false, 0, term.cols) : '';
+    if (row.length !== term.cols) return false;
+    predicted = { absRow: absRow, line: row.slice(0, b.cursorX), tail: row.slice(b.cursorX),
+                  floor: Math.max(0, b.cursorX - inputLen), sampled: false, mismatched: false };
+    return true;
+  }
+
+  // Cursor navigation, char (arrows) or word (Option+Arrow): pure movement, content
+  // unchanged — chars shuttle between the end of `line` and the front of `tail` so
+  // the whole-line match and the renderer keep working unmodified. Leftward stops at
+  // the floor; rightward at the end of known content. A move the pane refuses (or
+  // resolves differently, e.g. an autosuggest accept) mismatches and converges to
+  // the echo like any other mispredict.
+  function predictMove(dir, times, byWord) {
+    var b = term.buffer.active;
+    if (predicted && predicted.absRow !== b.baseY + b.cursorY) { resetPredictions(); return; }
+    if (!predicted && !startBurst()) return;
+    for (var t = 0; t < times; t++) {
+      var line = predicted.line, tail = predicted.tail;
+      if (dir < 0) {
+        var i = line.length;
+        if (byWord) {
+          while (i > predicted.floor && line[i - 1] === ' ') i--;
+          while (i > predicted.floor && line[i - 1] !== ' ') i--;
+        } else { i--; }
+        if (i < predicted.floor) break;
+        predicted.line = line.slice(0, i);
+        predicted.tail = line.slice(i) + tail;
+      } else {
+        var max = (line + tail).replace(/ +$/, '').length - line.length; // known content to the right
+        if (max <= 0) break;
+        var j = 1;
+        if (byWord) {
+          j = 0;
+          while (j < max && tail[j] === ' ') j++;
+          while (j < max && tail[j] !== ' ') j++;
+        }
+        predicted.line = line + tail.slice(0, j);
+        predicted.tail = tail.slice(j);
+      }
+    }
+    predicted.sampled = false; predicted.mismatched = false;
+    touchEdit(); refresh();
+  }
+
+  function predictBackspace() {
+    if (inputLen <= 0) return;        // only the user's OWN typed characters may be optimistically deleted;
+                                      // never the prompt, command output, or anything left of the input start
+    var b = term.buffer.active;
+    // The row moved under the burst (output scrolled): the snapshot no longer
+    // describes what the cursor sits on. Abandon; the server echo takes over.
+    if (predicted && predicted.absRow !== b.baseY + b.cursorY) { resetPredictions(); return; }
+    if (!predicted && !startBurst()) return;
+    // Column 0: this backspace erases onto the previous row, which we do not model.
+    if (!predicted.line.length) { resetPredictions(); return; }
+    // At the input's left edge (after navigating there): the shell refuses this
+    // backspace, so predict nothing and let the (non-)echo agree with us.
+    if (predicted.line.length <= predicted.floor) return;
+    predicted.line = predicted.line.slice(0, -1);
+    predicted.sampled = false; predicted.mismatched = false;
+    inputLen--;                        // consumed one unit of the user's input
+    touchEdit(); refresh();
+  }
+
+  // One backward-kill-word (Option+Backspace, Ctrl-W): trailing blanks, then the
+  // word before them — the rule zsh and Claude Code share. Clamped to the user's
+  // own input like every predicted delete; when the pane's own word rule differs,
+  // the whole-line match simply converges to its echo.
+  function predictWordBackspace() {
+    if (inputLen <= 0) return;
+    var b = term.buffer.active;
+    if (predicted && predicted.absRow !== b.baseY + b.cursorY) { resetPredictions(); return; }
+    if (!predicted && !startBurst()) return;
+    var s = predicted.line, i = s.length;
+    while (i > predicted.floor && s[i - 1] === ' ') i--;
+    while (i > predicted.floor && s[i - 1] !== ' ') i--;
+    var k = Math.min(s.length - i, inputLen);
+    if (!k) { resetPredictions(); return; } // blank line (or input wrapped from a previous row): not modelled
+    predicted.line = s.slice(0, -k);
+    predicted.sampled = false; predicted.mismatched = false;
+    inputLen -= k;
+    touchEdit(); refresh();
+  }
+
+  function predict(d) {
+    if (!echoEnabled) return;                                     // opt-in via ?echo=1; off by default
+    // A newline (Enter, or a multi-line paste) submits the line: disarm instantly —
+    // covering the round trip before the server's grace-driven "unsafe" frame — and
+    // close the input boundary. The burst itself is KEPT: dropping it would un-paint
+    // keystrokes that were typed while safe and are already on screen (fast typing +
+    // Enter made the line's tail vanish until its echo landed), and keeping it paints
+    // nothing new — while disarmed, nothing can enter the burst. Echo frames outrun
+    // the gate's unsafe frame on the same ordered socket, so the line has normally
+    // converged (overlay invisible) before setSafe(false) clears it.
+    if (d.indexOf('\r') !== -1 || d.indexOf('\n') !== -1) { serverSafe = false; inputLen = 0; return; }
+    if (!serverSafe) return;                                      // the sole safety gate
+    // One or more backspaces (OS key-repeat can coalesce them into a single chunk).
+    if (/^[\x08\x7f]+$/.test(d)) { for (var k = 0; k < d.length; k++) predictBackspace(); return; }
+    // One or more word deletes: Option+Backspace arrives as ESC DEL (or ESC BS with
+    // Ctrl held), Ctrl-W as 0x17; key-repeat can coalesce several into one chunk.
+    if (/^(?:\x17|\x1b[\x08\x7f])+$/.test(d)) {
+      var times = d.match(/\x17|\x1b[\x08\x7f]/g).length;
+      for (var w = 0; w < times; w++) predictWordBackspace();
+      return;
+    }
+    // Cursor navigation. Arrows arrive as CSI (\x1b[D) or, under application cursor
+    // mode (DECCKM, set by zle and most TUIs), SS3 (\x1bOD); word jumps are the
+    // ESC b / ESC f this page itself sends for Option+Arrow. Key-repeat can
+    // coalesce a run into one chunk: every token is a fixed width, so count = len/width.
+    if (/^(?:\x1b\[D|\x1bOD)+$/.test(d)) { predictMove(-1, d.length / 3, false); return; }
+    if (/^(?:\x1b\[C|\x1bOC)+$/.test(d)) { predictMove(1, d.length / 3, false); return; }
+    if (/^(?:\x1bb)+$/.test(d)) { predictMove(-1, d.length / 2, true); return; }
+    if (/^(?:\x1bf)+$/.test(d)) { predictMove(1, d.length / 2, true); return; }
+    // One or more printable ASCII chars: each is a plain insert at the end of the
+    // predicted line (fast input can coalesce several keystrokes into one chunk).
+    if (/^[\x20-\x7e]+$/.test(d)) {
+      var b = term.buffer.active;
+      if (predicted && predicted.absRow !== b.baseY + b.cursorY) resetPredictions(); // row moved: reopen below
+      if (!predicted && !startBurst()) return;
+      // The autowrap column is not modelled; drop the burst so the wrap plays out
+      // as plain server echo (a kept-but-frozen line would cover the wrapped char).
+      if (predicted.line.length + d.length > term.cols - 1) { resetPredictions(); return; }
+      // Count into inputLen ONLY what is actually tracked — a char refused by the
+      // guards above must not inflate the count, or a later backspace could cover
+      // the prompt. Under-counting is the safe direction.
+      predicted.line += d;
+      predicted.sampled = false; predicted.mismatched = false;
+      inputLen += d.length;
+      touchEdit(); refresh();
+      return;
+    }
+    // Anything else — arrows, Home/End, Ctrl-U/W/K/C line edits, IME, a bracketed
+    // paste, any ESC sequence — moves or rewrites the line in ways we do not model.
+    // Abandon the optimistic view and forget the input boundary, so a later backspace
+    // can never delete below a position we can no longer trust.
+    resetPredictions();
+  }
+
+  // Runs after each inbound chunk is fully parsed (and on the grace tick), when the
+  // real grid and cursor hold tmux's truth. The burst is confirmed only when the row
+  // up to the cursor equals the predicted line EXACTLY; intermediate echo states (a
+  // char a later backspace removes, a coalesced erase+retype repaint) never match,
+  // so they neither confirm nor kill anything — the overlay keeps covering them.
+  function reconcile() {
+    if (!predicted) return;
+    var b = term.buffer.active, curAbs = b.baseY + b.cursorY, curCol = b.cursorX;
+    var line = b.getLine(curAbs);
+    var match = curAbs === predicted.absRow && curCol === predicted.line.length &&
+      !!line && line.translateToString(false, 0, curCol) === predicted.line;
+    // The deadline must outlast the WHOLE echo path — keystroke to application
+    // repaint — which is not a network round trip: through a tunnel into a busy TUI
+    // (Claude Code mid-render) that path is routinely hundreds of ms. Dropping a
+    // burst before its echo returns un-paints the typed chars and repaints them
+    // when the echo lands: exactly the flash this whole file exists to prevent. So
+    // patience is generous until measured (800ms), then three measured echo times
+    // floored at the cursor grace. Cost of over-patience is only how long a truly
+    // diverging pane keeps a stale overlay; the gate covers anything secret.
+    var now = performance.now(), deadline = rttEma ? Math.max(CURSOR_GRACE, rttEma * 3) : 800;
+    if (match) {
+      // The row is truth now: refresh the tail so later cursor moves and cover
+      // comparisons work from what is really right of the cursor (ghost text and
+      // hints change under us). Skipped if wide glyphs appeared there.
+      var t = line.translateToString(false, curCol, term.cols);
+      if (t.length === term.cols - curCol) predicted.tail = t;
+      // Sample the echo time only on a mismatch→match transition: a burst whose grid
+      // never diverged (a type-then-erase back to the start) matched before any echo
+      // landed, and its sample would drag the average toward zero. The average also
+      // jumps UP to a slow sample instantly and decays slowly, tracking the envelope
+      // of echo latency rather than its mean — patience is cheap, impatience flashes.
+      if (!predicted.sampled && predicted.mismatched) {
+        predicted.sampled = true;
+        var e = now - lastEditAt;
+        rttEma = e > rttEma ? e : rttEma * 0.8 + e * 0.2;
+      }
+      // Hold the burst even though it matches: a type-then-erase pair makes the grid
+      // match BEFORE the doomed char's echo arrives, and the held cover is what
+      // hides that transient when it lands. Nothing is drawn wrongly meanwhile — at
+      // zero divergence the overlay is invisible.
+      if (now - lastEditAt >= deadline) predicted = null;
+    } else {
+      predicted.mismatched = true;
+      if (now - lastEditAt > deadline) {
+        // Never converged: the pane is not echoing what we predicted. Snap to server
+        // truth and forget the input boundary too — after a divergence the count no
+        // longer maps to the grid, and a backspace measured against a fresh snapshot
+        // could cover the prompt. Under-counting is the safe direction.
+        resetPredictions();
+      }
+    }
+  }
+
+  function resetPredictions() {
+    predicted = null;
+    inputLen = 0;   // forget the input boundary; re-armed input starts counting fresh
+    lastEditAt = 0; // surrender the grace too, so owning() is false and the release sticks
+    releaseCursor();
+  }
+
+  var ws = null;             // the live socket; null while disconnected
+  var connecting = false;    // single-flight guard for connect()
+  var everConnected = false; // once a session worked, a transient token failure retries
+                             // via the banner; only a real 401 falls back to the login form
+
+  function showLogin(msg) {
+    errEl.textContent = msg || '';
+    loginEl.classList.add('show');
+    termEl.classList.add('hide');
+    pwEl.focus();
+  }
+  function hideLogin() {
+    loginEl.classList.remove('show');
+    termEl.classList.remove('hide');
+    fit.fit();
+    term.focus();
+  }
+
+  // connect fetches a short-lived token (cookie-gated) and opens the socket. A
+  // 401 means we are not logged in yet, so show the password form. Single-flight:
+  // `ws` stays null for the whole token round-trip, so without the guard every
+  // key typed in that window would open ANOTHER socket — each one a second tmux
+  // client whose broadcast repaints land in this same terminal, doubling every
+  // echoed character.
+  function connect() {
+    if (connecting || ws) return;
+    connecting = true;
+    fetch('/__console/token').then(function (r) {
+      if (r.status === 401) { showLogin(''); return null; }
+      if (!r.ok) throw new Error('token request failed: ' + r.status);
+      return r.text();
+    }).then(function (token) {
+      if (!token) { connecting = false; return; }
+      hideLogin();
+      openSocket(token);
+    }).catch(function (e) {
+      connecting = false;
+      if (everConnected) term.write('\r\n\x1b[33m[reconnect failed — press a key to retry]\x1b[0m\r\n');
+      else showLogin(String(e));
+    });
+  }
+
+  function openSocket(token) {
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    // cols/rows on the URL let the server create the pty at the terminal's real
+    // geometry, so the tmux attach paints once instead of 80x24-then-resize.
+    // echo=1 forwards the predictive-echo opt-in: the server runs its
+    // tmux-polling predict gate only for sessions that will actually draw.
+    var url = proto + '//' + location.host + '/__console?cols=' + term.cols + '&rows=' + term.rows;
+    if (echoEnabled) url += '&echo=1';
+    var sock = new WebSocket(url, ['envhaven.console', token]);
+    sock.binaryType = 'arraybuffer';
+    var sdec = new TextDecoder(); // per-socket stream state: a chunk cut mid-UTF-8 at disconnect must not bleed into the next session
+    ws = sock;
+    connecting = false;
+    sock.onopen = function () { everConnected = true; sendResize(); }; // resize catches a fit() that landed between URL build and open
+    // Handlers ignore a superseded socket: it must never write into the live
+    // terminal, and its late close must never clobber the live connection.
+    sock.onmessage = function (ev) {
+      if (ws !== sock) return;
+      var u8 = new Uint8Array(ev.data);
+      if (u8[0] === DATA) term.write(sdec.decode(u8.subarray(1), { stream: true }), reconcile);
+      else if (u8[0] === PGATE) setSafe(u8[1] === 1);
+    };
+    sock.onclose = function () {
+      if (ws !== sock) return;
+      ws = null;
+      serverSafe = false; // fail closed: re-arm only when a fresh server "safe" arrives
+      resetPredictions();
+      term.write('\r\n\x1b[33m[disconnected — press a key to reconnect]\x1b[0m\r\n');
+    };
+  }
+
+  function frame(type, payload) {
+    var out = new Uint8Array(payload.length + 1);
+    out[0] = type;
+    out.set(payload, 1);
+    return out;
+  }
+  function sendResize() {
+    if (!ws || ws.readyState !== 1) return;
+    ws.send(frame(RESIZE, enc.encode(JSON.stringify({ cols: term.cols, rows: term.rows }))));
+  }
+
+  function sendInput(d) {
+    if (!ws) { connect(); return; } // reconnect after a disconnect on first keypress
+    predict(d);
+    if (ws.readyState === 1) ws.send(frame(DATA, enc.encode(d)));
+  }
+  term.onData(sendInput);
+  // Option+Arrow. xterm.js encodes it as CSI 1;3A-D, which stock zsh leaves
+  // unbound — ZLE then self-inserts the sequence tail, printing a stray A/B/C/D.
+  // Translate left/right to the emacs meta sequences every line editor understands
+  // (backward-word / forward-word) — the same mapping VS Code's terminal ships on
+  // macOS — and up/down to plain arrows. Claude Code accepts both encodings.
+  var altArrow = { ArrowLeft: '\x1bb', ArrowRight: '\x1bf', ArrowUp: '\x1b[A', ArrowDown: '\x1b[B' };
+  term.attachCustomKeyEventHandler(function (ev) {
+    if (ev.type === 'keydown' && ev.altKey && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey && altArrow[ev.key]) {
+      sendInput(altArrow[ev.key]);
+      return false;
+    }
+    return true;
+  });
+  term.onResize(sendResize);
+  window.addEventListener('resize', function () { fit.fit(); resetPredictions(); });
+
+  document.getElementById('loginForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var body = new URLSearchParams();
+    body.set('password', pwEl.value);
+    fetch('/__console/login', { method: 'POST', body: body }).then(function (r) {
+      if (r.status === 204) { pwEl.value = ''; connect(); }
+      else if (r.status === 429) showLogin('Too many attempts. Wait a moment and try again.');
+      else showLogin('Invalid password.');
+    }).catch(function (e) { showLogin(String(e)); });
+  });
+
+  connect();
+})();
+</script>
+</body>
+</html>

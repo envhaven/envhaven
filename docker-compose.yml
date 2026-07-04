@@ -15,6 +15,7 @@ services:
     ports:
       - "8443:8443"   # code-server web UI
       - "2222:22"     # SSH access
+      # - "7681:7681" # browser terminal (needs PASSWORD or HASHED_PASSWORD)
       # Optional: Uncomment for dev server ports (bind to localhost for security)
       # - "127.0.0.1:3000:3000"   # Common app dev port (Next.js, etc.)
       # - "127.0.0.1:5173:5173"   # Vite dev server

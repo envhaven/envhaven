@@ -1,0 +1,18 @@
+#!/usr/bin/with-contenv bash
+# In-container console server. Runs in TWO modes, chosen by ENVHAVEN_MANAGED:
+#   - managed (ENVHAVEN_MANAGED=true): validates the platform's EdDSA JWT and is
+#     reached on loopback via the Cloudflare tunnel's /__console ingress.
+#   - self-hosted: validates the operator's web password (PASSWORD/HASHED_PASSWORD)
+#     and serves a browser terminal on :7681 (the operator maps the port).
+# Either way it attaches a pty to the shared `envhaven` tmux session, exactly like
+# SSH and the IDE terminal. With neither a managed marker nor a web password there
+# is nothing to authenticate against, so the service disables itself and the port
+# never opens — a no-password IDE never gets a console. The binary's own startup
+# is the authoritative second gate (it fatals if its mode is misconfigured).
+
+if [ "${ENVHAVEN_MANAGED:-}" != "true" ] && [ -z "${PASSWORD:-}" ] && [ -z "${HASHED_PASSWORD:-}" ]; then
+    s6-svc -Od .
+    exit 0
+fi
+
+exec s6-setuidgid abc /opt/envhaven/bin/envhaven-console

@@ -22,6 +22,24 @@ COPY tool-definitions.json ../tool-definitions.json
 RUN bun run build && bun run build:webview && vsce package --out /extension/envhaven.vsix
 
 # ============================================
+# STAGE 1b: Build in-container console server
+# ============================================
+# Keep this on a security-supported Go line (go.dev/doc/devel/release): the
+# stdlib compiled into the binary comes from THIS toolchain, and the console is
+# a network-exposed HTTP server. go.mod's `go 1.22` directive is the language
+# minimum and stays put (pump.go's idle timer documents the semantics it pins);
+# the toolchain here should track current.
+FROM golang:1.26 AS console-builder
+
+WORKDIR /console
+
+COPY console/go.mod console/go.sum ./
+RUN go mod download
+
+COPY console/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/envhaven-console .
+
+# ============================================
 # STAGE 2: Main EnvHaven Image
 # ============================================
 FROM linuxserver/code-server:latest
@@ -125,9 +143,13 @@ RUN curl -fsSL https://cli.kiro.dev/install | bash && \
 RUN curl -fsSL https://app.factory.ai/cli | sh && \
     mv /config/.local/bin/droid /opt/envhaven/bin/ 2>/dev/null || true
 
+# In-container console server (loopback terminal behind the /__console tunnel rule)
+COPY --from=console-builder /out/envhaven-console /opt/envhaven/bin/envhaven-console
+RUN chmod +x /opt/envhaven/bin/envhaven-console
+
 # Fix permissions so all tools can auto-update at runtime (user abc, uid=1000)
 # /mise: node, python, go, bun, gh, fd, opencode, uv, goose, cloudflared
-# /opt/envhaven: rustup, cargo, uv-tools, playwright, kiro, droid, envhaven CLI
+# /opt/envhaven: rustup, cargo, uv-tools, playwright, kiro, droid, envhaven CLI, console
 RUN chown -R 1000:1000 /mise /opt/envhaven
 
 # ============================================
@@ -152,6 +174,7 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/init-extensions/dependencies.d \
              /etc/s6-overlay/s6-rc.d/init-zsh-config/dependencies.d \
              /etc/s6-overlay/s6-rc.d/svc-sshd/dependencies.d \
              /etc/s6-overlay/s6-rc.d/svc-cloudflared/dependencies.d \
+             /etc/s6-overlay/s6-rc.d/svc-console/dependencies.d \
              /etc/s6-overlay/s6-rc.d/user/contents.d
 
 COPY runtime/scripts/init-extensions-run /etc/s6-overlay/s6-rc.d/init-extensions/run
@@ -162,6 +185,8 @@ COPY runtime/scripts/init-agent-config-run /etc/s6-overlay/s6-rc.d/init-agent-co
 COPY runtime/scripts/init-zsh-config-run /etc/s6-overlay/s6-rc.d/init-zsh-config/run
 COPY runtime/scripts/svc-sshd-run /etc/s6-overlay/s6-rc.d/svc-sshd/run
 COPY runtime/scripts/svc-cloudflared-run /etc/s6-overlay/s6-rc.d/svc-cloudflared/run
+COPY runtime/scripts/svc-console-run /etc/s6-overlay/s6-rc.d/svc-console/run
+COPY runtime/scripts/svc-console-finish /etc/s6-overlay/s6-rc.d/svc-console/finish
 
 RUN for svc in init-extensions init-vscode-settings init-agents-md init-agent-config init-user-config init-zsh-config; do \
         echo "oneshot" > /etc/s6-overlay/s6-rc.d/$svc/type && \
@@ -176,7 +201,13 @@ RUN for svc in init-extensions init-vscode-settings init-agents-md init-agent-co
     touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-sshd && \
     echo "longrun" > /etc/s6-overlay/s6-rc.d/svc-cloudflared/type && \
     chmod +x /etc/s6-overlay/s6-rc.d/svc-cloudflared/run && \
-    touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-cloudflared
+    touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-cloudflared && \
+    echo "longrun" > /etc/s6-overlay/s6-rc.d/svc-console/type && \
+    chmod +x /etc/s6-overlay/s6-rc.d/svc-console/run && \
+    chmod +x /etc/s6-overlay/s6-rc.d/svc-console/finish && \
+    touch /etc/s6-overlay/s6-rc.d/svc-console/dependencies.d/init-user-config && \
+    touch /etc/s6-overlay/s6-rc.d/svc-console/dependencies.d/init-zsh-config && \
+    touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-console
 
 # ============================================
 # Branding & UI Customization
@@ -268,6 +299,7 @@ ENV DOCKER_MODS=linuxserver/mods:code-server-zsh
 
 EXPOSE 8443
 EXPOSE 22
+EXPOSE 7681
 
 VOLUME /config
 
@@ -288,7 +320,8 @@ RUN node --version && \
     droid --version && \
     ([ "$INSTALL_DOCKER" != "true" ] || docker --version) && \
     ffmpeg -version && \
-    playwright --version
+    playwright --version && \
+    /opt/envhaven/bin/envhaven-console --version
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8443/healthz || exit 1

@@ -24,7 +24,7 @@ Inherited from [linuxserver/code-server](https://docs.linuxserver.io/images/dock
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ENVHAVEN_MANAGED` | false | Set to `true` for managed hosting mode (affects extension UI) |
+| `ENVHAVEN_MANAGED` | false | Set to `true` only on managed hosting: switches the extension UI and the browser terminal's auth to platform JWT mode, which needs platform-injected credentials. Do not set when self-hosting. |
 | `DEFAULT_SHELL` | bash | Set to `zsh` to use zsh as default shell |
 | `HAVEN_IDLE_TIMEOUT` | - | Auto-disconnect Haven CLI sessions after idle period (e.g., `30m`, `2h`, `0` to disable) |
 | `ENVHAVEN_SKIP_WELCOME` | - | Set to `1` to skip auto-attach to tmux on shell start |
@@ -152,6 +152,41 @@ environment:
 
 > **Note:** If using Cloudflare, SSH must use a direct A record (not proxied) since Cloudflare doesn't proxy arbitrary TCP.
 
+## Browser Terminal
+
+Alongside the VS Code IDE, the container serves a standalone browser terminal on port **7681**. It is a full xterm.js terminal attached to the same shared tmux session as SSH and the IDE's integrated terminal, so a session you start in one place shows up in the others.
+
+The terminal reuses your web password. It is gated by the same `PASSWORD` or `HASHED_PASSWORD` you already set for the IDE: log in once and the page connects. If you set neither, the terminal disables itself and port 7681 never opens, so a passwordless container never exposes a shell.
+
+Publish the port and open the terminal in a browser:
+
+```yaml
+ports:
+  - "7681:7681"   # browser terminal
+```
+
+Then visit `http://<host>:7681/` and enter your web password.
+
+> **Put TLS in front.** The login submits your password and the terminal carries live shell traffic, so run port 7681 behind the same HTTPS reverse proxy or tunnel you use for the IDE. Over plain HTTP the password and session ride the wire in the clear, exactly as they would for code-server itself.
+
+Briefly, how the auth works: a successful login sets a `SameSite=Strict`, `HttpOnly` session cookie scoped to `/__console`, valid for 12 hours. The page exchanges that cookie for a 60-second token and presents the token when it opens the WebSocket. The password never crosses the socket, and rotating it invalidates every issued cookie and token.
+
+### Predictive echo
+
+Over a distant or congested link the round trip between a keystroke and its echo is visible: you press a key, then wait a beat to see it appear. The terminal can hide that lag by painting each keystroke locally the moment you type it, then reconciling against the server's real output as it arrives. It is off by default. Add `?echo=1` to the URL to turn it on:
+
+```
+http://<host>:7681/__console/ui?echo=1
+```
+
+Without the parameter, or with `?echo=0`, the terminal shows only what the server sends, exactly as a normal SSH session does.
+
+Predictive echo is built to stay away from secrets, and it fails toward caution. The server watches the active shell and withholds local echo during standard hidden prompts (`sudo`, `passwd`, `read -s`, and anything else that turns off terminal echo), while known secret readers such as `gpg` and `pinentry` run in the foreground, and inside sessions it cannot see into (`ssh`, `docker`, a nested `tmux`). Any error on that path disables prediction rather than risking a guess.
+
+One honest caveat. A program that draws its own masked password field while keeping the terminal in a mode indistinguishable from a normal editor, and that is not on the server's known-reader list, can have a typed character painted for a moment before the mask catches up. The list covers the common cases; if that residual risk matters for your threat model, leave predictive echo off.
+
+Setting `ENVHAVEN_SKIP_WELCOME=1` disables predictive echo entirely. The safety gate watches the shared tmux session that shells normally auto-attach, and skipping the attach breaks that link, so the server refuses to predict rather than vouch for a pane it may not be showing.
+
 ## Docker Mods
 
 EnvHaven uses LinuxServer.io's DOCKER_MODS system to install developer tools at startup.
@@ -197,6 +232,7 @@ environment:
 | Port | Service |
 |------|---------|
 | 8443 | code-server (VS Code in browser) |
+| 7681 | Browser terminal (opens only when a web password is set) |
 | 22 | SSH access |
 
 ### User Application Ports (optional)
@@ -227,6 +263,7 @@ services:
     ports:
       - "8443:8443"   # code-server web UI
       - "2222:22"     # SSH access
+      # - "7681:7681" # browser terminal (needs PASSWORD or HASHED_PASSWORD)
       # Optional: Uncomment for dev server ports (bind to localhost for security)
       # - "127.0.0.1:3000:3000"   # Common app dev port
       # - "127.0.0.1:5173:5173"   # Vite dev server

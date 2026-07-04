@@ -12,6 +12,9 @@ extension/webview/.vite/
 extension/webview/node_modules/
 extension/webview/tsconfig.tsbuildinfo
 
+# Console build artifact (Go binary, rebuilt in Docker)
+console/console
+
 # Dependency directories
 node_modules/
 

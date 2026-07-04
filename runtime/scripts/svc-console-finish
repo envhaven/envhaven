@@ -1,0 +1,11 @@
+#!/bin/sh
+# Throttle svc-console restarts. envhaven-console exits non-zero when the
+# platform JWKS is unreachable at boot (fail-closed, by design). s6 would
+# otherwise respawn it about once a second until the API recovers; this sleep
+# widens that gap so a prolonged outage wastes less CPU. The console stays dark
+# while the API is down either way, so this only caps wasted work. Gated so a
+# clean exit ($1=0, which graceful SIGTERM stops also produce) is never
+# delayed; $1=256 covers death by signal — deliberate s6-svc -k as well as
+# crashes, whose respawn s6 already paces at about once a second. Kept under
+# s6's 5s default timeout-finish so the sleep always runs to completion.
+[ "$1" = 0 ] || [ "$1" = 256 ] || exec sleep 3
