@@ -33,6 +33,18 @@ Change the port in the EnvHaven extension sidebar if needed.
 
 **Reminder:** Apps MUST bind to `0.0.0.0` to be accessible via preview URL.
 
+### Custom Domains
+
+You can serve this workspace's preview on your own domain. Manage domains from the dashboard: https://envhaven.com/dashboard/domains
+
+| Step | Action |
+|------|--------|
+| 1 | In the dashboard Domains page, add your hostname |
+| 2 | At your DNS provider, add a CNAME from that hostname to `domains.envhaven.app` |
+| 3 | Wait for it to verify: status goes from `pending_dns` to `active`, or `failed` if the DNS record is missing or wrong |
+
+When the domain is `active`, it serves the preview (port 3000 by default).
+
 ---
 
 *Managed by EnvHaven. Support: [envhaven.com](https://envhaven.com)*
