@@ -255,10 +255,18 @@ bun run build            # Build webview
 
 | Command | Description |
 |---------|-------------|
-| `bun run build` | One-time TypeScript compilation |
+| `bun run build` | Bundle `src/` with esbuild (no type-check; see below) |
 | `bun run dev` | Watch mode (recompile on save) |
 | `bun run build:webview` | Build React webview |
 | `bun run package` | Create `envhaven.vsix` package |
+
+### Type checking the extension
+
+`bun run build` (and the extension stage of the image build) runs **esbuild**: it bundles `src/` but does **not** type-check. Only the webview is type-checked, through its own `tsc -b && vite build`. The gate for `src/` is `bun dev/scripts/test-extension.ts`, which CI runs on every pull request: it type-checks `src/` with `tsc --noEmit` and runs the extension unit tests before building anything. Run the same checks by hand:
+
+```bash
+cd extension && ./node_modules/.bin/tsc --noEmit -p tsconfig.json && bun test
+```
 
 ## Haven CLI Development
 

@@ -48,6 +48,23 @@ try {
   }
 }
 
+log.header('Type checking extension host');
+// esbuild bundles without type-checking, so this is the only gate for src/.
+try {
+  await $`./node_modules/.bin/tsc --noEmit -p tsconfig.json`.cwd(EXTENSION_DIR);
+  pass('Extension src type-checks (tsc --noEmit)');
+} catch {
+  fail('Extension src has type errors (tsc --noEmit)');
+}
+
+log.header('Running extension unit tests');
+try {
+  await $`bun test`.cwd(EXTENSION_DIR);
+  pass('Extension unit tests passed');
+} catch {
+  fail('Extension unit tests failed');
+}
+
 log.header('Building extension host');
 try {
   await $`bun run build`.cwd(EXTENSION_DIR);
