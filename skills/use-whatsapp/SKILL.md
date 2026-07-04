@@ -1,6 +1,6 @@
 ---
 name: use-whatsapp
-description: Stand up a personal WhatsApp ↔ Claude Code bridge. The user messages a WhatsApp number from their phone and Claude Code (with full agent loop, file tools, bash) replies. Uses Anthropic subscription auth (no per-token charges). Per-chat session continuity, daily 5am session resets with pre-flush memory extraction, three-role LID whitelist (owner / full-trust / restricted), group chat support with privacy mode (auto-allowed when an owner or full-trust user adds the bot), reply-to-message support, user-defined cron jobs scheduled in natural language, no slash commands. Optional auto-start (`/custom-cont-init.d/` on LinuxServer.io/EnvHaven, s6-rc, systemd-user, or launchd) so the bridge survives reboots. This skill builds a standalone Claude Code bridge.
+description: Stand up a personal WhatsApp ↔ Claude Code bridge. The user messages a WhatsApp number from their phone and Claude Code (with full agent loop, file tools, bash) replies. Uses Anthropic subscription auth (no per-token charges). Per-chat session continuity, daily 5am session resets with pre-flush memory extraction, two-role LID whitelist (owner / read-only guest), group chat support with privacy mode (auto-allowed when the owner adds the bot), reply-to-message support, user-defined cron jobs scheduled in natural language, no slash commands. Optional auto-start (`/custom-cont-init.d/` on LinuxServer.io/EnvHaven, s6-rc, systemd-user, or launchd) so the bridge survives reboots. This skill builds a standalone Claude Code bridge.
 ---
 
 # Use WhatsApp
@@ -13,18 +13,18 @@ The bridge runs as a Node process. Step 6 launches it in a tmux window so the QR
 
 - Full Claude Code agent loop in WhatsApp (Bash, file edits, web fetch, all tools).
 - Conversation context preserved per WhatsApp chat (SDK session resume).
-- Daily session reset at 5am with pre-flush memory extraction. The flush prompt is structured as a **strict decision tree** (journal / SOUL / feedback-mem / project-mem / reference-mem / TOOLS / CLAUDE) with an anti-redundancy rule, so the same fact never lands in two places.
-- **Three-role LID-based whitelist** (re-read on every message, no restart when edited). `OWNER_LID`: one LID with full trust plus authority to mutate the whitelist via natural language. `WHITELIST_NUMBERS`: comma-separated full-trust LIDs (everything the owner can do, except whitelist edits). `RESTRICTED_LIDS`: read-only LIDs. Restricted senders are hard-gated at the SDK level — the bridge passes `tools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch']` to the Agent SDK `query()` call for those turns, so `Bash`, `Edit`, `Write`, `NotebookEdit` are not in the model's context. The per-message system-prompt addendum remains as defense in depth.
+- Daily session reset at 5am with pre-flush memory extraction. The flush prompt is structured as a **strict decision tree** (journal / SOUL / feedback-mem / project-mem / reference-mem / TOOLS / CLAUDE) with an anti-redundancy rule, so the same fact never lands in two places. Extraction runs only on the **owner's** sessions; guest sessions are cleared without a full-tool resume, so a read-only transcript is never reprocessed with `Bash`/`Edit`, and guests accrue no durable memory or journal.
+- **Two-role LID-based whitelist** (re-read on every message, no restart when edited). `OWNER_LID`: exactly one LID, the only unrestricted principal, with the full Code toolset plus sole authority to mutate the whitelist, allow a group, and create crons via natural language. `GUEST_LIDS`: comma-separated read-only LIDs. Each guest turn passes the SDK `tools` option capped to exactly `['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch']`; under `bypassPermissions` that base-set cap is the real restrictor, since `Bash`, `Edit`, `Write`, and `Task` are simply absent from the model's context. A `PreToolUse` hook then confines those read tools to the workspace and the chat's own attachment dir, denying the bridge's `.env`, `auth/`, and `data/` (sessions, crons, allowed-groups, journals, other chats' attachments) and everything outside the workspace. Hooks deny even under `bypassPermissions`, so the confinement is structural rather than advisory.
 - Read receipts (blue ticks) on incoming messages.
 - Typing indicator while Claude is working.
 - Markdown → WhatsApp formatting (bold, italic, strikethrough, code blocks, bullets) with chunking for long replies.
-- **Reply-to-message support**: when the user quote-replies in WhatsApp, the bridge prepends `[The user is replying to "..."]` to Claude's prompt. Outbound replies auto-quote only when threading is genuinely ambiguous; group chats, or when the user sent newer messages while Claude was working; so calm 1:1 chats stay clean.
-- **Media handling**: images, videos, documents, stickers, **and voice notes** are downloaded to `data/attachments/<jid>/<msg-id>.<ext>` and surfaced to Claude as absolute paths in a bracketed prefix (`[image attached: …]`, `[audio attached: …]`, `[document attached: …]`, etc.). Claude's `Read` tool renders images and PDFs natively; other formats (audio, video, archives) are handled via `Bash` on demand. The bridge ships **no built-in transcription**; if the user wants voice notes auto-transcribed, Claude offers a tight set of ad-hoc install options on the first audio (see "Adjacent services" in `templates/TOOLS.md`).
-- **Group chat support with privacy mode**: bot ignores groups by default; when an **owner or full-trust** user adds it to a group, the bridge auto-records that group in `data/allowed-groups.json` and starts responding there. Restricted senders cannot auto-allow groups. Inside an allowed group, only senders with a role get replies; non-whitelisted members are still ignored. Owner can revoke a group by editing the file (Claude can do it via natural language). No tokens spent on un-allowed traffic; the gate runs before any Claude call. **Group privacy mode**: every reply in any allowed group runs with a system prompt addendum instructing Claude to abstract paths, secrets, and architecture details (heuristic; reduces leak surface to non-whitelisted readers).
+- **Reply-to-message support**: when the user quote-replies in WhatsApp, the bridge prepends `[The user is replying to a previous message: "..."]` to Claude's prompt. Outbound replies auto-quote only when threading is genuinely ambiguous; group chats, or when the user sent newer messages while Claude was working; so calm 1:1 chats stay clean.
+- **Media handling**: images, videos, documents, stickers, **and voice notes** are downloaded to `data/attachments/<safe-jid>/<msg-id>.<ext>` and surfaced to Claude as absolute paths in a bracketed prefix (`[image attached: …]`, `[audio attached: …]`, `[document attached: …]`, etc.). Claude's `Read` tool renders images and PDFs natively; other formats (audio, video, archives) are handled via `Bash` on demand. The bridge ships **no built-in transcription**; if the user wants voice notes auto-transcribed, Claude offers a tight set of ad-hoc install options on the first audio (see "Adjacent services" in `templates/TOOLS.md`).
+- **Group chat support with privacy mode**: bot ignores groups by default; when the **owner** adds it to a group, the bridge auto-records that group in `data/allowed-groups.json` and starts responding there. Guests cannot auto-allow groups. Inside an allowed group, only whitelisted senders (owner or guest) get replies; non-whitelisted members are still ignored. Owner can revoke a group by editing the file (Claude can do it via natural language). No tokens spent on un-allowed traffic, and the admission gate runs before any media download or read receipt, so un-allowed groups leak no disk write and no blue-tick presence. **Group privacy mode**: every reply in any allowed group runs with a system prompt addendum instructing Claude to abstract paths, secrets, and architecture details (heuristic; reduces leak surface to non-whitelisted readers).
 - **Optional auto-start**: install as a LinuxServer.io `/custom-cont-init.d/` script (recommended on EnvHaven, only path that survives image upgrade there), an s6-rc service (when `/etc/s6-overlay/` is host-mounted), a systemd-user service, or a launchd agent. Skill probes the env and offers the best fit.
-- **Cron jobs scheduled in natural language**. The user says "agendá un cron que cada lunes 9am me mande mi agenda" and Claude writes an entry to `data/crons.json` (5 fields: `jid`, `creatorLid`, `schedule`, `prompt`, `lastRun`); the in-process scheduler (60s tick, IANA timezone via `CRON_TIMEZONE`, `croner` library) re-reads the file each tick, so listing/editing/deleting is also natural language. Idempotent (`lastRun` persisted before fire), self-healing (catch-up after downtime collapses N missed runs into one fire), serialized through the same per-JID queue as messages so a 4:59am cron never races the 5am flush. Restricted senders cannot mutate the file (existing role gate).
+- **Cron jobs scheduled in natural language**. The user says "agendá un cron que cada lunes 9am me mande mi agenda" and Claude writes an entry to `data/crons.json` (5 fields: `jid`, `creatorLid`, `schedule`, `prompt`, `lastRun`); the in-process scheduler (60s tick, IANA timezone via `CRON_TIMEZONE`, `croner` library) re-reads the file each tick, so listing/editing/deleting is also natural language. Idempotent (`lastRun` persisted before fire), self-healing (catch-up after downtime collapses N missed runs into one fire), serialized through the same per-JID queue as messages so a 4:59am cron never races the 5am flush. Crons are owner-only: only the owner can create them, and at fire time `fireCron` skips any entry whose creator is no longer the owner and re-checks the allowed-groups gate before posting into a group.
 - No slash commands; everything driven by natural language and file edits.
-- Permissions are bypassed inside the container/sandbox; the system prompt instructs Claude to confirm before destructive actions and to enforce per-sender role limits (no whitelist edits except for the owner; no mutation tools for restricted senders; group-privacy abstraction in any allowed group). See *Security model and threat scope* in `templates/TOOLS.md` for the full threat model.
+- Permissions are bypassed inside the container/sandbox; the system prompt instructs Claude to confirm before destructive actions and to enforce per-sender role limits (only the owner edits the whitelist or allows groups; guests are read-only, held to the five read tools by the SDK `tools` cap and the read-jail hook; group-privacy abstraction in any allowed group). See *Security model and threat scope* in `templates/TOOLS.md` for the full threat model.
 
 ## When to use
 
@@ -38,7 +38,7 @@ Do NOT use this skill for: business-API integrations (this uses linked-device, n
 
 ## Security model
 
-This skill stands up a remote control channel for Claude Code. Anyone whose WhatsApp LID is whitelisted gets the bridge's host as if it were their shell, mediated by Claude running with `bypassPermissions`. Treat installing this skill the way you treat handing out an SSH key.
+This skill stands up a remote control channel for Claude Code. The **owner** LID gets the bridge's host as if it were their shell, mediated by Claude running with `bypassPermissions`; **guest** LIDs get a read-only view (the five read tools, jailed to the workspace). Treat granting the owner role the way you treat handing out an SSH key.
 
 **Intended use:** a single owner (you) drives Claude Code from your phone, on a host you control. Personal homelabs, dev workstations, self-hosted containers where you are the only operator.
 
@@ -46,18 +46,20 @@ This skill stands up a remote control channel for Claude Code. Anyone whose What
 
 **What is enforced:**
 
-- Group chats are ignored by default; only owner/full-trust senders can auto-allow a group by adding the bot.
-- Sender-role gate runs before any Claude call (no tokens spent on un-whitelisted traffic).
-- Restricted role is hard-gated at the SDK level: the `tools` option on the Agent SDK `query()` call restricts the model to `Read`, `Glob`, `Grep`, `WebFetch`, `WebSearch`. `Bash`, `Edit`, `Write`, `NotebookEdit` are not in the model's context for those senders. The system-prompt role addendum remains as defense in depth.
+- Group chats are ignored by default; only the owner can auto-allow a group by adding the bot. Guests cannot bring the bot into new groups.
+- Sender-role gate runs before any Claude call, and before any media download or read receipt (no tokens spent on un-whitelisted traffic; un-whitelisted senders and non-allowed groups cause no disk write and no blue-tick presence leak).
+- Guests are structurally read-only. Each guest turn passes the SDK `tools` option capped to exactly `Read`, `Glob`, `Grep`, `WebFetch`, `WebSearch`; under `bypassPermissions` this base-set cap is the real restrictor, since `Bash`, `Edit`, `Write`, and `Task` are absent from the model's context. A `PreToolUse` hook then jails those read tools to the workspace and the chat's own attachment dir, denying the bridge's `.env`, `auth/`, and `data/` and everything outside the workspace; hooks deny even under `bypassPermissions`. The system-prompt role addendum remains as defense in depth.
+- Sessions are keyed per (chat, sender). In a group, each sender gets an isolated transcript, so a guest can never resume the owner's session and read tool outputs (file contents) that were never posted to the group.
+- The daily memory flush runs only on the owner's sessions. Guest sessions are cleared without a full-tool resume, so a guest's read-only transcript is never reprocessed with `Bash`/`Edit` at 5am, and guests accrue no durable memory or journal.
 - Group privacy addendum instructs Claude to abstract paths, secrets, and architecture details whenever the conversation runs in a group.
 - `.env` is `chmod 600`-ed on boot in case it was copied from `.env.example` with a looser umask.
 - Media attachments are written `mode 0600` and aged out on the daily flush after 28 days, unless their basename is referenced from SOUL/TOOLS/CLAUDE, the journal, or auto-memory (same decision tree as memory itself).
-- Log lines never contain message text or reply previews; only sender ID, role, and counts.
+- Log lines record sender ID, role, and message length, not full message bodies; a quoted-reply preview (≤40 chars) appears when the user quote-replies.
 
 **What is NOT enforced (deliberately):**
 
-- `bypassPermissions` is the design, not a bug. Owner and full-trust senders get full tools. If you wouldn't let this sender run `sudo` on the host, do not whitelist them.
-- The `restricted` role's intent (read-only) is enforced via the SDK `tools` gate, but the role assignment itself lives in `.env`. An attacker with write access to `.env` can promote themselves; the boot-time chmod is hygiene, not a substitute for filesystem-level protection.
+- `bypassPermissions` is the design, not a bug. The owner gets full tools; if you wouldn't let someone run `sudo` on the host, do not make them the owner. Guests get read-only access to the workspace, so only add guests you'd let read your code.
+- The guest role's read-only limit is enforced via the SDK `tools` cap and the read-jail hook, but the role assignment itself lives in `.env`. An attacker with write access to `.env` can promote themselves to owner; the boot-time chmod is hygiene, not a substitute for filesystem-level protection.
 - No rate-limiting per sender. This is a personal bridge, not a public endpoint.
 
 See `templates/TOOLS.md` → *Security model and threat scope* for the full threat enumeration.
@@ -154,14 +156,14 @@ Otherwise probe its health (single-user-friendly, no sudo needed):
 PROC_ALIVE=$(pgrep -f "tsx.*$EXISTING_BRIDGE/src/index" >/dev/null && echo yes || echo no)
 AUTH_OK=$(test -f "$EXISTING_BRIDGE/auth/creds.json" && echo yes || echo no)
 OWNER=$(grep -E '^OWNER_LID=' "$EXISTING_BRIDGE/.env" 2>/dev/null | sed 's/^OWNER_LID=//' | head -1)
-WL=$(grep -E '^WHITELIST_NUMBERS=' "$EXISTING_BRIDGE/.env" 2>/dev/null | sed 's/^WHITELIST_NUMBERS=//' | head -1)
-WL_OK=$({ [ -n "$OWNER" ] || { [ -n "$WL" ] && [ "$WL" != "BOOTSTRAP" ]; }; } && echo yes || echo no)
+GUESTS=$(grep -E '^GUEST_LIDS=' "$EXISTING_BRIDGE/.env" 2>/dev/null | sed 's/^GUEST_LIDS=//' | head -1)
+WL_OK=$({ { [ -n "$OWNER" ] && [ "$OWNER" != "BOOTSTRAP" ]; } || [ -n "$GUESTS" ]; } && echo yes || echo no)
 ```
 
 `AskUserQuestion`: **Existing bridge detected at `$EXISTING_BRIDGE` (proc=$PROC_ALIVE, auth=$AUTH_OK, whitelist=$WL_OK, owner=${OWNER:-none}). What do you want to do?**
 
 - **Update bridge code** (Recommended); refresh template files (`src/`, `package.json`, `run.sh`), reinstall deps, restart. Preserves `auth/`, `data/`, `.env`. See *Management actions → M1 Update bridge code*
-- **Add a WhatsApp sender**; capture a new LID, ask for role (full-trust or restricted), append to the right list. See *Management actions → M3 Add sender*
+- **Add a WhatsApp sender**; capture a new LID and add them as a read-only guest (append to `GUEST_LIDS`). See *Management actions → M3 Add sender*
 - **Diagnose and repair**; run sanity checks against the existing install, propose fixes for whatever's broken. See *Management actions → M2 Diagnose and repair*
 - **Reinstall fresh**; back up the existing dir to `${EXISTING_BRIDGE}.bak.<ts>` and run Steps 1–9 from scratch. Requires QR rescan.
 
@@ -251,16 +253,16 @@ chmod 600 "$BRIDGE_DIR/.env"
 grep -qE '^CLAUDE_CWD=.+' "$BRIDGE_DIR/.env" || \
   sed -i "s|^CLAUDE_CWD=.*|CLAUDE_CWD=$WORKSPACE_DIR|" "$BRIDGE_DIR/.env"
 
-# Only set WHITELIST_NUMBERS=BOOTSTRAP if empty/missing (preserve real LIDs).
-grep -qE '^WHITELIST_NUMBERS=.+' "$BRIDGE_DIR/.env" || \
-  sed -i "s|^WHITELIST_NUMBERS=.*|WHITELIST_NUMBERS=BOOTSTRAP|" "$BRIDGE_DIR/.env"
+# Only set OWNER_LID=BOOTSTRAP if empty/missing (preserve a real captured LID).
+grep -qE '^OWNER_LID=.+' "$BRIDGE_DIR/.env" || \
+  sed -i "s|^OWNER_LID=.*|OWNER_LID=BOOTSTRAP|" "$BRIDGE_DIR/.env"
 ```
 
 `CLAUDE_CWD` stays pointed at the **workspace** even though the bridge lives elsewhere. That's deliberate: the bridge's process CWD is its own dir (relative paths for `data/`, `auth/`, `.env` resolve there), but the Agent SDK's `cwd` option; what Claude actually operates in via Read/Edit/Bash; is the user's workspace. This decoupling is what makes "bridge outside the workspace" work cleanly.
 
 **Don't ask the user for their phone number.** WhatsApp's modern privacy mode hides senders' phones from the bridge; you initially only see opaque **LIDs** like `111222333444555` (a 15-digit identifier with no relation to the phone number). The user can't know their LID in advance; we capture it in Step 7. (The bridge resolves LIDs to phone numbers opportunistically as Baileys observes them via `chats.phoneNumberShare` events and the per-message `senderPn` field; the whitelist accepts either form. But at bootstrap only the LID is reliable, and LID-form entries always work without depending on the resolver.)
 
-`WHITELIST_NUMBERS=BOOTSTRAP` is a placeholder so the bridge will start (it refuses to boot with an empty whitelist; otherwise every WhatsApp message would reach Claude). `BOOTSTRAP` is non-empty but won't match any real LID, so messages get logged as ignored; exactly what we need to capture the user's LID.
+`OWNER_LID=BOOTSTRAP` is a placeholder so the bridge will start (it refuses to boot unless `OWNER_LID` or `GUEST_LIDS` is non-empty; otherwise every WhatsApp message would reach Claude). `BOOTSTRAP` is non-empty but won't match any real LID, so messages get logged as ignored; exactly what we need to capture the user's LID in Step 7.
 
 ## Step 5; Set up SOUL.md and TOOLS.md
 
@@ -409,15 +411,14 @@ If empty after 30s of polling, the scan didn't complete; re-prompt. Don't assume
 
 ## Step 7; Capture the user's LID and assign OWNER_LID
 
-WhatsApp exposes senders as opaque **LIDs** (Linked Identifiers, `<digits>@lid`), not phone numbers. The role slots in `.env` use LIDs, and there's no way to know a person's LID before they message the bot once. Step 7 captures the install operator's LID and writes it to `OWNER_LID`. Subsequent senders are added later via M3 with a role choice (full-trust or restricted); the operator stays the only LID with whitelist-edit authority.
+WhatsApp exposes senders as opaque **LIDs** (Linked Identifiers, `<digits>@lid`), not phone numbers. The role slots in `.env` use LIDs, and there's no way to know a person's LID before they message the bot once. Step 7 captures the install operator's LID and writes it to `OWNER_LID`. Subsequent senders are added later via M3 as read-only guests; the operator stays the only unrestricted principal and the only LID with whitelist-edit authority.
 
-**Skip this step entirely if `OWNER_LID` is already set, or if `WHITELIST_NUMBERS` has real LIDs** (re-run after update or repair). Adding *new* senders is M3, not a re-run of Step 7:
+**Skip this step entirely if `OWNER_LID` is already set to a real LID** (present and not `BOOTSTRAP`; re-run after update or repair). Adding *new* senders is M3, not a re-run of Step 7:
 
 ```bash
 CURRENT_OWNER=$(grep -E '^OWNER_LID=' "$BRIDGE_DIR/.env" | sed 's/^OWNER_LID=//' | head -1)
-CURRENT_WL=$(grep -E '^WHITELIST_NUMBERS=' "$BRIDGE_DIR/.env" | sed 's/^WHITELIST_NUMBERS=//' | head -1)
-if [ -n "$CURRENT_OWNER" ] || { [ -n "$CURRENT_WL" ] && [ "$CURRENT_WL" != "BOOTSTRAP" ]; }; then
-  echo "Roles already populated (owner=${CURRENT_OWNER:-none}, full=$CURRENT_WL); skipping LID capture."
+if [ -n "$CURRENT_OWNER" ] && [ "$CURRENT_OWNER" != "BOOTSTRAP" ]; then
+  echo "Owner already set (owner=$CURRENT_OWNER); skipping LID capture."
   # → continue to Step 8
 fi
 ```
@@ -430,7 +431,7 @@ LOG_BASELINE=$(wc -l < /tmp/wa-claude.log)
 
 Tell the user:
 
-> Now message the bot from your phone (any text, e.g. "hi"). The first message gets dropped because no role matches yet (`WHITELIST_NUMBERS=BOOTSTRAP` is just a placeholder). It'll show up in the log as `Ignored message from <LID>`, with `(+<phone>)` alongside once Baileys has resolved the mapping (may take a message or two). I'll capture the LID and write it to `OWNER_LID`: this is your install, you bootstrap as the owner. Other senders can be added later by re-running the skill and asking to add a sender.
+> Now message the bot from your phone (any text, e.g. "hi"). The first message gets dropped because no role matches yet (`OWNER_LID=BOOTSTRAP` is just a placeholder). It'll show up in the log as `Ignored message from <LID>`, with `(+<phone>)` alongside once Baileys has resolved the mapping (may take a message or two). I'll capture the LID and write it to `OWNER_LID`: this is your install, you bootstrap as the owner. Other senders can be added later by re-running the skill and asking to add a sender.
 
 `AskUserQuestion`: **Have you sent the test message?**
 - **Yes; sent it** (proceed to poll)
@@ -458,11 +459,10 @@ If the poll times out, ask the user to verify they sent a message and re-poll.
 - **`<lid-2>`** (if multiple candidates)
 - **None of these; retry** (re-snapshot baseline and ask the user to send another test message)
 
-When confirmed, write to `OWNER_LID` and clear the bootstrap placeholder:
+When confirmed, write the captured LID to `OWNER_LID` (overwriting the `BOOTSTRAP` placeholder):
 
 ```bash
 sed -i "s|^OWNER_LID=.*|OWNER_LID=$LID|" "$BRIDGE_DIR/.env"
-sed -i "s|^WHITELIST_NUMBERS=BOOTSTRAP$|WHITELIST_NUMBERS=|" "$BRIDGE_DIR/.env"
 ```
 
 The bridge re-reads `.env` on every message; no restart needed. Tell the user to send another test message; this one should reach Claude. Verify:
@@ -482,8 +482,7 @@ Capture install state:
 ```bash
 BOT_NUMBER=$(grep -oP '✅ Connected to WhatsApp as \K\d+' /tmp/wa-claude.log | tail -1)
 OWNER_LID_VAL=$(grep -E '^OWNER_LID=' "$BRIDGE_DIR/.env" | sed 's/^OWNER_LID=//')
-WHITELIST_LIDS=$(grep -E '^WHITELIST_NUMBERS=' "$BRIDGE_DIR/.env" | sed 's/^WHITELIST_NUMBERS=//')
-RESTRICTED_LIDS_VAL=$(grep -E '^RESTRICTED_LIDS=' "$BRIDGE_DIR/.env" | sed 's/^RESTRICTED_LIDS=//')
+GUEST_LIDS_VAL=$(grep -E '^GUEST_LIDS=' "$BRIDGE_DIR/.env" | sed 's/^GUEST_LIDS=//')
 NODE_VER=$(node --version | sed 's/^v//')
 BAILEYS_VER=$(grep -oP '"@whiskeysockets/baileys":\s*"\K[^"]+' "$BRIDGE_DIR/package.json" | head -1)
 PKG_MGR=$(command -v pnpm >/dev/null && echo pnpm || echo npm)
@@ -498,8 +497,7 @@ sed -i \
   -e "s|<bot-phone>|$BOT_NUMBER|g" \
   -e "s|<tmux-session>|${TMUX_SESSION:-claude}|g" \
   -e "s|<owner-lid>|${OWNER_LID_VAL:-(none)}|g" \
-  -e "s|<whitelist>|${WHITELIST_LIDS:-(none)}|g" \
-  -e "s|<restricted>|${RESTRICTED_LIDS_VAL:-(none)}|g" \
+  -e "s|<guests>|${GUEST_LIDS_VAL:-(none)}|g" \
   -e "s|<node-version>|$NODE_VER|g" \
   -e "s|<baileys-version>|$BAILEYS_VER|g" \
   -e "s|<pkg-mgr>|$PKG_MGR|g" \
@@ -518,12 +516,11 @@ Sanity checklist (report to user):
 - [ ] Bot's WhatsApp number: **+`$BOT_NUMBER`**
 - [ ] Roles (read live from `.env`):
   - OWNER_LID: `$(grep -E '^OWNER_LID=' "$BRIDGE_DIR/.env" | sed 's/^OWNER_LID=//')`
-  - WHITELIST_NUMBERS: `$(grep -E '^WHITELIST_NUMBERS=' "$BRIDGE_DIR/.env" | sed 's/^WHITELIST_NUMBERS=//')`
-  - RESTRICTED_LIDS: `$(grep -E '^RESTRICTED_LIDS=' "$BRIDGE_DIR/.env" | sed 's/^RESTRICTED_LIDS=//')`
+  - GUEST_LIDS: `$(grep -E '^GUEST_LIDS=' "$BRIDGE_DIR/.env" | sed 's/^GUEST_LIDS=//')`
 - [ ] Logs: `/tmp/wa-claude.log` (mode 600)
 - [ ] Bridge dir mode 700 (other host users can't read auth/, .env, data/)
 - [ ] SOUL.md, TOOLS.md exist in `$WORKSPACE_DIR/`, referenced from CLAUDE.md
-- [ ] TOOLS.md WhatsApp section: Step 8 placeholders substituted (`grep -n '<bridge-dir>\|<bot-phone>\|<workspace>\|<tmux-session>\|<owner-lid>\|<whitelist>\|<restricted>\|<node-version>\|<baileys-version>\|<pkg-mgr>' "$WORKSPACE_DIR/TOOLS.md"` returns nothing inside the WhatsApp section). `<run-mechanism>`/`<restart-cmd>` are filled by Step 10.
+- [ ] TOOLS.md WhatsApp section: Step 8 placeholders substituted (`grep -n '<bridge-dir>\|<bot-phone>\|<workspace>\|<tmux-session>\|<owner-lid>\|<guests>\|<node-version>\|<baileys-version>\|<pkg-mgr>' "$WORKSPACE_DIR/TOOLS.md"` returns nothing inside the WhatsApp section). `<run-mechanism>`/`<restart-cmd>` are filled by Step 10.
 - [ ] Daily reset scheduled (check log for `Daily session reset scheduled for ...`)
 - [ ] Round-trip evidence: at least one `← \d+ turns` entry in the recent log (re-runs may not need a fresh test message; auth survived)
 
@@ -534,7 +531,7 @@ Hand off:
 > - **No slash commands**; say things in plain English; Claude edits files directly.
 > - **Permissions are bypassed** in this bridge; Claude is the safety check; it'll ask before destructive actions.
 > - **Sessions reset every day at 5am** local time. Continuity comes from SOUL.md, TOOLS.md, and the auto-memory directory.
-> - **Adding more senders**: ask Claude on WhatsApp to "let X message you" (you, the owner, are the only role allowed to authorize this; full-trust senders asking the same get refused and offered to relay). They message the bot first, you tell Claude the LID (or phone, if shown in the log) that just got rejected and pick a role: **full-trust** (everything you can do, except whitelist edits) or **restricted** (read-only). Claude updates `.env`. No restart needed.
+> - **Adding more senders**: ask Claude on WhatsApp to "let X message you" (you, the owner, are the only one allowed to authorize this; a guest asking the same gets refused and offered a relay). They message the bot first, you tell Claude the LID (or phone, if shown in the log) that just got rejected, and Claude appends it to `GUEST_LIDS`. Every non-owner sender is a read-only guest. No restart needed.
 > - **Groups**: the bot ignores group chats by default. When you add the bot to a group, the bridge auto-allows that group. Tell Claude "leave that group" or "stop responding in group X" to revoke. Other group members can't talk to the bot unless their LID is whitelisted.
 > - **TOOLS.md is the operating manual.** Every install detail (paths, restart command, current whitelist, package versions, auto-start mechanism) lives in `<WORKSPACE_DIR>/TOOLS.md` under the WhatsApp section. Edit it the moment you change config; future Claude sessions read it first and won't have to ask you twice.
 
@@ -571,7 +568,7 @@ USER_NAME=$USER_NAME
 
 [ -d "\$BRIDGE_DIR" ] || { echo "[wa-claude] bridge dir not found at \$BRIDGE_DIR, skipping"; exit 0; }
 
-# Drop privs. Explicit HOME (SDK reads ~/.claude/credentials) and PATH
+# Drop privs. Explicit HOME (SDK reads ~/.claude/.credentials.json) and PATH
 # (with-contenv doesn't inherit mise/asdf/nvm).
 /command/s6-setuidgid "\$USER_NAME" env \\
     HOME=$HOME_DIR \\
@@ -755,7 +752,7 @@ Run sanity checks against the existing install and propose fixes for failures. R
 |---|---|
 | `pgrep -f "tsx.*$EXISTING_BRIDGE/src/index"` returns a PID | None → restart per supervisor (see M1's restart block); if it crashes immediately, `tail -100 /tmp/wa-claude.log` and address |
 | `test -f $EXISTING_BRIDGE/auth/creds.json` | Missing → re-pair via Step 6 (do not reinstall; keeps data/, .env, customizations) |
-| `OWNER_LID` set or `WHITELIST_NUMBERS` has real LIDs | All slots empty (or only `BOOTSTRAP`) → run Step 7 to capture the owner; subsequent senders go through M3 |
+| `OWNER_LID` set to a real LID (not `BOOTSTRAP`) | Owner unset or only `BOOTSTRAP` → run Step 7 to capture the owner; subsequent senders go through M3 |
 | `node_modules/` present and matches lockfile | Missing/stale → `pnpm install` (or `npm install`) |
 | `data/sessions.json` parses as JSON | Corrupt → confirm with user, then `echo '{}' > data/sessions.json` (loses per-chat continuity but recoverable) |
 | Recent `Connection Closed` retries succeed | Exhausting all 5 retries → likely `loggedOut` (code 401); confirm, then `rm -rf auth/` and re-pair |
@@ -767,7 +764,7 @@ If everything passes, report green and stop; no changes.
 
 ### M3; Add a WhatsApp sender
 
-Capture a new LID and add them to the right role list. M3 never overwrites `OWNER_LID`; the operator stays the only LID with whitelist-edit authority. Only the operator (the LID matching `OWNER_LID`) should be running this flow; the bridge's role enforcement refuses whitelist edits requested by full-trust senders.
+Capture a new LID and add them to `GUEST_LIDS` as a read-only guest. M3 never overwrites `OWNER_LID`; the operator stays the only unrestricted principal and the only LID with whitelist-edit authority. Only the operator (the LID matching `OWNER_LID`) should be running this flow; the bridge's role enforcement refuses whitelist edits requested by guests.
 
 ```bash
 LOG_BASELINE=$(wc -l < /tmp/wa-claude.log)
@@ -775,7 +772,7 @@ LOG_BASELINE=$(wc -l < /tmp/wa-claude.log)
 
 Tell the user:
 
-> Have the new sender message the bot from their phone (any text). The first message gets dropped (their LID has no role yet) but shows up in the log as `Ignored message from <LID>`. I'll capture it and ask you what role to give them.
+> Have the new sender message the bot from their phone (any text). The first message gets dropped (their LID has no role yet) but shows up in the log as `Ignored message from <LID>`. I'll capture it and ask you to confirm before adding them as a read-only guest.
 
 `AskUserQuestion`: **Have they sent the test message?** Options: **Yes** / **Not yet**. On Yes, poll new lines only:
 
@@ -790,24 +787,16 @@ done
 
 If multiple new `Ignored from` lines appeared, `AskUserQuestion` to disambiguate (same pattern as Step 7). Always confirm even with a single candidate; the operator should see the LID before any write.
 
-Then ask the operator what role to assign:
+Then confirm with the operator before writing (there is no role choice; every non-owner sender is a read-only guest):
 
-`AskUserQuestion`: **Role for `<LID>` (with `(+<phone>)` if Baileys resolved it)?**
-- **Full-trust** (Recommended for known collaborators): Same powers as you, except cannot edit the whitelist or allowed-groups. Effectively shell access via Claude.
-- **Restricted**: Read-only role. Claude refuses Bash, Edit, Write, NotebookEdit, and any state-mutating tool on their behalf. Heuristic, not a sandbox.
+`AskUserQuestion`: **Add `<LID>` (with `(+<phone>)` if Baileys resolved it) as a read-only guest?**
+- **Add** (Recommended): Append the LID to `GUEST_LIDS`. Guests get the five read tools (`Read`, `Glob`, `Grep`, `WebFetch`, `WebSearch`), jailed by a hook to the workspace and their own chat's attachments; no `Bash`, `Edit`, or `Write`, and no access to the bridge config or other chats. Enforced by the SDK `tools` cap and the hook, so it holds even under `bypassPermissions`.
 - **Cancel**: Don't add.
 
-**Append** to the right list, never replace; preserve existing entries:
+On **Add**, append to `GUEST_LIDS`, never replace; preserve existing entries:
 
 ```bash
-case "$ROLE" in
-  full)
-    KEY=WHITELIST_NUMBERS ;;
-  restricted)
-    KEY=RESTRICTED_LIDS ;;
-  *)
-    echo "Cancelled, no change."; exit 0 ;;
-esac
+KEY=GUEST_LIDS
 CURRENT=$(grep -E "^${KEY}=" "$EXISTING_BRIDGE/.env" | sed "s|^${KEY}=||")
 if echo "$CURRENT" | tr ',' '\n' | grep -qx "$NEW_LID"; then
   echo "Already in $KEY; nothing to do."
@@ -819,7 +808,7 @@ else
 fi
 ```
 
-The bridge re-reads `.env` on every message; no restart. Ask the user to send another message from the new sender; verify with `tail -10 /tmp/wa-claude.log | grep -E "\[\d+/(full|restricted)\] →|← \d+ turns"`. The `/full` or `/restricted` suffix confirms the role gate matched.
+The bridge re-reads `.env` on every message; no restart. Ask the user to send another message from the new sender; verify with `tail -10 /tmp/wa-claude.log | grep -E "\[\d+/guest\] →|← \d+ turns"`. The `/guest` suffix confirms the role gate matched.
 
 ## Operational notes, troubleshooting, and design rationale
 

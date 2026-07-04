@@ -44,7 +44,7 @@ Stop responding in a group: ask Claude to "leave that group". Adds/removes JIDs 
 
 ### Cron jobs (manual)
 
-Schedule a recurring task: ask Claude on WhatsApp ("agendá un cron que cada lunes 9am me mande mi agenda"). Claude writes an entry to `data/crons.json`; the scheduler picks it up within 60s. List/edit/delete the same way (or open the file). Five fields per entry: `jid`, `creatorLid`, `schedule` (5-field cron in `CRON_TIMEZONE`), `prompt`, `lastRun`. After downtime, missed runs collapse to one fire. Restricted senders cannot mutate this file.
+Schedule a recurring task: ask Claude on WhatsApp ("agendá un cron que cada lunes 9am me mande mi agenda"). Claude writes an entry to `data/crons.json`; the scheduler picks it up within 60s. List/edit/delete the same way (or open the file). Five fields per entry: `jid`, `creatorLid`, `schedule` (5-field cron in `CRON_TIMEZONE`), `prompt`, `lastRun`. After downtime, missed runs collapse to one fire. Crons are owner-only; guests cannot create or run them.
 
 ### Uninstall auto-start
 
@@ -86,11 +86,11 @@ The template calls `sock.readMessages([m.key])` for every incoming message. If y
 
 ### "Ignored message from <id>" but the user IS the sender
 
-Add their LID (or `+phone` once Baileys resolves it) to `WHITELIST_NUMBERS`/`OWNER_LID`/`RESTRICTED_LIDS` in `.env`. Re-read on every message.
+Add their LID (or `+phone` once Baileys resolves it) to `GUEST_LIDS` (or `OWNER_LID` for the owner) in `.env`. Re-read on every message.
 
 ### QR not rendering after launch
 
-Most likely a startup error. Dump `tail -50 /tmp/wa-claude.log`. Common causes: Node < 20, `pnpm install` didn't finish, `.env` missing or all role slots empty (the bridge refuses to start; should be `WHITELIST_NUMBERS=BOOTSTRAP` during install Step 7).
+Most likely a startup error. Dump `tail -50 /tmp/wa-claude.log`. Common causes: Node < 20, `pnpm install` didn't finish, `.env` missing or all role slots empty (the bridge refuses to start; should be `OWNER_LID=BOOTSTRAP` during install Step 7).
 
 ### Window `wa-claude` doesn't exist after a crash
 
@@ -105,7 +105,7 @@ Some environments install tmux hooks (notably **EnvHaven**) that rewrite name-fo
 Check in order:
 1. `test -f auth/creds.json`
 2. `grep '✅ Connected' /tmp/wa-claude.log | tail -1`
-3. Sender's LID matches `WHITELIST_NUMBERS`/`OWNER_LID`? (Look for `Ignored message from`.)
+3. Sender's LID matches `OWNER_LID`/`GUEST_LIDS`? (Look for `Ignored message from`.)
 4. `pgrep -f 'tsx.*src/index'`
 
 ### Multiple devices conflict (code 440)
@@ -126,7 +126,7 @@ The wrapper backs off exponentially (2s → 60s cap). Tail `/tmp/wa-claude.log` 
 
 ### Bot was added to a group but doesn't respond
 
-Auto-allow only fires if (a) the bridge was online when added and (b) the inviter's LID is whitelisted (owner or full-trust). Otherwise, append the JID to `data/allowed-groups.json` manually:
+Auto-allow only fires if (a) the bridge was online when added and (b) the inviter's LID is the owner (`OWNER_LID`); guests cannot auto-allow a group. Otherwise, append the JID to `data/allowed-groups.json` manually:
 
 ```bash
 node -e 'const f="data/allowed-groups.json";const j=require("fs").existsSync(f)?JSON.parse(require("fs").readFileSync(f,"utf-8")):[];j.push("<group-jid>@g.us");require("fs").writeFileSync(f,JSON.stringify(j,null,2))'
@@ -150,7 +150,7 @@ $BRIDGE_DIR/                               (mode 700)
 ├── package.json          (pnpm/npm; tsx; ESM)
 ├── tsconfig.json         (strict, NodeNext, allowImportingTsExtensions)
 ├── run.sh                (resilient supervisor; bash loop + trap '' INT)
-├── .env                  (mode 600; WHITELIST_NUMBERS, CLAUDE_CWD, DAILY_RESET_HOUR)
+├── .env                  (mode 600; OWNER_LID, GUEST_LIDS, CLAUDE_CWD, DAILY_RESET_HOUR)
 ├── .gitignore            (auth/, data/, .env, node_modules)
 ├── auth/                 (Baileys linked-device creds; survives restarts)
 ├── data/
@@ -177,13 +177,13 @@ The bridge's process CWD is `$BRIDGE_DIR` (so `data/`, `auth/`, `.env` resolve t
 
 ### Media and attachments
 
-All inbound media (images, videos, documents, stickers, voice notes) is downloaded via Baileys `downloadMediaMessage` to `data/attachments/<jid>/<msg-id>.<ext>`. The extension comes from the WhatsApp `mimetype` (with a built-in lookup that includes the literal `audio/ogg; codecs=opus` PTT emits) or the document's original filename, fallback `.bin`. Claude's prompt receives a bracketed prefix with the absolute path: `[image attached: …]`, `[audio attached: …]`, `[document attached: …; original name: …]`, with any caption on the next line.
+All inbound media (images, videos, documents, stickers, voice notes) is downloaded via Baileys `downloadMediaMessage` to `data/attachments/<safe-jid>/<msg-id>.<ext>`. The extension comes from the WhatsApp `mimetype` (with a built-in lookup that includes the literal `audio/ogg; codecs=opus` PTT emits) or the document's original filename, fallback `.bin`. Claude's prompt receives a bracketed prefix with the absolute path: `[image attached: …]`, `[audio attached: …]`, `[document attached: …; original name: …]`, with any caption on the next line.
 
 The bridge does **no transcription, no OCR, no preprocessing**. Claude consumes the file via `Read` (images, PDFs) or shells out via `Bash` (`ffmpeg`, `pdftotext`, `unzip`) on demand.
 
 For voice notes, the bridge has no built-in transcription. The system prompt tells Claude to check `TOOLS.md` → "Adjacent services" first, then offer a tight install menu (faster-whisper local recommended; cloud fallback for no-GPU hosts). Once installed, the new service is documented in TOOLS.md and used automatically thereafter.
 
-Files are **not pruned** automatically. Clean manually if disk pressure becomes an issue.
+Attachments age out on the daily flush after 28 days, unless the basename is referenced from SOUL.md, TOOLS.md, CLAUDE.md, the journal, or auto-memory (the same decision tree as memory). See `ageAttachments` in `src/whatsapp.ts`.
 
 ### Resilience model
 
@@ -240,7 +240,7 @@ summary: <one line, ≤80 chars, the gist>
 
 Catch-up via `data/last-reset.json` if the bridge was down at 5am.
 
-1. **Per active JID**: one combined Claude call resumes the session and (a) walks the decision tree above, (b) writes today's journal entry at tier 1 with `summary:`, body ≤ 512 words, or **skips the file** if the session was trivial.
+1. **Per JID** (skipping any chat active within the last `FLUSH_IDLE_THRESHOLD_MS`, default 15 min): one combined Claude call resumes the session and (a) walks the decision tree above, (b) writes today's journal entry at tier 1 with `summary:`, body ≤ 512 words, or **skips the file** if the session was trivial.
 2. **Aging pass**: walk every JID's journal directory. Files at the right tier skipped (no LLM call). Files crossing a boundary re-summarized in one shot directly to the target tier. Files ≥28d deleted.
 3. **Reset SDK sessions** globally; stamp `data/last-reset.json`.
 

@@ -10,13 +10,22 @@ import {
 } from '@whiskeysockets/baileys';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { readdir, readFile, rmdir, stat, unlink } from 'node:fs/promises';
-import { dirname, extname, resolve } from 'node:path';
+import { dirname, extname, resolve, sep } from 'node:path';
 import qrcode from 'qrcode-terminal';
 import { pino } from 'pino';
-import { safeJid } from './claude.ts';
+import { safeSegment } from './claude.ts';
 
 const ALL_GROUPS_FILE = 'data/all-groups.json';
-const ATTACHMENTS_DIR = 'data/attachments';
+export const ATTACHMENTS_DIR = 'data/attachments';
+
+// Per-chat attachment directory: the SINGLE formula for where a chat's media lives.
+// The writer (downloadAttachment) and the guest read-jail (index.ts) both derive their
+// path from here, so the jail can never point somewhere other than where files land.
+export const attachmentDir = (jid: string): string => resolve(ATTACHMENTS_DIR, safeSegment(jid));
+
+/** A WhatsApp group JID. 1:1 chats are `@s.whatsapp.net` / `@lid`. The single
+ *  home for "is this a group?" so callers never re-spell the suffix check. */
+export const isGroupJid = (jid: string): boolean => jid.endsWith('@g.us');
 
 // Tight map of the mimetypes WhatsApp actually emits. Anything missing falls
 // back to the original filename's extension or `.bin`.
@@ -56,7 +65,13 @@ export type QuotedContext = {
   messageId?: string;
 };
 
-export type IncomingMessage = {
+/**
+ * The cheap fields (no media download) the admission gate needs. `IncomingMessage`
+ * extends this, so one value satisfies both the pre-download `admit` check and the
+ * full handler; the subset relationship is declared here rather than kept in sync by
+ * hand between two independent shapes.
+ */
+export type AdmitInfo = {
   jid: string;
   /** Canonical sender id (LID number for `@lid` JIDs, phone number otherwise). */
   senderNumber: string;
@@ -67,9 +82,11 @@ export type IncomingMessage = {
    * Always equal to senderNumber for non-LID JIDs (omitted then to avoid noise).
    */
   senderPhoneNumber?: string;
-  text: string;
   isGroup: boolean;
-  fromMe: boolean;
+};
+
+export type IncomingMessage = AdmitInfo & {
+  text: string;
   raw: proto.IWebMessageInfo;
   quoted?: QuotedContext;
 };
@@ -80,7 +97,7 @@ export type GroupAdd = {
   groupJid: string;
   groupName?: string;
   inviterNumber: string;
-  /** Same opportunistic resolution as IncomingMessage.senderPhoneNumber. */
+  /** Same opportunistic resolution as AdmitInfo.senderPhoneNumber. */
   inviterPhoneNumber?: string;
 };
 
@@ -91,6 +108,10 @@ export type WhatsAppHandle = {
   send: (jid: string, text: string, opts?: SendOpts) => Promise<void>;
   /** Best-effort presence update; never throws. */
   setTyping: (jid: string, on: boolean) => Promise<void>;
+  /** LID number → resolved phone number, if Baileys has observed the mapping. Lets
+   *  callers outside the message loop (flush, cron) match a phone-form OWNER_LID the
+   *  same way the live admission gate does. */
+  resolvePhone: (idNumber: string) => string | undefined;
 };
 
 // Silence Baileys' internal pino; connection.update gives us the events we care about.
@@ -133,13 +154,19 @@ async function downloadAttachment(
   ext: string,
 ): Promise<string> {
   const jid = m.key.remoteJid!;
-  const id = m.key.id!;
-  // safeJid mirrors what the journal directory uses; keeps both writes
-  // resilient to hostile JIDs that contain `..`, `/`, etc.
-  const dir = resolve(ATTACHMENTS_DIR, safeJid(jid));
+  // `m.key.id` is attacker-controlled (a scripted client sets any stanza id), so it
+  // goes through safeSegment (see its definition for why that blocks traversal). The
+  // assert below is a fail-closed backstop anchored to the attachments ROOT, so no
+  // future change to id/ext/jid handling can land a write outside the attachments tree.
+  const id = safeSegment(m.key.id!);
+  const root = resolve(ATTACHMENTS_DIR);
+  const dir = attachmentDir(jid);
   mkdirSync(dir, { recursive: true });
-  const buf = (await downloadMediaMessage(m, 'buffer', {})) as Buffer;
   const abs = resolve(dir, `${id}.${ext}`);
+  if (!abs.startsWith(root + sep)) {
+    throw new Error(`attachment path escaped the attachments dir: ${abs}`);
+  }
+  const buf = (await downloadMediaMessage(m, 'buffer', {})) as Buffer;
   writeFileSync(abs, buf, { mode: 0o600 });
   console.log(`  ↘ saved ${kind} (${buf.length} bytes)`);
   return abs;
@@ -300,6 +327,11 @@ const TRANSIENT_SEND_ERROR = /Connection Closed|Timed Out|Stream Errored|Connect
 
 export async function startWhatsApp(
   onMessage: (msg: IncomingMessage) => void | Promise<void>,
+  // Coarse pre-download admission. Consulted for every inbound message BEFORE any
+  // media download or read receipt, so un-whitelisted senders / non-allowed groups
+  // cause no disk write and no presence leak. Required: a bridge with no gate would
+  // hand every stranger's message to Claude, so there is no safe default.
+  admit: (info: AdmitInfo) => boolean,
   onGroupAdd?: (event: GroupAdd) => void | Promise<void>,
 ): Promise<WhatsAppHandle> {
   const { state: authState, saveCreds } = await useMultiFileAuthState('auth');
@@ -317,8 +349,8 @@ export async function startWhatsApp(
   const lidToPhone = new Map<string, string>();
   function recordLidMapping(lidJid: string | undefined | null, phoneJid: string | undefined | null): void {
     if (!lidJid || !phoneJid) return;
-    const lidNumber = lidJid.split('@')[0]!.split(':')[0]!;
-    const phoneNumber = phoneJid.split('@')[0]!.split(':')[0]!;
+    const lidNumber = jidToNumber(lidJid);
+    const phoneNumber = jidToNumber(phoneJid);
     if (lidNumber && phoneNumber) lidToPhone.set(lidNumber, phoneNumber);
   }
 
@@ -476,14 +508,15 @@ export async function startWhatsApp(
       for (const m of messages) {
         const jid = m.key.remoteJid;
         if (!jid) continue;
+        // The bot's own messages never need processing, a download, or a receipt.
+        if (m.key.fromMe) continue;
 
-        // Opportunistic LID → phone resolution. `senderPn` rides on the
-        // message key when WhatsApp folds the sender's phone JID into the
-        // envelope; not in the public Baileys 6.7.18 types; cast to access.
-        // Recorded BEFORE the lookup below so phone-form whitelist matches
-        // even for the first message from a freshly-resolvable sender.
+        // Opportunistic LID → phone resolution. `senderPn` rides on the message key
+        // when WhatsApp folds the sender's phone JID into the envelope; not in the
+        // public Baileys 6.7.18 types; cast to access. Recorded BEFORE admit so a
+        // phone-form whitelist entry matches even the first message from a sender.
         const senderPn = (m.key as { senderPn?: string | null }).senderPn ?? undefined;
-        const isGroup = jid.endsWith('@g.us');
+        const isGroup = isGroupJid(jid);
         const senderJid = isGroup ? (m.key.participant ?? jid) : jid;
         if (senderPn && senderJid.endsWith('@lid')) {
           recordLidMapping(senderJid, senderPn);
@@ -493,6 +526,22 @@ export async function startWhatsApp(
           ? lidToPhone.get(senderNumber)
           : undefined;
 
+        // ADMISSION BEFORE SIDE EFFECTS. Un-whitelisted senders and non-allowed
+        // groups are dropped here, before any media touches disk and before a read
+        // receipt is sent: hostile traffic costs no disk, leaks no presence, and can
+        // never reach the attachment writer. handle() re-checks authoritatively.
+        if (!admit({ jid, senderNumber, senderPhoneNumber, isGroup })) {
+          console.log(
+            `Ignored ${isGroup ? 'group ' : ''}message from ${senderNumber}` +
+              `${senderPhoneNumber ? ` (+${senderPhoneNumber})` : ''}${isGroup ? ` in ${jid}` : ''} (not admitted)`,
+          );
+          continue;
+        }
+
+        // Read receipt only for admitted senders, so bot presence isn't confirmed to
+        // strangers who merely know the number or share a group with the bot.
+        sock.readMessages([m.key]).catch(() => undefined);
+
         let text: string | null;
         try {
           text = await extractMessageContent(m);
@@ -501,16 +550,12 @@ export async function startWhatsApp(
           text = `[error procesando mensaje: ${err instanceof Error ? err.message : String(err)}]`;
         }
         if (!text) continue;
-        // Rewrite bot mentions in both the message body and any quoted
-        // context so Claude sees `@bot` instead of a 15-digit LID. mentionedJid
-        // in contextInfo carries the actual JID; the text is purely cosmetic.
+        // Rewrite bot mentions in both the message body and any quoted context so
+        // Claude sees `@bot` instead of a 15-digit LID; the text is purely cosmetic.
         text = rewriteBotMention(text);
         const quoted = extractQuoted(m);
         if (quoted) quoted.text = rewriteBotMention(quoted.text);
 
-        if (!m.key.fromMe) {
-          sock.readMessages([m.key]).catch(() => undefined);
-        }
         try {
           await onMessage({
             jid,
@@ -518,7 +563,6 @@ export async function startWhatsApp(
             senderPhoneNumber,
             text,
             isGroup,
-            fromMe: m.key.fromMe ?? false,
             raw: m,
             quoted,
           });
@@ -571,5 +615,5 @@ export async function startWhatsApp(
     }
   }
 
-  return { getSock: () => sock, send, setTyping };
+  return { getSock: () => sock, send, setTyping, resolvePhone: (n) => lidToPhone.get(n) };
 }

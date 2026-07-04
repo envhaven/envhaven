@@ -1,9 +1,9 @@
 import 'dotenv/config';
 import { chmodSync, readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, resolve } from 'node:path';
-import { ageAttachments, startWhatsApp, type GroupAdd, type IncomingMessage, type WhatsAppHandle } from './whatsapp.ts';
-import { ask, ageAllJournals, flushOneJid, loadAllSessions, loadLastReset, saveLastReset, safeJid, tierForAge, type AskOpts } from './claude.ts';
+import { dirname, resolve, sep } from 'node:path';
+import { ageAttachments, attachmentDir, isGroupJid, startWhatsApp, type AdmitInfo, type GroupAdd, type IncomingMessage, type WhatsAppHandle } from './whatsapp.ts';
+import { ask, ageAllJournals, clearSession, flushOneJid, loadAllSessions, loadLastReset, saveLastReset, safeSegment, sessionKeyFor, parseSessionKey, tierForAge, type AskOpts, type ReadJail } from './claude.ts';
 import { toWhatsApp, chunk } from './format.ts';
 import { startCronScheduler, type CronEntry } from './crons.ts';
 
@@ -31,9 +31,13 @@ const CRON_TIMEZONE = process.env.CRON_TIMEZONE?.trim() || Intl.DateTimeFormat()
 const SOUL_PATH = resolve(CWD, 'SOUL.md');
 const TOOLS_PATH = resolve(CWD, 'TOOLS.md');
 
-// Read-only tool set for `restricted` senders. Mirrors the enumeration the
-// system-prompt addendum spells out, so prose and SDK gate agree.
-const RESTRICTED_TOOLS = ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'] as const;
+// Base built-in tool set for guest (non-owner) turns, passed as `tools`. Under
+// permissionMode 'bypassPermissions' this cap is the ONLY thing that actually
+// restricts: exactly these tools exist for the turn, so Bash/Edit/Write/Task and
+// everything else are absent from the model's context (a `disallowedTools` denylist
+// would still leak KillShell/SlashCommand/MCP tools; `allowedTools` would not
+// restrict at all). A PreToolUse read-jail then path-confines these read tools.
+const GUEST_TOOLS = ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'] as const;
 
 // Re-read on every message so Claude can edit allowed-groups.json via its
 // file tools and the change takes effect immediately; no restart.
@@ -52,12 +56,12 @@ function saveAllowedGroups(groups: Set<string>): void {
   writeFileSync(ALLOWED_GROUPS_FILE, JSON.stringify([...groups], null, 2));
 }
 
-// Re-read role assignments from .env on every message so Claude can edit
-// them (via its file tools) and the change takes effect immediately. Three
-// role slots carry distinct authorities; getRole() returns the highest the
-// sender matches (owner > full > restricted).
-type Role = 'owner' | 'full' | 'restricted';
-type RoleAssignment = { ownerLid: string; full: string[]; restricted: string[] };
+// Re-read role assignments from .env on every message so an owner can edit them
+// (via Claude's file tools) and the change takes effect immediately. Two role
+// slots: OWNER_LID (exactly one; full trust) and GUEST_LIDS (read-only).
+// getRole() returns 'owner' if matched, else 'guest', else null.
+type Role = 'owner' | 'guest';
+type RoleAssignment = { ownerLid: string; guests: string[] };
 
 function parseEnvList(raw: string, key: string): string[] {
   for (const line of raw.split('\n')) {
@@ -80,11 +84,12 @@ function readRoles(): RoleAssignment {
   let raw = '';
   try { raw = readFileSync(ENV_PATH, 'utf-8'); } catch { /* fall through */ }
   return {
+    // The install-time bootstrap placeholder lives in OWNER_LID (`OWNER_LID=BOOTSTRAP`)
+    // so the bridge can boot before Step 7 captures the real owner. `BOOTSTRAP` is not
+    // a valid LID, so it matches no real sender and the bot ignores everyone until the
+    // real owner is set; no special-casing needed here.
     ownerLid: parseEnvList(raw, 'OWNER_LID')[0] ?? '',
-    // BOOTSTRAP is the placeholder used during install before Step 7 captures
-    // the real LID; filtered here so it never matches an actual sender.
-    full: parseEnvList(raw, 'WHITELIST_NUMBERS').filter((v) => v !== 'BOOTSTRAP'),
-    restricted: parseEnvList(raw, 'RESTRICTED_LIDS'),
+    guests: parseEnvList(raw, 'GUEST_LIDS'),
   };
 }
 
@@ -92,16 +97,29 @@ function getRole(lid: string, phone?: string): Role | null {
   const r = readRoles();
   const matches = (slot: string) => slot === lid || (!!phone && slot === phone);
   if (r.ownerLid && matches(r.ownerLid)) return 'owner';
-  if (r.full.some(matches)) return 'full';
-  if (r.restricted.some(matches)) return 'restricted';
+  if (r.guests.some(matches)) return 'guest';
   return null;
 }
 
 const initialRoles = readRoles();
-const initialAny = [initialRoles.ownerLid, ...initialRoles.full, ...initialRoles.restricted].filter(Boolean);
+const initialAny = [initialRoles.ownerLid, ...initialRoles.guests].filter(Boolean);
 if (initialAny.length === 0) {
-  console.error('❌ All role slots empty in .env (OWNER_LID, WHITELIST_NUMBERS, RESTRICTED_LIDS). Refusing to start; every WhatsApp message would reach Claude.');
+  console.error('❌ All role slots empty in .env (OWNER_LID, GUEST_LIDS). Refusing to start; every WhatsApp message would reach Claude.');
   console.error('   Add at least one LID. After someone messages the bot, their LID appears in the "Ignored message" log.');
+  process.exit(1);
+}
+
+// Guest confinement (guestReadJail) confines a search's ROOT, not a Grep/Glob's descent
+// below it, so it is only sound when the workspace (CWD, where guests read) is DISJOINT
+// from the bridge dir that holds .env/auth/data. The installer guarantees this by pointing
+// CLAUDE_CWD at a sibling workspace; refuse to start if a secret root sits inside CWD,
+// rather than silently let a guest Grep the bridge's own secrets.
+const cwdRoot = resolve(CWD);
+const leaked = [ENV_PATH, 'auth', 'data']
+  .map((p) => resolve(p))
+  .find((r) => r === cwdRoot || r.startsWith(cwdRoot + sep));
+if (leaked) {
+  console.error(`❌ CLAUDE_CWD (${CWD}) contains the bridge's own ${leaked}; a guest could read it. Point CLAUDE_CWD at a workspace outside the bridge directory.`);
   process.exit(1);
 }
 
@@ -112,8 +130,7 @@ try { chmodSync(ENV_PATH, 0o600); } catch { /* fine */ }
 
 console.log(
   `Whitelist (initial): owner=${initialRoles.ownerLid || '(none)'} ` +
-    `full=[${initialRoles.full.join(',')}] ` +
-    `restricted=[${initialRoles.restricted.join(',')}]`,
+    `guests=[${initialRoles.guests.join(',')}]`,
 );
 console.log(`Working directory: ${CWD}`);
 if (MODEL) console.log(`Model override: ${MODEL}`);
@@ -188,9 +205,9 @@ temporal context ("Es lunes 9am, mostrale al usuario su agenda"). At fire
 time the bridge re-checks the creator's role; if they were removed from the
 whitelist the run is skipped, the entry stays.
 
-To list / delete / modify, edit the array. Restricted senders cannot mutate
-this file (the role gate above already blocks Edit/Write); they may Read it
-to answer "what's scheduled?".
+To list / delete / modify, edit the array. Owner only: guests are read-only
+(no Edit/Write) and cannot reach the bridge's \`data/\` dir, so scheduling,
+listing, and editing crons is an owner action.
 
 Catch-up after downtime is collapsed: N missed occurrences fire as one. Don't
 write logic that assumes every scheduled occurrence delivered.
@@ -248,8 +265,8 @@ function buildPrompt(msg: IncomingMessage): string {
 
 type JournalEntry = { date: string; tier: number; body: string; summary?: string };
 
-function readJournalEntries(jid: string): JournalEntry[] {
-  const dir = resolve(JOURNAL_DIR, safeJid(jid));
+function readJournalEntries(key: string): JournalEntry[] {
+  const dir = resolve(JOURNAL_DIR, safeSegment(key));
   if (!existsSync(dir)) return [];
   const entries: JournalEntry[] = [];
   for (const name of readdirSync(dir)) {
@@ -285,8 +302,8 @@ function readJournalEntries(jid: string): JournalEntry[] {
 // tier 3+4 collapse to a TOC of date + one-line summary so older context costs
 // O(entries) tokens, not O(entries × budget). Claude can still Read the file
 // directly via the path hint when something older is referenced.
-function buildJournalText(jid: string): string {
-  const entries = readJournalEntries(jid);
+function buildJournalText(key: string): string {
+  const entries = readJournalEntries(key);
   if (entries.length === 0) return '';
   const buckets: Record<number, JournalEntry[]> = { 1: [], 2: [], 3: [], 4: [] };
   const now = new Date();
@@ -315,7 +332,7 @@ function buildJournalText(jid: string): string {
     }
   }
   if (tocLines.length > 0) {
-    const dirHint = resolve(JOURNAL_DIR, safeJid(jid));
+    const dirHint = resolve(JOURNAL_DIR, safeSegment(key));
     sections.push(
       `## 15–27 days ago (TOC only)\n\n_Bodies elided to keep this prompt small. Read \`${dirHint}/<date>__*.md\` if the user references one._\n\n${tocLines.join('\n')}`,
     );
@@ -326,12 +343,13 @@ function buildJournalText(jid: string): string {
 
 function buildRoleAddendum(role: Role): string {
   if (role === 'owner') {
-    return `\n\n# Sender role: owner\n\nThis sender is the OWNER of this bridge install. They have full trust AND can mutate the whitelist (\`.env\` keys: \`OWNER_LID\`, \`WHITELIST_NUMBERS\`, \`RESTRICTED_LIDS\`) and \`data/allowed-groups.json\`. Honor whitelist-edit requests directly.`;
+    return `\n\n# Sender role: owner\n\nThis sender is the OWNER of this bridge install. They have full trust AND can mutate the whitelist (\`.env\` keys \`OWNER_LID\`, \`GUEST_LIDS\`) and \`data/allowed-groups.json\`. Honor whitelist-edit requests directly.`;
   }
-  if (role === 'full') {
-    return `\n\n# Sender role: full-trust\n\nThis sender is full-trust but is NOT the owner. They can ask you to do anything you'd do for the owner EXCEPT modifying the whitelist or allowed-groups files. If they ask you to add or remove a sender, change roles, or allow or revoke a group, refuse politely: explain that only the owner (set in \`.env\` as \`OWNER_LID\`) can authorize whitelist changes, and offer to relay the request to the owner.`;
-  }
-  return `\n\n# Sender role: restricted\n\nThis sender is RESTRICTED. They can ask you to read files, search the workspace (Glob, Grep), fetch web pages (WebFetch, WebSearch), and discuss code. Do NOT use \`Bash\`, \`Edit\`, \`Write\`, \`NotebookEdit\`, \`KillShell\`, or any tool that mutates state on their behalf. If they ask you to do something that requires mutation (run a command, modify a file, push to git, install a package, restart a service, edit \`.env\` or \`data/allowed-groups.json\`), refuse and explain: their role is read-only; only the owner can change their role in \`.env\`. Whitelist edits and group-allow authorizations are off-limits regardless.`;
+  // Guests are structurally read-only: the SDK gave this turn only Read/Glob/Grep/
+  // WebFetch/WebSearch and a hook confines those reads to the workspace, so mutation
+  // and cross-chat/config reads are impossible, not merely discouraged. This prose
+  // is defense in depth and shapes the refusal.
+  return `\n\n# Sender role: guest\n\nThis sender is a GUEST (read-only). They can ask you to read files, search the workspace (Glob, Grep), fetch web pages (WebFetch, WebSearch), and discuss code. This turn has NO \`Bash\`/\`Edit\`/\`Write\`/\`Task\`; the SDK removed them, and your file reads are confined to the workspace and this chat's own attachments. If they ask for anything that needs mutation (run a command, modify a file, git push, install, restart, edit \`.env\` or \`data/allowed-groups.json\`), or to read the bridge's own config/credentials or another chat's data, tell them plainly you can't: guest access is read-only and workspace-scoped, and only the owner (\`OWNER_LID\` in \`.env\`) can change roles.`;
 }
 
 function buildGroupPrivacyAddendum(isGroup: boolean): string {
@@ -339,31 +357,57 @@ function buildGroupPrivacyAddendum(isGroup: boolean): string {
   return `\n\n# Group chat privacy\n\nThis is a WhatsApp group chat. Other members of the group (including ones not in any whitelist) can read your replies. Treat the group as a public space:\n\n- Avoid absolute file paths inside the workspace; refer to files by name only ("the API handler", "the deploy script").\n- Do not include environment variable values, API keys, tokens, secrets, or auth flow details.\n- Do not include URLs, hostnames, or endpoints that aren't already public.\n- Avoid internal architecture details, security configurations, or anything you'd treat as sensitive in a 1:1.\n\nIf the user needs full detail, suggest they DM you. When you must describe something concrete, abstract it ("I checked the config", "the relevant value was set"). The owner is responsible for what they discuss in groups; you reduce the surface.`;
 }
 
+// Coarse admission gate shared by the pre-download check in whatsapp.ts and the
+// authoritative check in handle(): the group must be allowed AND the sender must
+// hold a role. Returns the role, or null to ignore. Re-reads .env every call, so a
+// revoke takes effect on the next message.
+function senderRole(info: AdmitInfo): Role | null {
+  if (info.isGroup && !loadAllowedGroups().has(info.jid)) return null;
+  return getRole(info.senderNumber, info.senderPhoneNumber);
+}
+
+// Role for an id read back from storage (a cron creator LID, a session key's sender)
+// where — unlike a live message — no phone rode in on the envelope. Resolving the phone
+// through the LID→phone map lets a phone-form OWNER_LID match the same way the live gate
+// does. That map is in-memory, so it can be cold right after a restart until the owner
+// messages; callers must treat a null result as "unconfirmed", not "definitely not owner".
+function roleForStoredId(wa: WhatsAppHandle, id: string): Role | null {
+  return getRole(id, wa.resolvePhone(id));
+}
+
+// Read-jail rules for a guest turn: allow the workspace and THIS chat's own
+// attachment dir; deny the bridge's secrets (`.env`, `auth/`) and every other chat's
+// state (the whole `data/` dir — sessions, crons, allowed-groups, journals, other
+// attachments). Ordered most-specific-first, so this chat's own attachment dir is
+// allowed before the enclosing `data/` deny; the hook evaluates first-match-wins.
+//
+// The hook confines the tool's search ROOT, not a Grep/Glob's recursive descent below
+// it, so these deny rules do NOT by themselves stop a search rooted in CWD from walking
+// into .env/auth/data when those sit under CWD. Guest confidentiality instead rests on
+// CWD being DISJOINT from the bridge dir — enforced at boot (see the CLAUDE_CWD check
+// above), so no startable configuration overlaps. The deny rules stay as a redundant
+// guard against a direct Read of an absolute secret path.
+function guestReadJail(jid: string): ReadJail {
+  const bridge = process.cwd();
+  return {
+    cwd: CWD,
+    rules: [
+      { path: attachmentDir(jid), allow: true },
+      { path: resolve(bridge, ENV_PATH), allow: false },
+      { path: resolve(bridge, 'auth'), allow: false },
+      { path: resolve(bridge, 'data'), allow: false },
+      { path: CWD, allow: true },
+    ],
+  };
+}
+
 async function handle(wa: WhatsAppHandle, msg: IncomingMessage, seq: number): Promise<void> {
-  if (msg.fromMe) return;
-  // Group gate: groups must be explicitly allowed (auto-added when an
-  // owner or full-trust user adds the bot; manually editable in
-  // allowed-groups.json). Returning here means no Claude call; no token
-  // spend on un-allowed traffic.
-  if (msg.isGroup && !loadAllowedGroups().has(msg.jid)) {
-    console.log(`Ignored group message in ${msg.jid} (group not allowed)`);
-    return;
-  }
-  // Sender role gate. getRole accepts either form: LID (canonical, stable
-  // across phone changes) or resolved phone (human-readable).
-  // senderPhoneNumber is undefined when Baileys hasn't observed a mapping
-  // yet; LID match still works.
-  const role = getRole(msg.senderNumber, msg.senderPhoneNumber);
-  if (!role) {
-    const id = msg.senderPhoneNumber
-      ? `${msg.senderNumber} (+${msg.senderPhoneNumber})`
-      : msg.senderNumber;
-    console.log(
-      `Ignored message from ${id} (not whitelisted). ` +
-        `Add either form to OWNER_LID, WHITELIST_NUMBERS, or RESTRICTED_LIDS in .env to allow.`,
-    );
-    return;
-  }
+  // Authoritative admission. The same gate ran pre-download in whatsapp.ts so
+  // un-admitted traffic never touched disk or got a read receipt; re-run here
+  // because roles are re-read from .env every message and a revoke in between must
+  // still take effect.
+  const role = senderRole(msg);
+  if (!role) return;
   noteActivity(msg.jid);
 
   const quotedNote = msg.quoted ? ` (replying to "${truncate(msg.quoted.text, 40)}")` : '';
@@ -377,31 +421,13 @@ async function handle(wa: WhatsAppHandle, msg: IncomingMessage, seq: number): Pr
     wa.setTyping(msg.jid, true).catch(() => undefined);
   }, 8000);
 
-  // Per-call askOpts. systemPromptAppend is concatenated low-variance →
-  // high-variance so the prompt cache keeps the longest stable prefix:
-  // base (constant) → group-privacy (per-JID, fixed for that JID) →
-  // journal (per-JID, fixed between daily flushes) → role (per-sender, the
-  // only piece that swaps within a group chat). In 1:1 chats the order is
-  // moot; in groups it preserves journal/group-privacy cache hits across
-  // owner / full / restricted senders.
-  //
-  // `tools` is the SDK's actual restriction hook (vs `allowedTools` which
-  // only auto-approves under non-bypassPermissions modes); set it for
-  // restricted senders so Bash/Edit/Write/NotebookEdit are not in the
-  // model's context for those turns. Owner/full keep the SDK default
-  // (claude_code preset).
-  const perCallOpts: AskOpts = {
-    ...askOpts,
-    ...(role === 'restricted' ? { tools: RESTRICTED_TOOLS } : {}),
-    systemPromptAppend:
-      SYSTEM_PROMPT_APPEND +
-      buildGroupPrivacyAddendum(msg.isGroup) +
-      buildJournalText(msg.jid) +
-      buildRoleAddendum(role),
-  };
+  // Sessions are keyed per (chat, sender) so a group member never resumes another
+  // principal's transcript.
+  const key = sessionKeyFor(msg.jid, msg.senderNumber);
+  const perCallOpts = buildTurnOpts(key, role);
 
   try {
-    const result = await ask(msg.jid, buildPrompt(msg), perCallOpts);
+    const result = await ask(key, buildPrompt(msg), perCallOpts);
     console.log(`  ← ${result.turns} turns, $${result.cost.toFixed(4)}`);
     const formatted = toWhatsApp(result.text);
     const parts = chunk(formatted);
@@ -426,6 +452,31 @@ async function handle(wa: WhatsAppHandle, msg: IncomingMessage, seq: number): Pr
 
 const askOpts: AskOpts = { cwd: CWD, model: MODEL, systemPromptAppend: SYSTEM_PROMPT_APPEND };
 
+// Per-turn AskOpts shared by live messages (handle) and cron fires (fireCron).
+//
+// Guest turns are gated structurally: `tools` caps the base set to the read-only list
+// (the real restrictor under bypassPermissions), and `readJail` confines those reads to
+// the workspace and this chat's own attachments, so the bridge's .env/credentials and
+// other chats' data stay unreadable. The owner — and every cron, which is owner-only —
+// keeps the full claude_code preset, so the guest branch is a no-op there. The role
+// addendum is defense in depth.
+//
+// systemPromptAppend is concatenated low-variance → high-variance so the prompt cache
+// keeps the longest stable prefix: base (constant) → group-privacy (per-JID) → journal
+// (per-session) → role (per-sender).
+function buildTurnOpts(key: string, role: Role): AskOpts {
+  const { jid } = parseSessionKey(key);
+  return {
+    ...askOpts,
+    ...(role === 'guest' ? { tools: GUEST_TOOLS, readJail: guestReadJail(jid) } : {}),
+    systemPromptAppend:
+      SYSTEM_PROMPT_APPEND +
+      buildGroupPrivacyAddendum(isGroupJid(jid)) +
+      buildJournalText(key) +
+      buildRoleAddendum(role),
+  };
+}
+
 // Fire a scheduled cron job. Mirrors handle()'s pipeline (role gate → per-call
 // systemPromptAppend → ask → toWhatsApp/chunk → send) minus the message-only
 // concerns (no quoted-reply, no typing indicator, no seq tracking; nobody is
@@ -436,23 +487,28 @@ async function fireCron(wa: WhatsAppHandle, entry: CronEntry, fireAt: Date): Pro
   // removed from the whitelist, skip; the entry remains so the operator can
   // decide whether to delete it (auto-deletion would silently lose their
   // schedules during a temporary role change).
-  const role = getRole(entry.creatorLid);
-  if (role !== 'owner' && role !== 'full') {
-    console.error(`[cron] creator ${entry.creatorLid} no longer authorized (role=${role ?? 'none'}); skipping fire scheduled for ${fireAt.toISOString()}`);
+  // Phone-aware to match the live admission gate, so an owner's crons still fire when
+  // OWNER_LID is a phone. Failing closed here (skip, keep the entry) is safe: an
+  // unconfirmed creator — including an owner whose phone map is still cold at boot —
+  // just defers the fire to a later tick, it does not lose the schedule.
+  const role = roleForStoredId(wa, entry.creatorLid);
+  if (role !== 'owner') {
+    console.error(`[cron] creator ${entry.creatorLid} is not the owner (role=${role ?? 'none'}); skipping fire scheduled for ${fireAt.toISOString()}`);
     return;
   }
-  const isGroup = entry.jid.endsWith('@g.us');
-  const perCallOpts: AskOpts = {
-    ...askOpts,
-    systemPromptAppend:
-      SYSTEM_PROMPT_APPEND +
-      buildGroupPrivacyAddendum(isGroup) +
-      buildJournalText(entry.jid) +
-      buildRoleAddendum(role),
-  };
+  const isGroup = isGroupJid(entry.jid);
+  // Mirror handle()'s group-allow gate: a cron must not post into a group that was
+  // never allowed or was revoked. The allowed-groups file is the single authority
+  // for where the bot speaks, and fireCron is the one send path that bypassed it.
+  if (isGroup && !loadAllowedGroups().has(entry.jid)) {
+    console.error(`[cron] target group ${entry.jid} is not allowed; skipping fire scheduled for ${fireAt.toISOString()}`);
+    return;
+  }
+  const key = sessionKeyFor(entry.jid, entry.creatorLid);
+  const perCallOpts = buildTurnOpts(key, role);
   console.log(`[cron] firing for ${entry.jid} (creator=${entry.creatorLid}/${role}, schedule="${entry.schedule}", scheduled=${fireAt.toISOString()})`);
   try {
-    const result = await ask(entry.jid, entry.prompt, perCallOpts);
+    const result = await ask(key, entry.prompt, perCallOpts);
     console.log(`  ← ${result.turns} turns, $${result.cost.toFixed(4)}`);
     const parts = chunk(toWhatsApp(result.text));
     for (const part of parts) {
@@ -480,22 +536,50 @@ function getMostRecentResetTime(now: Date, hour: number): Date {
 // user messages (so it cannot race with an inbound message). Active chats
 // stay resumable until their next idle window. After per-JID flushes,
 // ages every journal dir and stamps the reset marker.
-async function performFlush(): Promise<{ flushed: number; skipped: number; durationMs: number }> {
+async function performFlush(wa: WhatsAppHandle): Promise<{ flushed: number; skipped: number; durationMs: number }> {
   const start = Date.now();
   const sessions = await loadAllSessions();
   let flushed = 0;
   let skipped = 0;
-  for (const [jid, sessionId] of Object.entries(sessions)) {
+  for (const [key, sessionId] of Object.entries(sessions)) {
+    const { jid, senderId } = parseSessionKey(key);
     if (!isJidIdle(jid)) {
-      console.log(`[flush] skipping active jid ${jid} (recent activity)`);
+      console.log(`[flush] skipping active session ${key} (recent activity)`);
       skipped++;
       continue;
     }
+    // Memory extraction resumes the session WITH FULL TOOLS to write durable owner
+    // surfaces (SOUL/TOOLS/auto-memory/journal), so it must only ever run for the OWNER:
+    // resuming a guest's read-only transcript under full tools is the confused-deputy
+    // path, and guests must accrue no durable memory.
+    const role = roleForStoredId(wa, senderId);
+    if (role !== 'owner') {
+      // Retire only sessions we can POSITIVELY classify as non-owner: a resolved guest,
+      // or a legacy chat-only key (empty senderId, pre-dating per-sender keying). A
+      // non-empty senderId that resolves to null is unconfirmed — most likely an owner
+      // whose phone map is cold at boot (phone-form OWNER_LID) — so skip and retry next
+      // window rather than DELETE their un-extracted memory.
+      if (role === 'guest' || senderId === '') {
+        try {
+          await enqueue(jid, () => clearSession(key));
+        } catch (err) {
+          console.error(`[flush] clear ${key}:`, err);
+        }
+      } else {
+        console.log(`[flush] skipping session ${key} (role unconfirmed; retrying next window)`);
+        skipped++;
+      }
+      continue;
+    }
+    const flushOpts: AskOpts = {
+      ...askOpts,
+      systemPromptAppend: SYSTEM_PROMPT_APPEND + buildGroupPrivacyAddendum(isGroupJid(jid)),
+    };
     try {
-      await enqueue(jid, () => flushOneJid(jid, sessionId, askOpts));
+      await enqueue(jid, () => flushOneJid(key, sessionId, flushOpts));
       flushed++;
     } catch (err) {
-      console.error(`[flush] ${jid}:`, err);
+      console.error(`[flush] ${key}:`, err);
     }
   }
   await ageAllJournals(askOpts);
@@ -514,7 +598,7 @@ async function performFlush(): Promise<{ flushed: number; skipped: number; durat
   return { flushed, skipped, durationMs: Date.now() - start };
 }
 
-async function catchUpIfMissed(hour: number): Promise<void> {
+async function catchUpIfMissed(hour: number, wa: WhatsAppHandle): Promise<void> {
   const now = new Date();
   const last = await loadLastReset();
   if (last === 0) {
@@ -525,12 +609,12 @@ async function catchUpIfMissed(hour: number): Promise<void> {
   const recent = getMostRecentResetTime(now, hour).getTime();
   if (last < recent) {
     console.log(`[reset] missed daily reset (last: ${new Date(last).toLocaleString()}, expected: ${new Date(recent).toLocaleString()}); catching up`);
-    const r = await performFlush();
+    const r = await performFlush(wa);
     console.log(`[reset] catch-up done: flushed=${r.flushed} skipped=${r.skipped} in ${Math.round(r.durationMs / 1000)}s`);
   }
 }
 
-function scheduleDailyReset(hour: number): void {
+function scheduleDailyReset(hour: number, wa: WhatsAppHandle): void {
   const now = new Date();
   const next = new Date(now);
   next.setHours(hour, 0, 0, 0);
@@ -539,27 +623,27 @@ function scheduleDailyReset(hour: number): void {
   console.log(`Daily session reset scheduled for ${next.toLocaleString()} (in ${Math.round(delayMs / 60000)}m)`);
   setTimeout(async () => {
     try {
-      const r = await performFlush();
+      const r = await performFlush(wa);
       console.log(`[reset] daily flush: flushed=${r.flushed} skipped=${r.skipped} in ${Math.round(r.durationMs / 1000)}s`);
     } catch (err) {
       console.error('[reset] daily flush failed:', err);
     } finally {
-      scheduleDailyReset(hour);
+      scheduleDailyReset(hour, wa);
     }
   }, delayMs);
 }
 
 function handleGroupAdd(event: GroupAdd): void {
   const label = `${event.groupJid} ("${event.groupName ?? '?'}")`;
-  // Group auto-allow requires owner or full-trust inviter. Restricted
-  // senders cannot expand the bot's reach into new groups.
+  // Group auto-allow requires the OWNER. Guests cannot expand the bot's reach into
+  // new groups; where the bot speaks is owner-controlled.
   const inviterRole = getRole(event.inviterNumber, event.inviterPhoneNumber);
-  if (inviterRole !== 'owner' && inviterRole !== 'full') {
+  if (inviterRole !== 'owner') {
     const id = event.inviterPhoneNumber
       ? `${event.inviterNumber} (+${event.inviterPhoneNumber})`
       : event.inviterNumber;
-    const reason = inviterRole === 'restricted'
-      ? 'restricted role lacks group-allow authority'
+    const reason = inviterRole === 'guest'
+      ? 'guest role lacks group-allow authority'
       : 'not whitelisted';
     console.log(`Bot added to group ${label} by ${id}: ${reason}, group remains ignored`);
     return;
@@ -582,10 +666,14 @@ const wa = await startWhatsApp(
     const seq = nextSeq(msg.jid);
     return enqueue(msg.jid, () => handle(wa, msg, seq));
   },
+  // Pre-download admission: whatsapp.ts consults this BEFORE downloading media or
+  // sending a read receipt, so un-whitelisted senders and non-allowed groups cause
+  // no disk write and no presence leak. handle() re-checks authoritatively.
+  (info) => senderRole(info) !== null,
   handleGroupAdd,
 );
-await catchUpIfMissed(RESET_HOUR);
-scheduleDailyReset(RESET_HOUR);
+await catchUpIfMissed(RESET_HOUR, wa);
+scheduleDailyReset(RESET_HOUR, wa);
 startCronScheduler({
   timezone: CRON_TIMEZONE,
   // Serialize fires through the same per-JID queue as inbound messages and
