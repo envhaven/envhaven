@@ -21,12 +21,15 @@ services:
       # - "127.0.0.1:5173:5173"   # Vite dev server
       # - "127.0.0.1:8080:8080"   # Alternative app port
     volumes:
-      - envhaven-files:/config
+      - envhaven-config:/config
       # Optional: Mount local project directory
       # - ./my-project:/config/workspace/my-project
     env_file:
       - .env
 
+# Pre-1.x compose files mounted this volume as `envhaven-files` (a broken
+# reference); if `docker volume ls` shows it, see docs/configuration.md for
+# the one-time copy into `envhaven-config`.
 volumes:
   envhaven-config:
     driver: local

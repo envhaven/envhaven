@@ -278,6 +278,14 @@ volumes:
 
 See `.env.example` in the repository for all available environment variables.
 
+> **Upgrading from a pre-1.x compose file?** Early copies of `docker-compose.yml` mounted the volume as `envhaven-files` while declaring `envhaven-config`, which Compose rejects; if you fixed that locally by renaming the declaration, your data lives in a volume named `<project>_envhaven-files`. Either keep your local name, or migrate once with the container stopped:
+>
+> ```bash
+> docker compose down
+> docker run --rm -v <project>_envhaven-files:/from -v <project>_envhaven-config:/to alpine cp -a /from/. /to/
+> docker compose up -d
+> ```
+
 ## Development Configuration
 
 These settings are only relevant if you're developing EnvHaven itself (not just using it).
