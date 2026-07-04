@@ -37,12 +37,14 @@ cli/
 │   └── utils/
 │       ├── paths.ts          # Path utilities
 │       ├── duration.ts       # Duration parsing
+│       ├── guards.ts         # Path-safety guards (broad-directory detection)
 │       └── spinner.ts        # CLI output helpers
 ├── scripts/
 │   ├── build.ts              # Build script
 │   └── bundle-mutagen.ts     # Mutagen bundling
 ├── test/                     # Unit tests
-└── install.sh                # curl | sh installer
+├── install.sh                # curl | sh installer
+└── install-local.sh          # Local build + install
 ```
 
 ## Key Concepts
@@ -279,7 +281,7 @@ Existing host blocks with the same alias are replaced on reconnect.
 - Downloaded from GitHub releases on first use
 - Runs in background as sync daemon
 - Data stored in `~/.local/share/haven/mutagen/`
-- Uses Mutagen 0.17.x (latest stable)
+- Uses Mutagen 0.17.6 (pinned)
 
 **API Note:** Mutagen 0.17.x uses `--template` for structured output, not `--json`. The CLI uses Go template syntax to parse session data:
 ```bash
@@ -345,7 +347,7 @@ The CLI has two distribution channels:
 ### 1. Versioned Releases (Public)
 
 When a git tag `v*` is pushed:
-- `build-cli` job builds all platform binaries
+- `release` job builds all platform binaries
 - Binaries are uploaded to GitHub releases
 - Users install via: `curl -fsSL https://raw.githubusercontent.com/envhaven/envhaven/master/cli/install.sh | sh`
 
@@ -354,7 +356,7 @@ This path only works when the repo is public.
 ### 2. Evergreen Beta (Private/Beta)
 
 On every push to master that changes `cli/`:
-- `build-cli-latest` job builds all platform binaries
+- `latest` job builds all platform binaries
 - Binaries are uploaded as workflow artifact `haven-cli-latest`
 - Platform (`envhaven/platform`) proxies downloads with beta token verification
 - Users install via: `curl -fsSL "https://envhaven.com/install.sh?beta=TOKEN" | sh`
@@ -423,7 +425,3 @@ If it shows `/bin/false`, SSH will authenticate successfully but immediately exi
 ```bash
 docker exec <container> chsh -s /bin/zsh abc
 ```
-
-### FUSE Filesystem Issues
-
-On FUSE-backed home directories (like Unraid's shfs), SSH ControlMaster sockets may not work correctly. The CLI will still function but without connection multiplexing.

@@ -2,7 +2,7 @@
 
 Local editor + remote AI coding environment.
 
-Haven CLI enables you to use your local editor (neovim, emacs, helix) while AI tools (Claude Code, OpenCode, aider) run extended sessions on remote EnvHaven containers.
+Haven CLI enables you to use your local editor (Vim, VS Code, Zed, or anything else) while AI tools (Claude Code, OpenCode, aider) run extended sessions on remote EnvHaven containers.
 
 ## Installation
 

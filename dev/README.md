@@ -37,13 +37,14 @@ bun dev/scripts/test-image.ts # Run tests
 | `l` | View Logs |
 | `x` | Open Shell (SSH) |
 | `,` | Settings |
+| `?` | Help (keyboard shortcuts) |
 | `↑/↓` | Navigate menu |
 | `Esc` | Cancel / Back |
 | `q` | Quit |
 
 ## Standalone Scripts
 
-All TUI actions are backed by standalone scripts in `scripts/`:
+Most TUI actions are backed by standalone scripts in `scripts/`; a few (watch, release, shell) are implemented directly in `src/actions/`:
 
 | Script | TUI Key | Description |
 |--------|---------|-------------|
@@ -52,6 +53,7 @@ All TUI actions are backed by standalone scripts in `scripts/`:
 | `stop.ts` | - | Stop test container |
 | `logs.ts` | `l` | Stream container logs |
 | `test-image.ts` | `t` → `i` | Validate image |
+| `test-ai-tools.ts` | `t` → `a` | Verify all AI CLI tools |
 | `test-cli.ts` | `t` → `c` | Test Haven CLI |
 | `test-extension.ts` | `t` → `e` | Test extension build |
 
@@ -77,6 +79,7 @@ cp .env.example .env.dev
 | `ENVHAVEN_HOST` | `localhost` | Host for access URLs |
 | `ENVHAVEN_WEB_PORT` | `8443` | Web UI port |
 | `ENVHAVEN_SSH_PORT` | `2222` | SSH port |
+| `ENVHAVEN_PASSWORD` | `test` | code-server / sudo password |
 | `ENVHAVEN_HOST_REPO_PATH` | | Host path to repo (required for Docker-in-Docker) |
 
 **Note:** Test container config is stored at `${ENVHAVEN_HOST_REPO_PATH}/.test-config/` (gitignored).

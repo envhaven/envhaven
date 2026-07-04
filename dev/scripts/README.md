@@ -2,7 +2,7 @@
 
 Standalone scripts for building, testing, and managing EnvHaven development.
 
-These scripts are the **single source of truth** - the TUI (`eh`) calls these same scripts, and CI uses them directly.
+These scripts are the **single source of truth** for local build/test operations. The TUI (`eh`) calls them; CI runs `test-extension.ts` directly, while the image build and its checks run via Buildx and inline steps.
 
 ## Usage
 
@@ -60,18 +60,14 @@ cp dev/.env.example dev/.env.dev
 
 ## CI Usage
 
+EnvHaven's `ci.yml` runs `test-extension.ts` directly; the image is built and health-checked with `docker/build-push-action` plus inline steps, not `build.ts`/`test-image.ts`. A minimal script-driven pipeline looks like:
+
 ```yaml
 - name: Setup Bun
   uses: oven-sh/setup-bun@v2
 
 - name: Install dev dependencies
   run: cd dev && bun install
-
-- name: Build image
-  run: bun dev/scripts/build.ts
-
-- name: Test image
-  run: bun dev/scripts/test-image.ts
 
 - name: Test extension
   run: bun dev/scripts/test-extension.ts

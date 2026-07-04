@@ -10,7 +10,7 @@ EnvHaven is a Docker image that provides a Batteries-Included Agentic Environmen
 ┌─────────────────────────────────────────────────────────────────┐
 │                     EnvHaven Container                          │
 │                                                                 │
-│  /opt/envhaven/bin/    ← AI tools (mise, uv, goose, aider...)  │
+│  /opt/envhaven/bin/    ← AI tools (mise, uv, aider, kiro...)  │
 │  /opt/envhaven/uv-tools/ ← Python tool virtualenvs             │
 │  /mise/                ← mise data, shims, tool installs        │
 │  /app/                 ← code-server, pre-installed extensions  │
@@ -73,6 +73,7 @@ Users can still override any tool by installing their own version:
 ```
 /config/.local/bin      # User overrides (first priority)
 /opt/envhaven/bin       # System tools (our installations)
+/opt/envhaven/cargo/bin # Rust toolchain (cargo, rustc)
 /mise/shims             # mise-managed tools
 /usr/local/bin          # System binaries
 ```
@@ -98,13 +99,16 @@ Users can still override any tool by installing their own version:
 ```toml
 # /mise/config.toml
 [tools]
-node = "20"
+node = "22"
 python = "3.12"
-go = "1.22"
-rust = "stable"
+go = "1.22.5"
 bun = "latest"
-"npm:@anthropics/claude-code" = "latest"
-"npm:@openai/codex" = "latest"
+"ubi:sharkdp/fd" = "10.2.0"
+"aqua:cli/cli" = "latest"          # gh
+"aqua:cloudflare/cloudflared" = "latest"
+"aqua:sst/opencode" = "latest"
+"aqua:astral-sh/uv" = "latest"
+"ubi:block/goose" = "latest"
 ```
 
 mise itself is installed to `/opt/envhaven/bin/mise` with a symlink at `/usr/local/bin/mise`.
@@ -129,16 +133,13 @@ RUN uv tool install aider-chat && uv tool install mistral-vibe
 
 ### Category 3: Standalone installers
 
-Some tools have their own installers that don't respect standard paths. We install them, then move to `/opt/envhaven/bin/`:
+Some tools ship their own installer that drops the binary in `/config/.local/bin/` (shadowed by the volume). We run the installer, then move the binary to `/opt/envhaven/bin/`:
 
 ```dockerfile
-# Install with env vars where supported
-RUN curl -fsSL https://opencode.ai/install | INSTALL_DIR=/opt/envhaven/bin bash
-
-# Move tools that end up in wrong locations
-RUN for bin in goose kiro droid; do \
-        [ -f "/config/.local/bin/$bin" ] && mv "/config/.local/bin/$bin" /opt/envhaven/bin/; \
-    done
+RUN curl -fsSL https://cli.kiro.dev/install | bash && \
+    mv /config/.local/bin/kiro* /opt/envhaven/bin/ 2>/dev/null || true
+RUN curl -fsSL https://app.factory.ai/cli | sh && \
+    mv /config/.local/bin/droid /opt/envhaven/bin/ 2>/dev/null || true
 ```
 
 ## s6-overlay Init System
@@ -156,12 +157,15 @@ Located in `runtime/scripts/`, these run once at container startup:
 | `init-vscode-settings` | VS Code theme and settings |
 | `init-extensions` | Symlink pre-installed extensions |
 | `init-agents-md` | Generate workspace AGENTS.md |
+| `init-agent-config` | Seed AI agent configs (Claude, Codex), no-clobber |
 
 ### Services (longrun)
 
 | Script | Purpose |
 |--------|---------|
 | `svc-sshd` | SSH daemon for remote access |
+| `svc-cloudflared` | Cloudflare tunnel (only if `CLOUDFLARE_TUNNEL_TOKEN` is set) |
+| `svc-console` | In-container console server (browser terminal on :7681) |
 
 ### Execution Order
 
@@ -174,7 +178,7 @@ s6-overlay runs init-adduser (LSIO creates abc user)
     ↓
 Our oneshot scripts run (depend on init-adduser)
     ↓
-Longrun services start (svc-sshd)
+Longrun services start (svc-sshd, svc-cloudflared, svc-console)
     ↓
 code-server starts
 ```
@@ -213,13 +217,15 @@ User-installed extensions go directly to `/config/extensions/` and persist norma
 Single source of truth in `/etc/environment`:
 
 ```bash
-PATH="/config/.local/bin:/opt/envhaven/bin:/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+PATH="/config/.local/bin:/opt/envhaven/bin:/opt/envhaven/cargo/bin:/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 MISE_DATA_DIR="/mise"
 MISE_CONFIG_DIR="/mise"
 MISE_CACHE_DIR="/mise/cache"
 MISE_STATE_DIR="/mise/state"
 UV_TOOL_DIR="/opt/envhaven/uv-tools"
 UV_TOOL_BIN_DIR="/opt/envhaven/bin"
+RUSTUP_HOME="/opt/envhaven/rustup"
+CARGO_HOME="/opt/envhaven/cargo"
 ```
 
 This file is sourced by:
@@ -276,7 +282,7 @@ We use [tmux](https://github.com/tmux/tmux)—the battle-tested terminal multipl
 
 Our approach:
 - **Single session** (`envhaven`) — all terminals live here, simplifying multi-device access
-- **Clean footer** — terminal names and `+` button, no clutter
+- **Clean status bar** — window names and hotkey hints, no clutter
 - **Mouse enabled** — click to switch terminals, scroll naturally
 - **Sensible defaults** — 50k scrollback, no escape delay, numbering starts at 1
 
@@ -304,17 +310,6 @@ When you open a terminal (via VS Code, SSH, or the web UI), you're connected to 
 │  User reconnects → same terminals, same state                   │
 └─────────────────────────────────────────────────────────────────┘
 ```
-
-### User Interfaces
-
-| Interface | Description |
-|-----------|-------------|
-| **Extension Sidebar** | "Terminals" panel to switch/create/delete terminals |
-| **Terminal Footer** | Shows all terminals; click to switch, click `+` to create new |
-| **Standard Shortcuts** | `Ctrl-b c` (new), `Ctrl-b 1-9` (switch), `Ctrl-b &` (close) |
-| **`envhaven` command** | Full status display (runtimes, AI tools) |
-
-The sidebar is optimized for browser users. The footer and shortcuts work everywhere (browser, SSH, Haven CLI).
 
 ### Multi-Device Access
 

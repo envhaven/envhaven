@@ -29,7 +29,8 @@ envhaven/
 │   ├── scripts/          # Build scripts
 │   ├── test/             # Unit tests
 │   └── AGENTS.md         # Architecture docs
-├── dev/                  # Development CLI (eh)
+├── console/              # In-container console server (Go)
+├── dev/                  # Development TUI (eh)
 │   ├── scripts/          # Standalone scripts (source of truth)
 │   │   ├── lib/          # Shared utilities
 │   │   ├── build.ts      # docker build
@@ -51,7 +52,7 @@ envhaven/
 │   └── templates/        # Config templates
 ├── Dockerfile
 ├── docker-compose.yml
-└── eh                    # Dev CLI entry point
+└── mise.toml             # Tool version manifest
 ```
 
 ### Key Distinction
@@ -116,7 +117,7 @@ bun run build            # Build React webview
 
 | Command | Description |
 |---------|-------------|
-| `bun run build` | Compile TypeScript |
+| `bun run build` | Bundle `src/` with esbuild (no type-check) |
 | `bun run dev` | Watch mode |
 | `bun run build:webview` | Build webview |
 | `bun run package` | Create `.vsix` |
@@ -160,9 +161,12 @@ Scripts in `runtime/scripts/` run at container startup via s6-overlay:
 | `init-extensions-run` | Install VS Code extensions |
 | `init-vscode-settings-run` | Apply VS Code settings |
 | `init-agents-md-run` | Generate AGENTS.md |
+| `init-agent-config-run` | Seed AI agent configs (Claude, Codex) |
 | `init-user-config-run` | Configure git, SSH, user shell |
 | `init-zsh-config-run` | Configure zsh |
 | `svc-sshd-run` | Run SSH daemon |
+| `svc-cloudflared-run` | Cloudflare tunnel (if `CLOUDFLARE_TUNNEL_TOKEN` set) |
+| `svc-console-run` | In-container console server (:7681) |
 
 User-facing scripts in `runtime/scripts/` (installed to `/opt/envhaven/bin/`):
 

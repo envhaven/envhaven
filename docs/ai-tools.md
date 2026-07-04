@@ -49,14 +49,16 @@ The EnvHaven extension in the VS Code sidebar provides a UI for setting API keys
 
 | API Key | Tools |
 |---------|-------|
-| `ANTHROPIC_API_KEY` | Claude Code, Aider, OpenCode, Goose |
-| `OPENAI_API_KEY` | Codex, Aider, Goose, Qwen Code |
-| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Gemini CLI, Aider, OpenCode |
+| `ANTHROPIC_API_KEY` | Claude Code, OpenCode, Aider, Goose |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code (subscription auth) |
+| `OPENAI_API_KEY` | Codex, OpenCode, Aider, Goose, Qwen Code |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Gemini CLI, OpenCode, Aider |
 | `MISTRAL_API_KEY` | Mistral Vibe |
-| `AMP_API_KEY` | Amp |
 | `OPENROUTER_API_KEY` | Aider |
-| `QWEN_API_KEY` | Qwen Code |
+| `AMP_API_KEY` | Amp |
+| `AUGMENT_SESSION_AUTH` | Augment |
 | `FACTORY_API_KEY` | Factory Droid |
+| `QWEN_API_KEY` | Qwen Code |
 
 ## Persistent Terminals
 
@@ -66,9 +68,9 @@ EnvHaven terminals survive disconnects. Your AI agent keeps working while you're
 
 ### Example
 
-1. Click "Claude Code" in sidebar → starts working on your refactor
-2. Click `+` in footer → new terminal, run `npm run dev`
-3. Click `+` again → `git log --oneline` to check history
+1. Launch Claude Code in one terminal; it starts working on your refactor
+2. Open a second terminal, run `npm run dev`
+3. Open a third, `git log --oneline` to check history
 
 Close your browser. Go home. Open EnvHaven on your phone—all three terminals still running, exactly as you left them.
 
@@ -76,9 +78,8 @@ Close your browser. Go home. Open EnvHaven on your phone—all three terminals s
 
 | Method | How |
 |--------|-----|
-| **Sidebar** | "Terminals" panel shows all terminals—click to switch |
-| **Footer** | Click terminal name to switch, `+` to create new |
-| **Keyboard** | `Ctrl-b c` new, `Ctrl-b 1-9` switch, `Ctrl-b &` close |
+| **Sidebar** | The "Terminals" panel lists your terminals; use it to switch, create, and close |
+| **Keyboard** | `Ctrl-b n` new, `Ctrl-b 1-9` switch, `Ctrl-b x` close |
 
 ## Quick Start Examples
 
@@ -137,8 +138,7 @@ goose session start
 
 ```bash
 vibe
-# Or with local model (Devstral)
-vibe --local
+# Local/offline models are configured in ~/.vibe/config.toml
 ```
 
 ### Qwen Code

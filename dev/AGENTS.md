@@ -17,6 +17,7 @@ dev/
 │   ├── stop.ts           # docker rm
 │   ├── logs.ts           # docker logs -f
 │   ├── test-image.ts     # Image health checks
+│   ├── test-ai-tools.ts  # AI CLI tool verification
 │   ├── test-cli.ts       # Haven CLI tests
 │   ├── test-extension.ts # Extension build test
 │   ├── extension-build.ts
@@ -34,9 +35,9 @@ dev/
 
 ## Design Principles
 
-1. **Scripts as source of truth** - All operations implemented in `scripts/`
+1. **Scripts as source of truth** - Core operations (build, start, logs, tests) live in `scripts/`; TUI-only actions (watch, release, shell) live in `src/actions/`
 2. **TUI wraps scripts** - `src/actions/` spawn scripts and format output
-3. **CI uses scripts** - GitHub Actions call scripts directly
+3. **CI calls scripts** - GitHub Actions runs `test-extension.ts` directly (image build/test use Buildx + inline checks)
 4. **Config from env** - Scripts read `dev/.env.dev`
 
 ## Tech Stack

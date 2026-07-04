@@ -58,12 +58,16 @@ usable = !encrypted OR inAgent
                  ▼                           ▼
              SUCCESS                      FAILURE
                  │                           │
-                 ▼                           ▼
-            startSync()              showSshKeyHelp()
-                 │                     EXIT(1)
-                 ▼
-            CONNECTED
+                 ▼               ┌───────────┴───────────┐
+            startSync()          ▼                       ▼
+                 │        host key changed          other failure
+                 ▼               │                       │
+            CONNECTED            ▼                       ▼
+                          prompt reconnect?        showSshKeyHelp()
+                          removeHostKey() + retry      EXIT(1)
 ```
+
+On `testConnection()` failure Haven CLI distinguishes two cases: a **changed host key** (workspace rebuilt) prompts to reconnect, runs `removeHostKey()`, and retries; any **other failure** calls `showSshKeyHelp()` and exits. `--reset-host-key` forces the host-key path up front.
 
 ## Why Haven Key is Trusted
 

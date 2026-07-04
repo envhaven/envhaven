@@ -82,8 +82,6 @@ docker run -d \
 2. Open terminal—you're dropped into a persistent session
 3. Run `opencode`, `claude`, or `aider` and start coding
 
-**Multiple AI tools at once?** Click `+` in the footer or use the sidebar to create new terminals. Each runs in its own persistent session—close your browser and they keep running.
-
 ### Path B: Local Editor + Remote AI (Haven CLI)
 Use your local editor. Files sync bidirectionally. Agents run in the container.
 
@@ -146,14 +144,14 @@ You can re-enable prompts per tool by editing the relevant config or unsetting t
 ### Runtimes & SDKs
 | Language | Version | Notes |
 |----------|---------|-------|
-| **Node.js** | 20.x | LTS |
+| **Node.js** | 22.x | LTS |
 | **Bun** | Latest | Fast JS runtime |
-| **Python** | 3.12 | Managed via `uv` |
+| **Python** | 3.12 | Via `mise` |
 | **Go** | 1.22 | |
 | **Rust** | Stable | Via rustup |
 
 ### Dev Tools
-- **Core:** `zsh`, `git`, `curl`, `wget`, `zip`, `unzip`
+- **Core:** `zsh`, `git`, `curl`, `wget`, `unzip`
 - **Utils:** `ripgrep`, `fd`, `jq`, `sqlite3`, `htop`
 - **Media:** `ffmpeg` (video/audio), `playwright` (browser automation)
 - **Integrations:** `gh` (GitHub CLI), `docker` (client)
@@ -266,6 +264,6 @@ See [Configuration Reference](docs/configuration.md) for all SSH options.
 ## Documentation
 
 - **[AI Tools Guide](docs/ai-tools.md)** — Setup guides, API keys, and usage examples for all 12+ AI coding tools
-- **[Configuration Reference](docs/configuration.md)** — Complete env vars, SSH setup, Docker mods, and compose examples
+- **[Configuration Reference](docs/configuration.md)** — Complete env vars, SSH setup, bundled tools, and compose examples
 - **[Development Guide](docs/development.md)** — Building from source, testing, and contributing
 - **[Haven CLI](cli/README.md)** — CLI source and architecture

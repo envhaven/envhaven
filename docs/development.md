@@ -122,7 +122,7 @@ Validates:
 - SSH daemon
 - All runtimes (Node.js, Python, Go, Rust)
 - AI CLI tools
-- DOCKER_MODS packages
+- Bundled CLI tools (ripgrep, fd, jq, ...)
 - Configuration files
 
 ### Haven CLI Integration Tests
@@ -161,13 +161,18 @@ CI runs the same on every pull request. The suite covers both auth modes (platfo
 ```
 envhaven/
 ├── .github/workflows/    # CI/CD
-│   └── build.yml
+│   ├── ci.yml            # Tests on pull requests
+│   ├── docker.yml        # Build + push image to GHCR
+│   └── cli.yml           # Haven CLI binary releases
 ├── cli/                  # Haven CLI (local editor + remote AI)
 │   ├── src/              # TypeScript source
 │   ├── scripts/          # Build scripts
 │   ├── test/             # Unit tests
 │   └── AGENTS.md         # CLI architecture docs
-├── dev/                  # Development CLI (eh)
+├── console/              # In-container console server (Go)
+│   ├── *.go              # HTTP server, auth gate, session pump
+│   └── ui/               # Vendored xterm.js terminal assets
+├── dev/                  # Development TUI (eh)
 │   ├── scripts/          # Standalone scripts (source of truth)
 │   │   ├── lib/          # Shared utilities (config, docker, log)
 │   │   ├── build.ts      # docker build
@@ -181,8 +186,9 @@ envhaven/
 │   ├── AGENTS.md         # Dev tooling architecture
 │   └── README.md
 ├── docs/                 # User documentation
-│   ├── configuration.md
+│   ├── architecture.md
 │   ├── ai-tools.md
+│   ├── configuration.md
 │   └── development.md
 ├── extension/            # VS Code extension source
 │   ├── src/              # Extension host (TypeScript)
@@ -194,7 +200,7 @@ envhaven/
 │   └── templates/        # Config templates (AGENTS.md, settings.json)
 ├── Dockerfile
 ├── docker-compose.yml
-├── eh                    # Dev CLI entry point
+├── mise.toml             # Tool version manifest
 └── README.md
 ```
 
@@ -217,11 +223,12 @@ Based on `linuxserver/code-server:latest`:
 
 1. **System dependencies** - Build tools, SSH server
 2. **Tool directory** - `/opt/envhaven/bin` (survives `/config` mount)
-3. **mise** - Manages Node.js, Bun, Python, Go, Rust, and some AI tools
-4. **uv** - Python tool installer (aider, vibe)
-5. **AI Tools** - Standalone installers (goose, droid, kiro, opencode)
-6. **VS Code Extension** - Pre-installed to `/app/pre-installed-extensions`
-7. **s6-overlay Services** - Init scripts from `runtime/scripts/`
+3. **mise** - Manages Node.js, Bun, Python, Go, and some AI tools (opencode, goose)
+4. **Rust** - Installed via rustup (cargo, rustc)
+5. **uv** - Python tool installer (aider, vibe)
+6. **AI Tools** - npm globals (claude, codex, gemini, qwen, amp, auggie) + standalone installers (kiro, droid)
+7. **VS Code Extension** - Pre-installed to `/app/pre-installed-extensions`
+8. **s6-overlay Services** - Init scripts from `runtime/scripts/`
 
 ### Why `/opt/envhaven/bin`?
 
@@ -304,9 +311,12 @@ Scripts in `runtime/scripts/` run at container startup via s6-overlay:
 | `init-extensions-run` | Install VS Code extensions |
 | `init-vscode-settings-run` | Apply VS Code settings |
 | `init-agents-md-run` | Generate AGENTS.md |
+| `init-agent-config-run` | Seed AI agent configs (Claude, Codex) |
 | `init-user-config-run` | Configure git, SSH, and user shell |
 | `init-zsh-config-run` | Configure zsh |
 | `svc-sshd-run` | Run SSH daemon |
+| `svc-cloudflared-run` | Cloudflare tunnel (if `CLOUDFLARE_TUNNEL_TOKEN` set) |
+| `svc-console-run` | In-container console server (:7681) |
 
 User-facing scripts (installed to `/opt/envhaven/bin/`):
 
@@ -317,13 +327,12 @@ User-facing scripts (installed to `/opt/envhaven/bin/`):
 
 ## GitHub Actions
 
-The CI/CD workflow (`.github/workflows/build.yml`) runs on:
-- Push to `master` branch
-- Pull requests
-- Release tags
+CI/CD is split across three workflows in `.github/workflows/`:
 
-It performs:
-1. Multi-architecture build (amd64/arm64)
-2. Test suite execution
-3. Push to GitHub Container Registry (on main/tags)
-4. SBOM generation for security scanning
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| `ci.yml` | Pull requests | Test suite: `cli`, `image`, `extension`, and `console` jobs |
+| `docker.yml` | Push to `master`, `v*` tags | Build and push the image to GitHub Container Registry (tags get a multi-arch manifest) |
+| `cli.yml` | `v*` tags (plus a `latest` artifact on `master`) | Build and release Haven CLI binaries |
+
+CI builds `linux/amd64` only; the arm64 matrix entry is disabled pending an arm64 runner ([issue #1](https://github.com/envhaven/envhaven/issues/1)). Build multi-arch locally with `docker buildx build --platform linux/amd64,linux/arm64`.

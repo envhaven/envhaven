@@ -86,39 +86,7 @@ ENVHAVEN_SKIP_WELCOME=1 zsh
 
 ## VS Code Extension (Sidebar)
 
-The EnvHaven sidebar (Activity Bar icon) provides:
-
-### Terminals Section
-
-- **Window list**: Shows all tmux windows, click to switch
-- **New Terminal**: Creates new tmux window
-- **Kill**: Close windows (shift+click in status bar also works)
-
-### AI Tools Section
-
-| Feature | Description |
-|---------|-------------|
-| **Tool launcher** | One-click launch into new tmux window |
-| **Status indicators** | ● ready (authenticated) / ○ needs setup |
-| **Setup guides** | Inline instructions for each tool |
-
-### API Key Management
-
-- Secure input fields for each provider's API key
-- Auto-saves to `~/.zshrc` and `~/.bashrc`
-- Keys available immediately in current session
-
-### SSH Access Section
-
-- **Import from GitHub**: Enter username to fetch `github.com/<user>.keys`
-- **Paste key**: Direct input for SSH public key
-- **SSH command**: Copy-ready connection string
-
-### Workspace Info
-
-- URLs (public, preview)
-- SSH connection details
-- Workspace path
+The EnvHaven sidebar (Activity Bar icon) is the human's control panel for terminals, AI-tool sign-in and API keys, SSH access, and skills. You act through the terminal instead: `tmux` for windows, `export` or the tool's config file for keys (see [AI Coding Tools](#ai-coding-tools)), and `PUBLIC_KEY_URL` or `~/.ssh/authorized_keys` for SSH.
 
 ---
 
@@ -126,7 +94,7 @@ The EnvHaven sidebar (Activity Bar icon) provides:
 
 | Runtime | Version | Package Manager |
 |---------|---------|-----------------|
-| **Node.js** | 20.x LTS | npm, pnpm, yarn |
+| **Node.js** | 22.x LTS | npm, pnpm, yarn |
 | **Bun** | latest | bun |
 | **Python** | 3.12.x | uv, pip |
 | **Go** | 1.22.x | go modules |
@@ -161,9 +129,9 @@ Set keys via environment variables or the EnvHaven sidebar:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...   # Claude Code, Aider, OpenCode, Goose
-export OPENAI_API_KEY=sk-...          # Codex CLI, Aider, Goose, Qwen
-export GEMINI_API_KEY=...             # Gemini CLI, Aider, OpenCode
-export GOOGLE_API_KEY=...             # Gemini CLI (alternative)
+export OPENAI_API_KEY=sk-...          # Codex, OpenCode, Aider, Goose, Qwen
+export GEMINI_API_KEY=...             # Gemini CLI, OpenCode, Aider
+export GOOGLE_API_KEY=...             # Gemini CLI, OpenCode (alternative)
 export MISTRAL_API_KEY=...            # Mistral Vibe
 export AMP_API_KEY=...                # Amp
 export OPENROUTER_API_KEY=...         # Aider (OpenRouter)
@@ -284,12 +252,12 @@ haven git status        # Check git status
 
 - **Latency:** ~200ms bidirectional
 - **Conflicts:** Creates `.sync-conflict` files when both sides modify same file
-- **Custom ignores:** Add `.havenignore` file (gitignore syntax)
+- **Custom ignores:** your project's `.gitignore` is respected; built-in defaults already skip `node_modules/`, `.git/`, build output, etc.
 
 ### Prerequisites
 
 User must add their SSH public key via:
-- **EnvHaven sidebar** (SSH Access section)
+- **EnvHaven sidebar** (SSH access)
 - `PUBLIC_KEY_URL` env var (e.g., `https://github.com/username.keys`)
 - Manual: add to `~/.ssh/authorized_keys`
 
@@ -301,7 +269,7 @@ User must add their SSH public key via:
 /config/                    # Container home directory
 ├── workspace/              # Project files (${WORKSPACE_PATH})
 │   ├── AGENTS.md           # This file
-│   ├── CLAUDE.md           # Copy of AGENTS.md (for Claude Code)
+│   ├── CLAUDE.md           # Symlink → AGENTS.md (for Claude Code)
 │   └── <projects>/         # User's projects
 ├── .ssh/                   # SSH keys
 │   └── authorized_keys     # For SSH/Haven CLI access

@@ -25,20 +25,27 @@ Inherited from [linuxserver/code-server](https://docs.linuxserver.io/images/dock
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ENVHAVEN_MANAGED` | false | Set to `true` only on managed hosting: switches the extension UI and the browser terminal's auth to platform JWT mode, which needs platform-injected credentials. Do not set when self-hosting. |
-| `DEFAULT_SHELL` | bash | Set to `zsh` to use zsh as default shell |
 | `HAVEN_IDLE_TIMEOUT` | - | Auto-disconnect Haven CLI sessions after idle period (e.g., `30m`, `2h`, `0` to disable) |
 | `ENVHAVEN_SKIP_WELCOME` | - | Set to `1` to skip auto-attach to tmux on shell start |
-
-> **Planned features:** `ENVHAVEN_AI_TOOLS` (tool filtering) and `ENVHAVEN_AI_EXTENSION` (VS Code AI extension selection) are not yet implemented.
+| `CLOUDFLARE_TUNNEL_TOKEN` | - | Expose the container through your own Cloudflare tunnel. Unset = the built-in `cloudflared` service stays off. |
 
 ### AI Tool API Keys
 
-| Variable | Used By | Description |
-|----------|---------|-------------|
-| `ANTHROPIC_API_KEY` | Claude Code, Aider, OpenCode | Anthropic API key (`sk-ant-...`) |
-| `OPENAI_API_KEY` | Codex CLI, Aider | OpenAI API key (`sk-...`) |
-| `GOOGLE_API_KEY` | Gemini CLI | Google AI API key |
-| `MISTRAL_API_KEY` | Mistral Vibe | Mistral AI API key |
+Set the key(s) for the tools you use. This is the complete list of recognized variables; the per-tool breakdown is in the [AI Tools Guide](ai-tools.md#which-keys-for-which-tools).
+
+| Variable | Notes |
+|----------|-------|
+| `ANTHROPIC_API_KEY` | `sk-ant-...` — Claude Code, OpenCode, Aider, Goose |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Use a Claude subscription instead of a key (`claude setup-token`) |
+| `OPENAI_API_KEY` | `sk-...` — Codex, OpenCode, Aider, Goose, Qwen Code |
+| `GEMINI_API_KEY` | Gemini CLI, OpenCode, Aider |
+| `GOOGLE_API_KEY` | Alias for Gemini access (Gemini CLI, OpenCode) |
+| `MISTRAL_API_KEY` | Mistral Vibe |
+| `OPENROUTER_API_KEY` | Aider (OpenRouter models) |
+| `AMP_API_KEY` | Amp |
+| `AUGMENT_SESSION_AUTH` | Augment (`auggie token print`) |
+| `FACTORY_API_KEY` | Factory Droid |
+| `QWEN_API_KEY` | Qwen Code |
 
 ## SSH Configuration
 
@@ -73,7 +80,7 @@ That's it! All your GitHub-registered SSH **public** keys are automatically adde
 | `PUBLIC_KEY_FILE` | Path to public key file inside container |
 | `PUBLIC_KEY_DIR` | Directory containing multiple public key files |
 
-You can also add keys via the EnvHaven extension sidebar (SSH Access section) or manually to `/config/.ssh/authorized_keys`.
+You can also add keys via the EnvHaven extension sidebar or manually to `/config/.ssh/authorized_keys`.
 
 ### SSH Troubleshooting
 
@@ -187,36 +194,25 @@ One honest caveat. A program that draws its own masked password field while keep
 
 Setting `ENVHAVEN_SKIP_WELCOME=1` disables predictive echo entirely. The safety gate watches the shared tmux session that shells normally auto-attach, and skipping the attach breaks that link, so the server refuses to predict rather than vouch for a pane it may not be showing.
 
-## Docker Mods
+## Bundled Developer Tools
 
-EnvHaven uses LinuxServer.io's DOCKER_MODS system to install developer tools at startup.
+Command-line tools are baked into the image at build time, so they are available the moment the container boots (there is no first-start package download).
 
-**Default packages:**
+- **Installed via `apt`:** `ripgrep`, `jq`, `sqlite3`, `htop`, `unzip`, `git`, `zsh`, `tmux`, `ffmpeg`, plus `curl` and `wget`.
+- **Installed via `mise`:** `fd` (file finder), `gh` (GitHub CLI), and the language runtimes.
 
-- `ripgrep` (rg) - Fast text search
-- `fd-find` (fd) - Fast file finder
-- `jq` - JSON processor
-- `sqlite3` - SQLite CLI
-- `htop` - Process viewer
-- `unzip` - Archive extraction
-- `zsh` - Z shell
-- `git` - Version control
+The only LinuxServer.io mod in use adds the zsh shell:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DOCKER_MODS` | `linuxserver/mods:universal-package-install\|linuxserver/mods:code-server-zsh` | Pipe-separated list of mods |
-| `INSTALL_PACKAGES` | `ripgrep\|fd-find\|jq\|sqlite3\|htop\|unzip\|zsh\|git` | Apt packages to install |
-| `INSTALL_PIP_PACKAGES` | - | Pip packages to install |
+| `DOCKER_MODS` | `linuxserver/mods:code-server-zsh` | Installs zsh + oh-my-zsh |
 
-**Adding more packages:**
+To add more tools, either install them at runtime with `sudo apt-get install ...` (the `abc` user has sudo), or extend the image for a durable setup:
 
-```yaml
-environment:
-  # Note: This REPLACES defaults, so include base packages
-  - INSTALL_PACKAGES=ripgrep|fd-find|jq|sqlite3|htop|unzip|zsh|git|neovim|tmux
+```dockerfile
+FROM ghcr.io/envhaven/envhaven:latest
+RUN apt-get update && apt-get install -y neovim && rm -rf /var/lib/apt/lists/*
 ```
-
-> Packages are installed on first container start, adding ~60 seconds to initial startup.
 
 ## Volumes
 
