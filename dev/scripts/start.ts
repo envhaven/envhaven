@@ -12,6 +12,7 @@ if (status === 'running' && !fresh) {
   log.success(`Container '${config.containerName}' is already running`);
   log.newline();
   log.info(`Web UI: http://${config.host}:${config.webPort}`);
+  log.info(`Terminal: http://${config.host}:${config.consolePort}`);
   log.info(`SSH: ssh abc@${config.host} -p ${config.sshPort}`);
   log.dim(`Password: ${config.password}`);
   process.exit(0);
@@ -44,7 +45,7 @@ try {
     volumeArgs.push(`-v`, `${extPath}:/extension`);
   }
   
-  await $`docker run -d --name ${config.containerName} -p ${config.webPort}:8443 -p ${config.sshPort}:22 ${envArgs} ${volumeArgs} ${config.image}`;
+  await $`docker run -d --name ${config.containerName} -p ${config.webPort}:8443 -p ${config.sshPort}:22 -p ${config.consolePort}:7681 ${envArgs} ${volumeArgs} ${config.image}`;
 } catch (e: any) {
   const stderr = e.stderr?.toString() || e.message || String(e);
   log.error(`Failed to start container: ${stderr}`);
@@ -61,6 +62,7 @@ if (ready) {
   log.success('Services ready');
   log.newline();
   log.info(`Web UI: http://${config.host}:${config.webPort}`);
+  log.info(`Terminal: http://${config.host}:${config.consolePort}`);
   log.info(`SSH: ssh abc@${config.host} -p ${config.sshPort}`);
   log.dim(`Password: ${config.password}`);
   process.exit(0);

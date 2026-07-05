@@ -7,6 +7,7 @@ const containerName = `envhaven-test-${Date.now()}`;
 
 const tests = [
   { name: 'code-server health', cmd: 'curl -sf http://localhost:8443/healthz' },
+  { name: 'browser terminal', cmd: 'curl -sf -o /dev/null http://localhost:7681/__console/ui' },
   { name: 'SSH daemon', cmd: 'pgrep sshd' },
   { name: 'cloudflared binary', cmd: 'which cloudflared' },
   
@@ -66,7 +67,7 @@ try {
     `-e`, `SUDO_PASSWORD=testpass`,
   ];
   
-  await $`docker run -d --name ${containerName} -p 18443:8443 -p 12222:22 ${envArgs} -v ${testConfigPath}:/config ${config.image}`.quiet();
+  await $`docker run -d --name ${containerName} -p 18443:8443 -p 12222:22 -p 17681:7681 ${envArgs} -v ${testConfigPath}:/config ${config.image}`.quiet();
 } catch {
   log.error('Failed to start test container');
   process.exit(1);

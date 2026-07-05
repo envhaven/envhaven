@@ -30,7 +30,7 @@ async function ensureContainerWithExtension(config: Config, addLog: AddLog): Pro
   addLog('info', `Starting container with extension mount: ${extPath}`);
 
   try {
-    await $`docker run -d --name ${config.containerName} -p ${config.webPort}:8443 -p ${config.sshPort}:22 -e PASSWORD=${config.password} -e SUDO_PASSWORD=${config.password} -v ${extPath}:/extension ${config.image}`.quiet();
+    await $`docker run -d --name ${config.containerName} -p ${config.webPort}:8443 -p ${config.sshPort}:22 -p ${config.consolePort}:7681 -e PASSWORD=${config.password} -e SUDO_PASSWORD=${config.password} -v ${extPath}:/extension ${config.image}`.quiet();
   } catch (e) {
     addLog('error', `Failed to start container: ${e}`);
     return false;
@@ -145,6 +145,7 @@ export async function runWatch(
 
   addLog('success', 'Watch mode active');
   addLog('info', `Web UI: http://${config.host}:${config.webPort}`);
+  addLog('info', `Terminal: http://${config.host}:${config.consolePort}`);
   addLog('dim', 'Reload browser after changes: Ctrl+Shift+P → Developer: Reload Window');
   addLog('dim', 'Watching for changes...');
 

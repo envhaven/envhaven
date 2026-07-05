@@ -79,6 +79,7 @@ cp .env.example .env.dev
 | `ENVHAVEN_HOST` | `localhost` | Host for access URLs |
 | `ENVHAVEN_WEB_PORT` | `8443` | Web UI port |
 | `ENVHAVEN_SSH_PORT` | `2222` | SSH port |
+| `ENVHAVEN_CONSOLE_PORT` | `7681` | Browser terminal port (opens when a password is set) |
 | `ENVHAVEN_PASSWORD` | `test` | code-server / sudo password |
 | `ENVHAVEN_HOST_REPO_PATH` | | Host path to repo (required for Docker-in-Docker) |
 

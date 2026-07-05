@@ -72,6 +72,7 @@ export const SETTINGS_FIELDS: SettingsField[] = [
   { key: 'host', label: 'Host' },
   { key: 'webPort', label: 'Web Port' },
   { key: 'sshPort', label: 'SSH Port' },
+  { key: 'consolePort', label: 'Console Port' },
   { key: 'password', label: 'Password', mask: true },
 ];
 

@@ -7,6 +7,7 @@ export interface Config {
   image: string;
   webPort: number;
   sshPort: number;
+  consolePort: number;
   password: string;
   host: string;
   hostRepoPath: string;
@@ -21,6 +22,7 @@ const DEFAULTS: Config = {
   image: 'envhaven:dev',
   webPort: 8443,
   sshPort: 2222,
+  consolePort: 7681,
   password: 'test',
   host: 'localhost',
   hostRepoPath: '',
@@ -69,6 +71,7 @@ export function loadConfig(): Config {
     image: envVars['ENVHAVEN_IMAGE'] || DEFAULTS.image,
     webPort: parseInt(envVars['ENVHAVEN_WEB_PORT'] || String(DEFAULTS.webPort), 10),
     sshPort: parseInt(envVars['ENVHAVEN_SSH_PORT'] || String(DEFAULTS.sshPort), 10),
+    consolePort: parseInt(envVars['ENVHAVEN_CONSOLE_PORT'] || String(DEFAULTS.consolePort), 10),
     password: envVars['ENVHAVEN_PASSWORD'] || DEFAULTS.password,
     host: envVars['ENVHAVEN_HOST'] || DEFAULTS.host,
     hostRepoPath: envVars['ENVHAVEN_HOST_REPO_PATH'] || DEFAULTS.hostRepoPath,
