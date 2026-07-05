@@ -57,9 +57,14 @@ Schedule a recurring task: ask Claude on WhatsApp ("agendá un cron que cada lun
 
 ## Troubleshooting
 
-### Bun crashes with exit 132 (SIGILL)
+### Install: bun preferred, pnpm/npm fallback
 
-CPU lacks AVX2. Use pnpm or npm. Don't try `bun install` even if `bun --version` works.
+`run.sh` and the skill install with **bun** when it's present. Bun resolves Baileys' git-hosted `libsignal` dependency and runs the required lifecycle scripts without the supply-chain-default friction pnpm 10/11 impose. `trustedDependencies` in `package.json` pre-approves the three packages with install scripts (`@whiskeysockets/baileys`, `esbuild`, `protobufjs`); the shipped `bun.lock` pins exact versions.
+
+**Fallback (pre-AVX2 CPUs).** If `bun install` exits **132 (SIGILL)** even though `bun --version` works (older x86_64 without AVX2, common in old containers), use pnpm or npm:
+
+- **pnpm 10/11** rejects Baileys' git subdep and blocks its build scripts. Bootstrap once with `pnpm install --config.block-exotic-subdeps=false`, and ship a `pnpm-workspace.yaml` with `onlyBuiltDependencies: ["@whiskeysockets/baileys", esbuild, protobufjs]`. Later installs read the lockfile and skip the exotic-subdep check.
+- **npm** handles the tree with no extra flags.
 
 ### Baileys default-export TypeScript error: "expression is not callable"
 
@@ -70,7 +75,7 @@ import { makeWASocket } from '@whiskeysockets/baileys';   // right
 import makeWASocket from '@whiskeysockets/baileys';       // wrong
 ```
 
-Baileys 6.7.18 is CommonJS; under NodeNext resolution the default import resolves to the namespace object.
+Baileys 6.7.23 is CommonJS; under NodeNext resolution the default import resolves to the namespace object.
 
 ### Code 515 (`restartRequired`) right after pairing
 
@@ -90,7 +95,7 @@ Add their LID (or `+phone` once Baileys resolves it) to `GUEST_LIDS` (or `OWNER_
 
 ### QR not rendering after launch
 
-Most likely a startup error. Dump `tail -50 /tmp/wa-claude.log`. Common causes: Node < 20, `pnpm install` didn't finish, `.env` missing or all role slots empty (the bridge refuses to start; should be `OWNER_LID=BOOTSTRAP` during install Step 7).
+Most likely a startup error. Dump `tail -50 /tmp/wa-claude.log`. Common causes: Node < 20, `bun install` (or `pnpm`/`npm`) didn't finish, `.env` missing or all role slots empty (the bridge refuses to start; should be `OWNER_LID=BOOTSTRAP` during install Step 7).
 
 ### Window `wa-claude` doesn't exist after a crash
 
@@ -147,7 +152,8 @@ The bridge dir lives at `$BRIDGE_DIR`, typically a sibling of the workspace (`/c
 
 ```
 $BRIDGE_DIR/                               (mode 700)
-├── package.json          (pnpm/npm; tsx; ESM)
+├── package.json          (bun/pnpm/npm; tsx; ESM; trustedDependencies)
+├── bun.lock              (exact-version pin for reproducible bun installs)
 ├── tsconfig.json         (strict, NodeNext, allowImportingTsExtensions)
 ├── run.sh                (resilient supervisor; bash loop + trap '' INT)
 ├── .env                  (mode 600; OWNER_LID, GUEST_LIDS, CLAUDE_CWD, DAILY_RESET_HOUR)
@@ -191,7 +197,7 @@ Three layers:
 
 1. **Connection-aware send (in-process).** Baileys' WebSocket drops occasionally (codes 428, 440, 515 are routine). The bridge tracks `'connecting' | 'open' | 'closed' | 'logged-out'`. Outbound `send()` waits for `open` (up to 30s per attempt) and retries transient failures (`Connection Closed`, `Timed Out`, `Stream Errored`) up to 5 times. The handle uses a closure-scoped `sock` that swaps on reconnect; without this, every reply after the first disconnect would silently fail. Sent message protos cached in-memory (256-entry cap) and served via `getMessage` so retry/re-encrypt requests don't leave recipients on "Waiting for this message…".
 2. **Process-level safety nets.** `uncaughtException` → log + exit 1 (clean state for restart). `unhandledRejection` → log only. `loggedOut` (401) is non-recoverable; needs fresh QR.
-3. **Process supervisor.** `run.sh` loops `pnpm`/`npm start` with exponential back-off (2s → 60s cap, resets after a 30s+ run). With auto-start (s6/systemd/launchd), the OS supervisor handles restart and `run.sh`'s loop is bypassed.
+3. **Process supervisor.** `run.sh` loops `bun`/`pnpm`/`npm start` with exponential back-off (2s → 60s cap, resets after a 30s+ run). With auto-start (s6/systemd/launchd), the OS supervisor handles restart and `run.sh`'s loop is bypassed.
 
 **Out of scope: inbound replay durability.** A bridge crash between WhatsApp ACK and Claude's reply loses that message; Baileys has already ACKed it and the linked-device protocol won't redeliver. The Claude Agent SDK is not idempotent across crashes; replaying mid-turn could re-execute Bash/Edit calls. Lose the rare message; resend.
 

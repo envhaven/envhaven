@@ -9,18 +9,19 @@
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit"
   },
+  "trustedDependencies": ["@whiskeysockets/baileys", "esbuild", "protobufjs"],
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.2.126",
-    "@whiskeysockets/baileys": "6.7.18",
+    "@anthropic-ai/claude-agent-sdk": "0.3.201",
+    "@whiskeysockets/baileys": "6.7.23",
     "croner": "^10.0.1",
-    "dotenv": "^16.4.7",
-    "pino": "^9.6.0",
+    "dotenv": "^17.4.2",
+    "pino": "^10.3.1",
     "qrcode-terminal": "^0.12.0"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
+    "@types/node": "^26.1.0",
     "@types/qrcode-terminal": "^0.12.2",
-    "tsx": "^4.20.0",
-    "typescript": "^5.9.3"
+    "tsx": "^4.23.0",
+    "typescript": "^6.0.3"
   }
 }

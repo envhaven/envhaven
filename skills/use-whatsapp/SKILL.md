@@ -79,7 +79,7 @@ Probe the environment. Hard requirements must be present; for soft ones, offer t
 node --version                                            # need v20+
 tmux -V                                                   # any modern version
 test -f ~/.claude/.credentials.json && echo "claude: OK" # subscription auth file
-command -v pnpm || command -v npm                         # at least one package manager
+command -v bun || command -v pnpm || command -v npm       # package manager (bun preferred)
 
 # Init systems (record results for Step 10).  For each candidate path that
 # could host an auto-start file, also record whether it is bind-mounted from
@@ -219,12 +219,14 @@ Otherwise create and copy templates:
 mkdir -p "$BRIDGE_DIR/src"
 chmod 700 "$BRIDGE_DIR"   # restrict so other host users can't read auth/, .env, or logs inside
 cp "$SKILL_DIR/templates/package.json"     "$BRIDGE_DIR/"
+cp "$SKILL_DIR/templates/bun.lock"         "$BRIDGE_DIR/"
 cp "$SKILL_DIR/templates/tsconfig.json"    "$BRIDGE_DIR/"
 cp "$SKILL_DIR/templates/.gitignore"       "$BRIDGE_DIR/"
 cp "$SKILL_DIR/templates/.env.example"     "$BRIDGE_DIR/"
 cp "$SKILL_DIR/templates/README.md"        "$BRIDGE_DIR/"
 cp "$SKILL_DIR/templates/src/whatsapp.ts"  "$BRIDGE_DIR/src/"
 cp "$SKILL_DIR/templates/src/claude.ts"    "$BRIDGE_DIR/src/"
+cp "$SKILL_DIR/templates/src/crons.ts"     "$BRIDGE_DIR/src/"
 cp "$SKILL_DIR/templates/src/format.ts"    "$BRIDGE_DIR/src/"
 cp "$SKILL_DIR/templates/src/index.ts"     "$BRIDGE_DIR/src/"
 cp "$SKILL_DIR/templates/run.sh"           "$BRIDGE_DIR/"
@@ -237,10 +239,23 @@ The `chmod 700` on the bridge dir means files inside (auth/, .env, data/, the lo
 
 ```bash
 cd "$BRIDGE_DIR"
-if command -v pnpm >/dev/null; then pnpm install; else npm install; fi
+if command -v bun >/dev/null; then
+  bun install
+elif command -v pnpm >/dev/null; then
+  # pnpm 10/11 reject Baileys' git-hosted `libsignal` subdep and block the deps'
+  # build scripts by default. onlyBuiltDependencies pre-approves the three that
+  # have install scripts; the flag lets the git subdep through on first install
+  # (later installs read the lockfile and skip the check).
+  printf 'onlyBuiltDependencies:\n  - "@whiskeysockets/baileys"\n  - esbuild\n  - protobufjs\n' > pnpm-workspace.yaml
+  pnpm install --config.block-exotic-subdeps=false
+else
+  npm install
+fi
 ```
 
-If `pnpm` exits with `132` (SIGILL; older x86_64 without AVX2, common in containers), fall back to `npm install`. **Don't use Bun**; unreliable on the same CPUs even when `bun --version` works.
+**Prefer bun** (available on EnvHaven, `bun = "latest"` in `mise.toml`): it resolves Baileys' transitive git dependency and runs the required lifecycle scripts without the supply-chain-default friction pnpm 10/11 impose. `trustedDependencies` in `package.json` pre-approves the three packages with install scripts (`@whiskeysockets/baileys`, `esbuild`, `protobufjs`); the shipped `bun.lock` pins exact versions.
+
+If `bun install` exits with `132` (SIGILL; older x86_64 without AVX2, common in old containers) even though `bun --version` works, fall back to pnpm (uses the workaround above) or npm (`npm install` handles the tree with no extra flags). See the README's *Install: bun preferred, pnpm/npm fallback* for the full rationale.
 
 ## Step 4; Initial `.env` (with bootstrap workaround)
 
@@ -363,7 +378,7 @@ else
 fi
 ```
 
-If you install Option A (`/custom-cont-init.d/`), the init script launches `./run.sh` so the in-process wrapper continues to handle crash respawn (the init script itself only runs once per container start).  If you install Options B–D (s6-rc, systemd-user, launchd), the OS-level supervisor handles restart natively, and those `run`/`ExecStart` scripts invoke `pnpm start` directly without the wrapper loop.
+If you install Option A (`/custom-cont-init.d/`), the init script launches `./run.sh` so the in-process wrapper continues to handle crash respawn (the init script itself only runs once per container start).  If you install Options B–D (s6-rc, systemd-user, launchd), the OS-level supervisor handles restart natively, and those `run`/`ExecStart` scripts invoke `bun start` (or `pnpm`/`npm`) directly without the wrapper loop.
 
 Wait until the bridge surfaces a sign of life; poll, don't blind-sleep. If `auth/creds.json` already exists (re-running against an authed install), no QR will appear; poll for the connect line instead and skip the QR prompts entirely:
 
@@ -485,7 +500,7 @@ OWNER_LID_VAL=$(grep -E '^OWNER_LID=' "$BRIDGE_DIR/.env" | sed 's/^OWNER_LID=//'
 GUEST_LIDS_VAL=$(grep -E '^GUEST_LIDS=' "$BRIDGE_DIR/.env" | sed 's/^GUEST_LIDS=//')
 NODE_VER=$(node --version | sed 's/^v//')
 BAILEYS_VER=$(grep -oP '"@whiskeysockets/baileys":\s*"\K[^"]+' "$BRIDGE_DIR/package.json" | head -1)
-PKG_MGR=$(command -v pnpm >/dev/null && echo pnpm || echo npm)
+PKG_MGR=$(command -v bun >/dev/null && echo bun || { command -v pnpm >/dev/null && echo pnpm || echo npm; })
 ```
 
 Substitute placeholders (idempotent: safe to re-run, since unmatched placeholders are no-ops):
@@ -549,6 +564,16 @@ If yes, pick the option from Step 0's probe (no second prompt; the host capabili
 - **Option B** (s6-overlay): only when `/etc/s6-overlay/s6-rc.d/` is host-mounted (rare; default EnvHaven layouts have it on image rootfs and lose it on recreation).
 - **Option C** (systemd-user): modern Linux desktops/servers.
 - **Option D** (launchd): macOS.
+
+**No persistent path? Say so plainly.** On some containers (observed on default EnvHaven images) Step 0's probe finds `/custom-cont-init.d` and `/etc/s6-overlay` both on the **image overlay** (same device as `/etc`, printed as *NOT persistent across recreation*), with no systemd-user and no launchd. Then **there is no auto-start that survives container recreation or image upgrade on this host**. Don't paper over it: tell the user directly, install Option A anyway (it survives a plain container *restart*, just not recreation), and record the caveat in the TOOLS.md WhatsApp section so future sessions know the bridge is disposable here:
+
+```
+- **Persistence**: none on this host; `/custom-cont-init.d` and s6 are on the image overlay.
+  Bridge survives container restart (Option A) but is wiped on recreation / image upgrade;
+  re-run the /use-whatsapp skill (M1) to reinstall, then re-pair if `auth/` was on the overlay.
+```
+
+If even Option A is unavailable, fall back to tmux-only (the "None" row in the After-install table) and record the same caveat.
 
 ### Option A: `/custom-cont-init.d/<NN>-<name>.sh`
 
@@ -699,7 +724,7 @@ Refresh template files while preserving `auth/`, `data/`, `.env`. Use this when 
 ```bash
 cd "$EXISTING_BRIDGE"
 TS=$(date +%s)
-TOUCH=(src/index.ts src/whatsapp.ts src/claude.ts src/format.ts package.json tsconfig.json run.sh .env.example README.md)
+TOUCH=(src/index.ts src/whatsapp.ts src/claude.ts src/crons.ts src/format.ts package.json bun.lock tsconfig.json run.sh .env.example README.md)
 
 CHANGED=()
 for f in "${TOUCH[@]}"; do
@@ -721,8 +746,10 @@ for f in "${CHANGED[@]}"; do
 done
 chmod +x "$EXISTING_BRIDGE/run.sh"
 
-# Pick up any new deps. pnpm install is a no-op if lock matches.
-if command -v pnpm >/dev/null; then pnpm install; else npm install; fi
+# Pick up any new deps. Preferred installer is bun (no-op if the lock matches).
+if command -v bun >/dev/null; then bun install
+elif command -v pnpm >/dev/null; then pnpm install --config.block-exotic-subdeps=false
+else npm install; fi
 ```
 
 Restart, picking the right command based on the supervisor in use:
@@ -753,7 +780,7 @@ Run sanity checks against the existing install and propose fixes for failures. R
 | `pgrep -f "tsx.*$EXISTING_BRIDGE/src/index"` returns a PID | None → restart per supervisor (see M1's restart block); if it crashes immediately, `tail -100 /tmp/wa-claude.log` and address |
 | `test -f $EXISTING_BRIDGE/auth/creds.json` | Missing → re-pair via Step 6 (do not reinstall; keeps data/, .env, customizations) |
 | `OWNER_LID` set to a real LID (not `BOOTSTRAP`) | Owner unset or only `BOOTSTRAP` → run Step 7 to capture the owner; subsequent senders go through M3 |
-| `node_modules/` present and matches lockfile | Missing/stale → `pnpm install` (or `npm install`) |
+| `node_modules/` present and matches lockfile | Missing/stale → `bun install` (or `pnpm`/`npm` fallback) |
 | `data/sessions.json` parses as JSON | Corrupt → confirm with user, then `echo '{}' > data/sessions.json` (loses per-chat continuity but recoverable) |
 | Recent `Connection Closed` retries succeed | Exhausting all 5 retries → likely `loggedOut` (code 401); confirm, then `rm -rf auth/` and re-pair |
 | `package.json` matches the template's | Drift detected → suggest M1 (Update bridge code) |

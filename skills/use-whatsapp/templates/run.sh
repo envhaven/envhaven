@@ -15,7 +15,12 @@ umask 077
 touch "$LOG"
 chmod 600 "$LOG"
 
-PKG=$(command -v pnpm >/dev/null && echo pnpm || echo npm)
+# Prefer bun; fall back to pnpm then npm. All three run the same "start" script
+# (tsx src/index.ts), so the process signature stays identical across them.
+if command -v bun >/dev/null; then PKG=bun
+elif command -v pnpm >/dev/null; then PKG=pnpm
+else PKG=npm
+fi
 
 WAIT_S=2
 MAX_WAIT_S=60
