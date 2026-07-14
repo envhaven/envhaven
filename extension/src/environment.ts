@@ -4,6 +4,16 @@ import * as path from 'path';
 import * as os from 'os';
 import * as net from 'net';
 import toolDefinitionsJson from '../../tool-definitions.json';
+import { getTools } from './consoleClient';
+import {
+  TMUX_SESSION,
+  type AITool,
+  type SetupStep,
+  type TmuxWindow,
+  type VersionInfo,
+  type EnvVarMeta,
+  type WorkspaceInfo,
+} from './shared-types';
 
 /** Default timeout for all process spawns (ms) */
 const DEFAULT_TIMEOUT_MS = 2000;
@@ -49,25 +59,17 @@ export function execSafe(command: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promi
   });
 }
 
-interface StaticCache {
-  tools: Map<string, { installed: boolean }>;
-  versions: {
-    node: string | null;
-    python: string | null;
-    go: string | null;
-    rust: string | null;
-  } | null;
-  rcEnvVars: Map<string, string> | null;
+interface Versions {
+  node: string | null;
+  python: string | null;
+  go: string | null;
+  rust: string | null;
 }
 
-const staticCache: StaticCache = {
-  tools: new Map(),
-  versions: null,
-  rcEnvVars: null,
-};
+let cachedVersions: Versions | null = null;
 
-async function getCachedVersions(): Promise<NonNullable<StaticCache['versions']>> {
-  if (staticCache.versions) return staticCache.versions;
+async function getCachedVersions(): Promise<Versions> {
+  if (cachedVersions) return cachedVersions;
 
   const [node, python, go, rust] = await Promise.all([
     getVersion('node'),
@@ -76,69 +78,8 @@ async function getCachedVersions(): Promise<NonNullable<StaticCache['versions']>
     getVersion('rustc'),
   ]);
 
-  staticCache.versions = { node, python, go, rust };
-  return staticCache.versions;
-}
-
-export interface SetupStep {
-  instruction?: string;
-  command?: string;
-}
-
-export interface AITool {
-  id: string;
-  name: string;
-  command: string;
-  authCommand: string | null;
-  description: string;
-  docsUrl: string;
-  installed: boolean;
-  authStatus: 'ready' | 'needs-auth' | 'unknown';
-  connectedVia: string | null;
-  setupSteps?: SetupStep[];
-  envVars?: string[];
-}
-
-export interface TmuxWindow {
-  index: number;
-  name: string;
-  active: boolean;
-}
-
-export interface VersionInfo {
-  current: string | null;
-  latest: string | null;
-  updateAvailable: boolean;
-}
-
-export interface WorkspaceInfo {
-  isManaged: boolean;
-  workspacePath: string;
-  hostname: string;
-  nodeVersion: string | null;
-  pythonVersion: string | null;
-  goVersion: string | null;
-  rustVersion: string | null;
-  aiTools: AITool[];
-  sshEnabled: boolean;
-  sshPort: number;
-  sshCommand: string | null;
-  sshConfigured: boolean;
-  sshKeyConfigured: boolean;
-  publicUrl: string | null;
-  previewUrl: string | null;
-  previewPortOpen: boolean;
-  exposedPort: number;
-  workspaceId: string | null;
-  workspaceToken: string | null;
-  apiUrl: string | null;
-  tmuxWindows: TmuxWindow[];
-  version: VersionInfo;
-  /** ISO timestamp of workspace first boot, or null when the marker is missing. */
-  createdAt: string | null;
-  /** Placeholder/hint/url per env var name. Shipped to the webview so the
-   *  API-key input can render copy without duplicating the mapping. */
-  envVarMeta: Record<string, EnvVarMeta>;
+  cachedVersions = { node, python, go, rust };
+  return cachedVersions;
 }
 
 export interface ToolDefinition {
@@ -150,11 +91,13 @@ export interface ToolDefinition {
   docsUrl: string;
   envVars: string[];
   authFiles: string[];
+  // Consumed by the Go console's auth ladder (tools.go checkAuth), not the extension;
+  // it still types the shared tool-definitions.json the console reads.
   authCheck?: 'goose';
   /**
    * The kebab-case agent id `npx skills add -a <agent>` accepts. Absent when
-   * skills.sh doesn't support this tool (e.g. aider) — install flow reports
-   * it as unsupported.
+   * skills.sh doesn't support this tool (e.g. aider) — the console's
+   * connectedAgents silently skips agent-less tools when installing skills.
    */
   skillsAgent?: string;
   setupSteps: SetupStep[];
@@ -162,33 +105,11 @@ export interface ToolDefinition {
 
 export const TOOL_DEFINITIONS: ToolDefinition[] = toolDefinitionsJson.tools as ToolDefinition[];
 
-/**
- * Per-env-var UI metadata (placeholder, hint, signup URL) for the API-key
- * input in the webview. Keyed by env var name, shared across tools — e.g.
- * `ANTHROPIC_API_KEY` is used by both opencode and claude. Source of truth
- * is tool-definitions.json so new providers only need one file edit.
- */
-export interface EnvVarMeta {
-  placeholder: string;
-  hint: string;
-  url: string | null;
-}
+// Per-env-var UI metadata (placeholder/hint/signup URL) for the API-key input,
+// keyed by env var name and shared across tools (e.g. ANTHROPIC_API_KEY is used by
+// both opencode and claude). Source of truth is tool-definitions.json's envVarMeta.
 export const ENV_VAR_META: Record<string, EnvVarMeta> =
   (toolDefinitionsJson as { envVarMeta?: Record<string, EnvVarMeta> }).envVarMeta ?? {};
-
-async function commandExists(cmd: string): Promise<boolean> {
-  const cached = staticCache.tools.get(cmd);
-  if (cached !== undefined) return cached.installed;
-
-  try {
-    await execSafe(`which ${cmd}`);
-    staticCache.tools.set(cmd, { installed: true });
-    return true;
-  } catch {
-    staticCache.tools.set(cmd, { installed: false });
-    return false;
-  }
-}
 
 async function getVersion(cmd: string, versionArg = '--version'): Promise<string | null> {
   try {
@@ -200,131 +121,8 @@ async function getVersion(cmd: string, versionArg = '--version'): Promise<string
   }
 }
 
-function parseRcEnvVars(): Map<string, string> {
-  const envVars = new Map<string, string>();
-  const rcPaths = [
-    path.join(os.homedir(), '.zshrc'),
-    path.join(os.homedir(), '.bashrc'),
-  ];
-
-  for (const rcPath of rcPaths) {
-    try {
-      const content = fs.readFileSync(rcPath, 'utf-8');
-      const regex = /^export\s+(\w+)=["']?([^"'\n]+)["']?/gm;
-      let match;
-      while ((match = regex.exec(content)) !== null) {
-        if (!envVars.has(match[1])) {
-          envVars.set(match[1], match[2]);
-        }
-      }
-    } catch {
-      continue;
-    }
-  }
-  return envVars;
-}
-
-function getCachedRcEnvVars(): Map<string, string> {
-  if (!staticCache.rcEnvVars) {
-    staticCache.rcEnvVars = parseRcEnvVars();
-  }
-  return staticCache.rcEnvVars;
-}
-
-export function invalidateRcEnvVarsCache(): void {
-  staticCache.rcEnvVars = null;
-}
-
 export function getToolDefinitionById(id: string): ToolDefinition | undefined {
   return TOOL_DEFINITIONS.find((t) => t.id === id);
-}
-
-function getSetEnvVar(varNames: string[]): string | null {
-  const rcVars = getCachedRcEnvVars();
-  for (const varName of varNames) {
-    if (process.env[varName]) return varName;
-    if (rcVars.has(varName)) return varName;
-  }
-  return null;
-}
-
-export interface AuthResult {
-  status: 'ready' | 'needs-auth' | 'unknown';
-  connectedVia: string | null;
-}
-
-function checkGooseAuth(): AuthResult {
-  const configPath = path.join(os.homedir(), '.config/goose/config.yaml');
-  try {
-    if (!fs.existsSync(configPath)) {
-      return { status: 'needs-auth', connectedVia: null };
-    }
-    const content = fs.readFileSync(configPath, 'utf-8');
-    if (content.includes('GOOSE_PROVIDER:')) {
-      const match = content.match(/GOOSE_PROVIDER:\s*["']?(\w+)["']?/);
-      const provider = match ? match[1] : 'configured';
-      return { status: 'ready', connectedVia: `goose (${provider})` };
-    }
-    return { status: 'needs-auth', connectedVia: null };
-  } catch {
-    return { status: 'needs-auth', connectedVia: null };
-  }
-}
-
-function hasNonEmptyJson(filePath: string): boolean {
-  try {
-    if (!fs.existsSync(filePath)) return false;
-    const content = fs.readFileSync(filePath, 'utf-8').trim();
-    return content.length > 0 && content !== '{}' && content !== '[]';
-  } catch {
-    return false;
-  }
-}
-
-function fileExists(filePath: string): boolean {
-  try {
-    return fs.existsSync(filePath);
-  } catch {
-    return false;
-  }
-}
-
-function getAuthFileLabel(filePath: string): string {
-  const basename = path.basename(filePath);
-  const dirname = path.basename(path.dirname(filePath));
-  return `${dirname}/${basename}`.replace(/^\./, '');
-}
-
-export async function checkAuth(def: ToolDefinition): Promise<AuthResult> {
-  // 1. Check env vars first (highest priority)
-  if (def.envVars.length > 0) {
-    const setVar = getSetEnvVar(def.envVars);
-    if (setVar) return { status: 'ready', connectedVia: setVar };
-  }
-
-  // 2. Special auth check for goose (requires YAML pattern matching)
-  if (def.authCheck === 'goose') return checkGooseAuth();
-
-  // 3. Check auth files
-  if (def.authFiles.length > 0) {
-    for (const relPath of def.authFiles) {
-      const fullPath = path.join(os.homedir(), relPath);
-      const isJson = fullPath.endsWith('.json');
-      const exists = isJson ? hasNonEmptyJson(fullPath) : fileExists(fullPath);
-      if (exists) {
-        return { status: 'ready', connectedVia: getAuthFileLabel(relPath) };
-      }
-    }
-    return { status: 'needs-auth', connectedVia: null };
-  }
-
-  // 4. If tool has env vars but none are set, it needs auth
-  if (def.envVars.length > 0) {
-    return { status: 'needs-auth', connectedVia: null };
-  }
-
-  // 5. No detection method available
-  return { status: 'unknown', connectedVia: null };
 }
 
 async function isSshEnabled(): Promise<boolean> {
@@ -455,18 +253,28 @@ async function getVersionInfo(isManaged: boolean, apiUrl: string | null): Promis
   return { current, latest, updateAvailable };
 }
 
-export async function getTmuxWindows(): Promise<TmuxWindow[]> {
-  try {
-    const { stdout } = await execSafe('tmux list-windows -t envhaven -F "#{window_index}|#{window_name}|#{window_active}"');
-    const lines = stdout.trim().split('\n').filter(Boolean);
-    return lines.map((line) => {
-      const [index, name, active] = line.split('|');
+// parseTmuxWindows turns `index|active|name` lines into windows. The free-text name
+// is LAST so a "|" inside a renamed window stays whole (same field order as the
+// console's parseWindows); a nameless window falls back to `Window <index>`.
+export function parseTmuxWindows(stdout: string): TmuxWindow[] {
+  return stdout
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [index, active, ...name] = line.split('|');
       return {
         index: parseInt(index, 10),
-        name: name || `Window ${index}`,
+        name: name.join('|') || `Window ${index}`,
         active: active === '1',
       };
     });
+}
+
+export async function getTmuxWindows(): Promise<TmuxWindow[]> {
+  try {
+    const { stdout } = await execSafe(`tmux list-windows -t ${TMUX_SESSION} -F "#{window_index}|#{window_active}|#{window_name}"`);
+    return parseTmuxWindows(stdout);
   } catch {
     return [];
   }
@@ -519,28 +327,13 @@ export async function getWorkspaceInfo(): Promise<WorkspaceInfo> {
   const exposedPort = await getExposedPort(isManaged, workspaceId, workspaceToken, apiUrl);
   const createdAt = getWorkspaceCreatedAt();
 
-  const [toolResults, versions, sshEnabled, previewPortOpen, tmuxWindows, versionInfo] = await Promise.all([
-    Promise.all(
-      TOOL_DEFINITIONS.map(async (def) => {
-        const installed = await commandExists(def.command);
-        const auth = installed
-          ? await checkAuth(def)
-          : { status: 'needs-auth' as const, connectedVia: null };
-        return {
-          id: def.id,
-          name: def.name,
-          command: def.command,
-          authCommand: def.authCommand,
-          description: def.description,
-          docsUrl: def.docsUrl,
-          installed,
-          authStatus: auth.status,
-          connectedVia: auth.connectedVia,
-          setupSteps: def.setupSteps,
-          envVars: def.envVars,
-        };
-      })
-    ),
+  const [aiTools, versions, sshEnabled, previewPortOpen, tmuxWindows, versionInfo] = await Promise.all([
+    // The console (console/api.go) is the single source of truth for the tool grid:
+    // installed via PATH + per-tool auth status, computed by reading THIS container's
+    // env, rc files, and auth files. Unreachable (e.g. a self-host box with no web
+    // password) → an empty grid, the same graceful degradation the other
+    // console-backed panels have.
+    getTools().catch(() => [] as AITool[]),
     getCachedVersions(),
     isSshEnabled(),
     isPortOpen(exposedPort),
@@ -556,7 +349,7 @@ export async function getWorkspaceInfo(): Promise<WorkspaceInfo> {
     pythonVersion: versions.python,
     goVersion: versions.go,
     rustVersion: versions.rust,
-    aiTools: toolResults,
+    aiTools,
     sshEnabled,
     sshPort: ssh.port,
     sshCommand: sshEnabled ? ssh.command : null,
@@ -566,9 +359,6 @@ export async function getWorkspaceInfo(): Promise<WorkspaceInfo> {
     previewUrl: getPreviewUrl(publicUrl),
     previewPortOpen,
     exposedPort,
-    workspaceId,
-    workspaceToken,
-    apiUrl,
     tmuxWindows,
     version: versionInfo,
     createdAt,

@@ -1,181 +1,24 @@
-import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
-import { checkAuth, type ToolDefinition } from '../environment';
+import { describe, expect, it } from 'bun:test';
+import { parseTmuxWindows } from '../environment';
 
-const originalEnv = { ...process.env };
-
-function createToolDef(overrides: Partial<ToolDefinition>): ToolDefinition {
-  return {
-    id: 'test-tool',
-    name: 'Test Tool',
-    command: 'test',
-    authCommand: null,
-    description: 'Test tool',
-    docsUrl: 'https://test.com',
-    envVars: [],
-    authFiles: [],
-    setupSteps: [],
-    ...overrides,
-  };
-}
-
-describe('checkAuth', () => {
-  beforeEach(() => {
-    process.env = { ...originalEnv };
+describe('parseTmuxWindows', () => {
+  it('keeps a "|" inside a window name whole (name is the last field)', () => {
+    expect(parseTmuxWindows('1|0|my|piped|name')[0]).toEqual({ index: 1, name: 'my|piped|name', active: false });
   });
 
-  afterEach(() => {
-    process.env = originalEnv;
+  it('marks the active window and parses the index', () => {
+    expect(parseTmuxWindows('2|1|zsh')[0]).toEqual({ index: 2, name: 'zsh', active: true });
   });
 
-  describe('env var detection', () => {
-    it('returns ready when envVar is set', async () => {
-      process.env.TEST_API_KEY = 'test-key';
-      const def = createToolDef({ envVars: ['TEST_API_KEY'] });
-
-      const result = await checkAuth(def);
-
-      expect(result.status).toBe('ready');
-      expect(result.connectedVia).toBe('TEST_API_KEY');
-    });
-
-    it('returns needs-auth when envVar is not set', async () => {
-      const def = createToolDef({ envVars: ['NONEXISTENT_KEY'] });
-
-      const result = await checkAuth(def);
-
-      expect(result.status).toBe('needs-auth');
-      expect(result.connectedVia).toBeNull();
-    });
-
-    it('prioritizes envVar over file-based auth', async () => {
-      process.env.ANTHROPIC_API_KEY = 'test-key';
-      const def = createToolDef({
-        id: 'claude',
-        envVars: ['ANTHROPIC_API_KEY'],
-        authFiles: ['.claude/.credentials.json'],
-      });
-
-      const result = await checkAuth(def);
-
-      expect(result.status).toBe('ready');
-      expect(result.connectedVia).toBe('ANTHROPIC_API_KEY');
-    });
+  it('falls back to `Window <index>` when the name is empty', () => {
+    expect(parseTmuxWindows('3|0|')[0]).toEqual({ index: 3, name: 'Window 3', active: false });
   });
 
-  describe('file-based detection', () => {
-    it('returns ready for OpenCode when auth.json exists', async () => {
-      const authPath = path.join(os.homedir(), '.local/share/opencode/auth.json');
-      const def = createToolDef({
-        id: 'opencode',
-        envVars: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY'],
-        authFiles: ['.local/share/opencode/auth.json'],
-      });
-      const result = await checkAuth(def);
-
-      if (fs.existsSync(authPath)) {
-        const content = fs.readFileSync(authPath, 'utf-8').trim();
-        if (content && content !== '{}' && content !== '[]') {
-          expect(result.status).toBe('ready');
-        } else {
-          expect(result.status).toBe('needs-auth');
-        }
-      } else {
-        expect(result.status).toBe('needs-auth');
-      }
-    });
-
-    it('returns ready for Claude when credentials file exists', async () => {
-      const credPath = path.join(os.homedir(), '.claude', '.credentials.json');
-      const def = createToolDef({
-        id: 'claude',
-        envVars: ['ANTHROPIC_API_KEY'],
-        authFiles: ['.claude/.credentials.json'],
-      });
-      const result = await checkAuth(def);
-
-      if (fs.existsSync(credPath)) {
-        const content = fs.readFileSync(credPath, 'utf-8').trim();
-        if (content && content !== '{}' && content !== '[]') {
-          expect(result.status).toBe('ready');
-        } else {
-          expect(result.status).toBe('needs-auth');
-        }
-      } else {
-        expect(result.status).toBe('needs-auth');
-      }
-    });
-
-    it('returns needs-auth for Auggie without AUGMENT_SESSION_AUTH env var', async () => {
-      delete process.env.AUGMENT_SESSION_AUTH;
-      const def = createToolDef({
-        id: 'auggie',
-        envVars: ['AUGMENT_SESSION_AUTH'],
-      });
-      const result = await checkAuth(def);
-
-      expect(result.status).toBe('needs-auth');
-    });
-
-    it('returns ready for Auggie with AUGMENT_SESSION_AUTH env var', async () => {
-      process.env.AUGMENT_SESSION_AUTH = 'test-session-token';
-      const def = createToolDef({
-        id: 'auggie',
-        envVars: ['AUGMENT_SESSION_AUTH'],
-      });
-      const result = await checkAuth(def);
-
-      expect(result.status).toBe('ready');
-      expect(result.connectedVia).toBe('AUGMENT_SESSION_AUTH');
-    });
-
-    it('returns ready for Goose when config.yaml has GOOSE_PROVIDER', async () => {
-      const configPath = path.join(os.homedir(), '.config/goose/config.yaml');
-      const def = createToolDef({
-        id: 'goose',
-        envVars: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'],
-        authCheck: 'goose',
-      });
-      const result = await checkAuth(def);
-
-      if (fs.existsSync(configPath)) {
-        const content = fs.readFileSync(configPath, 'utf-8');
-        if (content.includes('GOOSE_PROVIDER:')) {
-          expect(result.status).toBe('ready');
-          expect(result.connectedVia).toMatch(/^goose \(/);
-        } else {
-          expect(result.status).toBe('needs-auth');
-        }
-      } else {
-        expect(result.status).toBe('needs-auth');
-      }
-    });
-
-    it('returns needs-auth for Kiro when no settings exist', async () => {
-      const kiroPath = path.join(os.homedir(), '.kiro/settings/cli.json');
-      const def = createToolDef({
-        id: 'kiro',
-        authFiles: ['.kiro/settings/cli.json'],
-      });
-      const result = await checkAuth(def);
-
-      if (!fs.existsSync(kiroPath)) {
-        expect(result.status).toBe('needs-auth');
-        expect(result.connectedVia).toBeNull();
-      }
-    });
+  it('returns an empty list for empty output', () => {
+    expect(parseTmuxWindows('')).toEqual([]);
   });
 
-  describe('unknown tools', () => {
-    it('returns unknown for tools with no detection method', async () => {
-      const def = createToolDef({ id: 'unknown-tool' });
-
-      const result = await checkAuth(def);
-
-      expect(result.status).toBe('unknown');
-      expect(result.connectedVia).toBeNull();
-    });
+  it('parses every line of a multi-window session', () => {
+    expect(parseTmuxWindows('0|1|zsh\n1|0|claude')).toHaveLength(2);
   });
 });

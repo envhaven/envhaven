@@ -92,7 +92,7 @@
     "build": "bun esbuild.mjs --production",
     "build:webview": "cd webview && bun run build",
     "package": "bun run build && bun run build:webview && vsce package --out envhaven.vsix",
-    "lint": "eslint src --ext ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test"
   },
   "devDependencies": {

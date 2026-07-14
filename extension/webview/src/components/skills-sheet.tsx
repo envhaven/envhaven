@@ -24,7 +24,7 @@ import {
   type SkillsShResult,
 } from '../lib/vscode';
 
-const POPULAR_QUERIES = ['envhaven', 'react', 'typescript', 'design', 'docker', 'review', 'testing'];
+const POPULAR_QUERIES = ['envhaven', 'react', 'design', 'docker', 'review', 'testing'];
 const ENVHAVEN_SOURCE = 'envhaven/envhaven';
 
 function formatInstalls(n: number): string {
@@ -39,7 +39,7 @@ interface DetailTarget {
   source: string;
   skillId: string;
   name: string;
-  installs?: number;
+  installs?: number | null;
   description?: string;
 }
 
@@ -79,7 +79,7 @@ function SkillResultCard({
           <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <span className="min-w-0 flex-1 truncate text-sm font-medium">{result.name}</span>
         </div>
-        {result.installs !== undefined && (
+        {result.installs != null && (
           <div className="flex shrink-0 items-center gap-1 font-mono text-[10px] tabular-nums text-muted-foreground">
             <ArrowDownToLine className="h-3 w-3" />
             {formatInstalls(result.installs)}
@@ -442,12 +442,7 @@ function BrowseEmptyState({ onPick }: { onPick: (q: string) => void }) {
           <button
             key={q}
             onClick={() => onPick(q)}
-            className={cn(
-              'rounded-full border px-2.5 py-0.5 text-[11px] transition-colors',
-              q === 'envhaven'
-                ? 'border-primary/40 bg-primary/10 font-medium text-primary hover:border-primary/60 hover:bg-primary/15'
-                : 'border-border bg-muted/20 text-muted-foreground hover:border-primary/40 hover:bg-accent/50 hover:text-foreground'
-            )}
+            className="rounded-full border border-border bg-muted/20 px-2.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-primary/40 hover:bg-accent/50 hover:text-foreground"
           >
             {q}
           </button>

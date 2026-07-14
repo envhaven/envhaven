@@ -1,8 +1,9 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import type { SidebarProvider } from './sidebar-provider';
-import { getWorkspaceInfo, type WorkspaceInfo } from './environment';
-import { listInstalledSkills, type InstalledSkill } from './skillsService';
+import { getWorkspaceInfo } from './environment';
+import { listInstalledSkills } from './consoleClient';
+import type { InstalledSkill, WorkspaceInfo } from './shared-types';
 
 type Action = {
   run: () => Promise<void> | void;
@@ -183,7 +184,9 @@ export async function showCommandPalette(sidebar: SidebarProvider): Promise<void
 
   const [workspace, skills] = await Promise.all([
     getWorkspaceInfo(),
-    listInstalledSkills(),
+    // Console unreachable (e.g. a HASHED_PASSWORD-only self-host) → no Skills
+    // entries, the same graceful degradation as environment.ts's getTools.
+    listInstalledSkills().catch(() => [] as InstalledSkill[]),
   ]);
 
   const qp = vscode.window.createQuickPick<Item>();

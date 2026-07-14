@@ -100,9 +100,9 @@ export function ToolRow({ tool }: { tool: AITool }) {
 
   const handleRowClick = () => {
     if (isReady) {
-      vscode.postMessage({ command: 'runTool', toolName: tool.name, toolCommand: tool.command });
+      vscode.postMessage({ command: 'runTool', toolCommand: tool.command });
     } else if (tool.authCommand) {
-      vscode.postMessage({ command: 'runTool', toolName: tool.name, toolCommand: tool.authCommand });
+      vscode.postMessage({ command: 'runTool', toolCommand: tool.authCommand });
     } else {
       setMenuOpen(true);
     }

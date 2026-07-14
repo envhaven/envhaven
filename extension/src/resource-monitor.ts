@@ -1,43 +1,11 @@
 import { readFileSync, readdirSync, statfsSync } from 'fs';
 import { execSafe } from './environment';
-
-export type ProcessCategory = 'pane' | 'user' | 'child';
-
-export interface ProcessInfo {
-  pid: number;
-  ppid: number;
-  starttime: number;
-  name: string;
-  cmd: string;
-  cpuPct: number;
-  memMb: number;
-  category: ProcessCategory;
-}
-
-export interface CpuStats {
-  pct: number;
-  nCpus: number;
-}
-
-export interface RamStats {
-  usedMb: number;
-  totalMb: number;
-  pct: number;
-}
-
-export interface DiskStats {
-  usedGb: number;
-  totalGb: number;
-  pct: number;
-}
-
-export interface ResourceSnapshot {
-  cpu: CpuStats;
-  ram: RamStats;
-  disk: DiskStats;
-  processes: ProcessInfo[];
-  capturedAt: number;
-}
+import {
+  TMUX_SESSION,
+  type ProcessCategory,
+  type ProcessInfo,
+  type ResourceSnapshot,
+} from './shared-types';
 
 export interface SignalResult {
   ok: boolean;
@@ -154,7 +122,7 @@ export async function snapshot(): Promise<ResourceSnapshot> {
  * against `/`, and on self-hosted containers the overlay + `/config` volume
  * live on the same underlying device the user cares about filling up.
  */
-function readDiskStats(mountPoint: string): DiskStats {
+function readDiskStats(mountPoint: string): ResourceSnapshot['disk'] {
   try {
     const s = statfsSync(mountPoint);
     const totalBytes = Number(s.blocks) * s.bsize;
@@ -328,7 +296,7 @@ function listPids(): number[] {
 async function getTmuxPanePids(): Promise<Set<number>> {
   const pids = new Set<number>();
   try {
-    const { stdout } = await execSafe("tmux list-panes -a -t envhaven -F '#{pane_pid}'");
+    const { stdout } = await execSafe(`tmux list-panes -a -t ${TMUX_SESSION} -F '#{pane_pid}'`);
     for (const line of stdout.split('\n')) {
       const n = parseInt(line.trim(), 10);
       if (Number.isFinite(n) && n > 0) pids.add(n);
