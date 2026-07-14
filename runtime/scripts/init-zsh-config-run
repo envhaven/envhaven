@@ -7,30 +7,50 @@
 USERNAME="abc"
 ZSH_CUSTOM_DIR="/config/.oh-my-zsh/custom"
 ENVHAVEN_ZSH="$ZSH_CUSTOM_DIR/envhaven.zsh"
+ZSHRC="/config/.zshrc"
 ZSHENV="/config/.zshenv"
-MAX_WAIT=60  # seconds
+MAX_WAIT=120  # seconds; the zsh mod clones oh-my-zsh at boot, slower on cold networks
 
-echo "Waiting for oh-my-zsh to be installed..."
+echo "Waiting for the zsh mod (oh-my-zsh + .zshrc)..."
 
-# Wait for oh-my-zsh custom dir to exist (created by the zsh mod)
+# The mod creates the custom dir BEFORE it writes /config/.zshrc, and the theme swap
+# below edits that file. Wait for the LAST artifact we depend on, not the first:
+# racing the mod is how the theme swap silently missed on slow boots.
 waited=0
-while [ ! -d "$ZSH_CUSTOM_DIR" ] && [ $waited -lt $MAX_WAIT ]; do
+while ! grep -q '^ZSH_THEME=' "$ZSHRC" 2>/dev/null && [ $waited -lt $MAX_WAIT ]; do
     sleep 1
     waited=$((waited + 1))
 done
 
+# Diagnose the exact thing we waited for: a timeout here means the ZSH_THEME line
+# never appeared, so the theme swap below silently no-ops.
+if ! grep -q '^ZSH_THEME=' "$ZSHRC" 2>/dev/null; then
+    echo "WARNING: /config/.zshrc has no ZSH_THEME after ${MAX_WAIT}s; theme swap skipped"
+fi
+
+# The theme file is copied into the custom dir below, so ensure it exists regardless.
 if [ ! -d "$ZSH_CUSTOM_DIR" ]; then
-    echo "WARNING: oh-my-zsh custom dir not found after ${MAX_WAIT}s, creating it"
     mkdir -p "$ZSH_CUSTOM_DIR"
 fi
 
 # Copy EnvHaven zsh customizations if not already present
 if [ ! -f "$ENVHAVEN_ZSH" ]; then
     cp /defaults/zshrc-additions "$ENVHAVEN_ZSH"
-    chown "$USERNAME:$USERNAME" "$ENVHAVEN_ZSH"
     echo "Installed EnvHaven zsh customizations to $ENVHAVEN_ZSH"
 else
     echo "EnvHaven zsh customizations already present"
+fi
+
+# Install the EnvHaven prompt theme (image-owned; refreshed on image update) and make
+# it the default. Only oh-my-zsh's stock default is ever replaced: a user-chosen
+# ZSH_THEME is left alone.
+mkdir -p "$ZSH_CUSTOM_DIR/themes"
+cp /defaults/envhaven.zsh-theme "$ZSH_CUSTOM_DIR/themes/envhaven.zsh-theme"
+if grep -q '^ZSH_THEME="robbyrussell"' "$ZSHRC" 2>/dev/null; then
+    sed -i 's/^ZSH_THEME="robbyrussell"/ZSH_THEME="envhaven"/' "$ZSHRC"
+    echo "Set ZSH_THEME to envhaven"
+else
+    echo "ZSH_THEME left alone: $(grep -o '^ZSH_THEME=.*' "$ZSHRC" 2>/dev/null || echo '.zshrc not present')"
 fi
 
 # Create .zshenv to set ZSH_DISABLE_COMPFIX BEFORE .zshrc is loaded
