@@ -1,86 +1,69 @@
 #!/usr/bin/env bash
-# Full EnvHaven status display
+# EnvHaven workspace banner — the `envhaven` command.
+#
+# "Foreword": a masthead and rule, a state-computed lede, and a labeled ledger
+# (preview / ssh / tools). Flush left, xterm-256 palette shared with the workspace
+# zsh theme (69 blue, 111 light blue, 245 grey, 214 amber, 238 rule). The lede is
+# chosen by state: a fresh managed workspace leads with the preview URL and waits for
+# a process; once something answers on the exposed port the URL becomes the lede's
+# payoff; self-host leads with SSH. Ledger rows print only when their value exists, so
+# self-host divergence is absence, not a branch. Tool discovery lives in the dashboard
+# cockpit and the editor sidebar; this banner only names the tools already signed in.
+
+MW=72  # masthead + rule measure
 
 if [[ -z "${NO_COLOR:-}" && -t 1 && "${TERM:-}" != "dumb" ]]; then
-  BOLD=$'\033[1m'
-  DIM=$'\033[2m'
-  CYAN=$'\033[36m'
-  GREEN=$'\033[32m'
-  YELLOW=$'\033[33m'
-  RESET=$'\033[0m'
-  G1=$'\033[38;5;183m'
-  G2=$'\033[38;5;141m'
-  G3=$'\033[38;5;135m'
-  G4=$'\033[38;5;99m'
-  VIOLET=$'\033[38;5;99m'
+  RST=$'\033[0m'
+  BLUE=$'\033[1;38;5;69m'     # theme 69, prompt arrow
+  LBLUE=$'\033[38;5;111m'     # theme 111
+  LBLUEB=$'\033[1;38;5;111m'
+  GREY=$'\033[38;5;245m'      # theme 245, chrome
+  RULE=$'\033[38;5;238m'
+  BODY=$'\033[38;5;252m'
+  AMBER=$'\033[38;5;214m'     # theme 214
 else
-  BOLD="" DIM="" CYAN="" GREEN="" YELLOW="" RESET=""
-  G1="" G2="" G3="" G4="" VIOLET=""
+  RST="" BLUE="" LBLUE="" LBLUEB="" GREY="" RULE="" BODY="" AMBER=""
 fi
 
-SEP="────────────────────────────────────────────────────────────────────────"
-FILLED="●"
-EMPTY="○"
-PIPE="│"
-
-# Tool definitions - single source of truth shared with VS Code extension
 TOOL_DEFS_JSON="/opt/envhaven/tool-definitions.json"
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
-
 has_nonempty_json() { [[ -f "$1" ]] && [[ -s "$1" ]] && grep -qE '[^{}\[\][:space:]]' "$1" 2>/dev/null; }
 
-# Check auth status for a tool using shared config
-# Returns: 0 if configured, 1 if not
+# True if VAR is exported with a non-empty value (export VAR=val) in the user's rc
+# files. Bare VAR=val is shell-local and invisible to launched tools, so it does not
+# count. Mirrors the Go console's parseRcEnvVars (console/tools.go), so the banner
+# agrees with the dashboard's tool grid and the editor sidebar even when this shell
+# hasn't sourced the rc export yet.
+rc_has_var() {
+  local var="$1"
+  grep -qE "^export[[:space:]]+${var}=[\"']?[^\"']" "$HOME/.zshrc" "$HOME/.bashrc" 2>/dev/null
+}
+
+# Auth status for a tool from the shared catalog. Returns 0 if signed in.
 check_tool_auth() {
-  local tool_id="$1"
-  
-  local tool_config
+  local tool_id="$1" tool_config env_vars auth_check auth_files var file full_path
   tool_config=$(jq -r ".tools[] | select(.id == \"$tool_id\")" "$TOOL_DEFS_JSON" 2>/dev/null)
   [[ -z "$tool_config" ]] && return 1
-  
-  # Check env vars
-  local env_vars
   env_vars=$(echo "$tool_config" | jq -r '.envVars[]?' 2>/dev/null)
   for var in $env_vars; do
-    eval "_val=\"\${$var:-}\""
-    [[ -n "$_val" ]] && return 0
+    [[ -n "${!var:-}" ]] && return 0
+    rc_has_var "$var" && return 0
   done
-  
-  # Special auth check (e.g., goose needs YAML pattern matching)
-  local auth_check
   auth_check=$(echo "$tool_config" | jq -r '.authCheck // empty' 2>/dev/null)
   if [[ "$auth_check" == "goose" ]]; then
     [[ -f "$HOME/.config/goose/config.yaml" ]] && grep -q 'GOOSE_PROVIDER:' "$HOME/.config/goose/config.yaml" 2>/dev/null && return 0
   fi
-  
-  # Check auth files
-  local auth_files
   auth_files=$(echo "$tool_config" | jq -r '.authFiles[]?' 2>/dev/null)
   for file in $auth_files; do
-    local full_path="$HOME/$file"
+    full_path="$HOME/$file"
     if [[ "$file" == *.json ]]; then
       has_nonempty_json "$full_path" && return 0
     elif [[ -f "$full_path" ]]; then
       return 0
     fi
   done
-  
   return 1
-}
-
-get_version() {
-  local cmd="$1"
-  command_exists "$cmd" && "$cmd" --version 2>/dev/null | head -n1 | grep -oE '[0-9]+\.[0-9]+' | head -n1
-}
-
-tool_indicator() {
-  local name="$1" configured="$2" width="${3:-9}"
-  if [[ "$configured" == "1" ]]; then
-    printf "%s%s%s %-${width}s" "$GREEN" "$FILLED" "$RESET" "$name"
-  else
-    printf "%s%s%s %-${width}s" "$YELLOW" "$EMPTY" "$RESET" "$name"
-  fi
 }
 
 get_ssh_string() {
@@ -90,138 +73,95 @@ get_ssh_string() {
   [[ "$port" == "22" ]] && echo "abc@${host}" || echo "abc@${host} -p ${port}"
 }
 
-WORKSPACE_DIR="${DEFAULT_WORKSPACE:-/config/workspace}"
-SSH_CONN_STR=$(get_ssh_string)
+# ── state ──────────────────────────────────────────────────────────────────
+MANAGED=0; [[ "${ENVHAVEN_MANAGED:-}" == "true" ]] && MANAGED=1
+VERSION="${ENVHAVEN_VERSION:-dev}"
+WS_NAME="${_ENVHAVEN_WORKSPACE_NAME:-workspace}"
+PORT="${ENVHAVEN_EXPOSED_PORT:-3000}"
+PREVIEW_URL="${_ENVHAVEN_PREVIEW_URL:-}"
+SSH_CMD="ssh $(get_ssh_string)"
 
-NODE_V=$(get_version node)
-PYTHON_V=$(get_version python3)
-GO_V=$(go version 2>/dev/null | grep -oE 'go[0-9]+\.[0-9]+' | sed 's/go//')
-RUST_V=$(get_version rustc)
-BUN_V=$(get_version bun)
+KEYS=0
+[[ -f /config/.ssh/authorized_keys ]] && KEYS=$(grep -c '^ssh-' /config/.ssh/authorized_keys 2>/dev/null)
 
-SSH_KEY_COUNT=0
-AUTH_KEYS="/config/.ssh/authorized_keys"
-[[ -f "$AUTH_KEYS" ]] && SSH_KEY_COUNT=$(grep '^ssh-' "$AUTH_KEYS" 2>/dev/null | wc -l | tr -d ' ')
-
-# Check all tools using shared config
-OPENCODE_CFG=0; check_tool_auth "opencode" && OPENCODE_CFG=1
-CLAUDE_CFG=0;   check_tool_auth "claude" && CLAUDE_CFG=1
-CODEX_CFG=0;    check_tool_auth "codex" && CODEX_CFG=1
-GEMINI_CFG=0;   check_tool_auth "gemini" && GEMINI_CFG=1
-AIDER_CFG=0;    check_tool_auth "aider" && AIDER_CFG=1
-GOOSE_CFG=0;    check_tool_auth "goose" && GOOSE_CFG=1
-VIBE_CFG=0;     check_tool_auth "vibe" && VIBE_CFG=1
-AMP_CFG=0;      check_tool_auth "amp" && AMP_CFG=1
-AUGGIE_CFG=0;   check_tool_auth "auggie" && AUGGIE_CFG=1
-KIRO_CFG=0;     check_tool_auth "kiro" && KIRO_CFG=1
-DROID_CFG=0;    check_tool_auth "factory" && DROID_CFG=1
-QWEN_CFG=0;     check_tool_auth "qwen" && QWEN_CFG=1
-
-echo ""
-printf '%s' "$G1"
-cat << 'LOGO'
-              ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
-             ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ 
-            ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  
-    ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓    
-LOGO
-printf '%s' "$G2"
-cat << 'LOGO'
-   ▓▓▓▓▓▓▓▓██                    
-  ▓▓▓▓▓▓▓▓▓▓██                   
- █▓▓▓▓▓▓▓▓▓▓▓████████████▓▓▓▓▓▓▓▓
-             ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
-LOGO
-printf '%s' "$G3"
-cat << 'LOGO'
-            ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  
-           ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓   
-   ███████▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓    
-  ▓▓▓▓▓▓▓▓▓██                    
-LOGO
-printf '%s' "$G4"
-cat << 'LOGO'
- █▓▓▓▓▓▓▓▓▓▓▓█                   
-██▓▓▓▓▓▓▓▓▓▓▓▓█████████▓▓▓▓▓▓▓▓▓▓
-             ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ 
-            ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  
-           ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ 
-LOGO
-printf '%s' "$RESET"
-
-echo ""
-printf "%s%s%s\n" "$DIM" "$SEP" "$RESET"
-
-if [[ "${ENVHAVEN_MANAGED:-}" == "true" ]]; then
-  printf "  Mode:       %s%sManaged%s\n" "$GREEN" "$BOLD" "$RESET"
-else
-  printf "  Mode:       %sSelf-hosted%s\n" "$CYAN" "$RESET"
+# The preview is live when something answers on the exposed port. A short TCP probe on
+# loopback, the same signal the dashboard's LIVE pill reads; a timeout means idle.
+LIVE=0
+if (( MANAGED )) && timeout 0.3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$PORT" 2>/dev/null; then
+  LIVE=1
 fi
 
-CURRENT_VERSION="${ENVHAVEN_VERSION:-dev}"
-UPDATE_AVAILABLE=""
-if [[ "${ENVHAVEN_MANAGED:-}" == "true" ]] && [[ -n "${_ENVHAVEN_API_URL:-}" ]]; then
-  LATEST_INFO=$(curl -sf "${_ENVHAVEN_API_URL}/v1/version" 2>/dev/null || echo '{}')
-  LATEST_VERSION=$(echo "$LATEST_INFO" | jq -r '.latest // empty' 2>/dev/null)
-  if [[ -n "$LATEST_VERSION" ]] && [[ "$CURRENT_VERSION" != "$LATEST_VERSION" ]]; then
-    UPDATE_AVAILABLE="$LATEST_VERSION"
-  fi
+# Update availability from the cache the tmux bar refreshes — never a live request here.
+UPDATE=""
+if [[ -f /tmp/envhaven-version-status ]]; then
+  vline=$(cat /tmp/envhaven-version-status 2>/dev/null)
+  [[ "$vline" == *⚡* ]] && UPDATE=$(printf '%s' "$vline" | sed -E 's/.*⚡[[:space:]]*([^[:space:]]+)[[:space:]]+available.*/\1/')
 fi
 
-if [[ -n "$UPDATE_AVAILABLE" ]]; then
-  printf "  Version:    %s%s%s  %s⚡ %s available%s\n" "$CYAN" "$CURRENT_VERSION" "$RESET" "$YELLOW" "$UPDATE_AVAILABLE" "$RESET"
-else
-  printf "  Version:    %s%s%s\n" "$CYAN" "$CURRENT_VERSION" "$RESET"
-fi
+# Tools already signed in, catalog order, names only.
+CONNECTED=()
+while IFS=$'\t' read -r tid tname; do
+  check_tool_auth "$tid" && CONNECTED+=("$tname")
+done < <(jq -r '.tools[] | [.id, .name] | @tsv' "$TOOL_DEFS_JSON" 2>/dev/null)
 
-printf "  Workspace:  %s\n" "$WORKSPACE_DIR"
-
-if [[ "$SSH_KEY_COUNT" != "0" && -n "$SSH_KEY_COUNT" ]]; then
-  printf "  SSH:        %s%s ready%s  %sssh %s%s\n" "$GREEN" "$FILLED" "$RESET" "$DIM" "$SSH_CONN_STR" "$RESET"
-  printf "  Keys:       %s%s authorized%s\n" "$GREEN" "$SSH_KEY_COUNT" "$RESET"
-else
-  printf "  SSH:        %s%s not ready%s  %sssh %s%s\n" "$YELLOW" "$EMPTY" "$RESET" "$DIM" "$SSH_CONN_STR" "$RESET"
-  printf "  Keys:       %snone (add via sidebar)%s\n" "$YELLOW" "$RESET"
-fi
-
-printf "%s%s%s\n" "$DIM" "$SEP" "$RESET"
-
-printf "\n%s%sRuntimes%s\n" "$VIOLET" "$BOLD" "$RESET"
-RUNTIMES=()
-[[ -n "$NODE_V" ]] && RUNTIMES+=("Node $NODE_V")
-[[ -n "$PYTHON_V" ]] && RUNTIMES+=("Python $PYTHON_V")
-[[ -n "$GO_V" ]] && RUNTIMES+=("Go $GO_V")
-[[ -n "$RUST_V" ]] && RUNTIMES+=("Rust $RUST_V")
-[[ -n "$BUN_V" ]] && RUNTIMES+=("Bun $BUN_V")
-RUNTIME_STR=""
-first=1
-for rt in "${RUNTIMES[@]}"; do
-  [[ $first -eq 0 ]] && RUNTIME_STR+=" $PIPE "
-  RUNTIME_STR+="$rt"
-  first=0
+# Comma-join the connected names, clamping to a width budget with "and N more".
+NAMES=""
+NAMES_BUDGET=$(( MW - 9 - 12 ))  # row width minus "tools" label and " · signed in"
+shown=0
+for n in "${CONNECTED[@]}"; do
+  cand="$NAMES"; [[ -n "$cand" ]] && cand+=", "; cand+="$n"
+  (( ${#cand} + 14 > NAMES_BUDGET && shown > 0 )) && break
+  NAMES="$cand"; ((shown++))
 done
-printf "  %s\n" "$RUNTIME_STR"
+more=$(( ${#CONNECTED[@]} - shown ))
+(( more > 0 )) && NAMES+=", and $more more"
 
-printf "\n%s%sAI Tools%s  %s(%s ready  %s needs key)%s\n" \
-  "$VIOLET" "$BOLD" "$RESET" "$DIM" "$FILLED" "$EMPTY" "$RESET"
-printf "  "
-tool_indicator "OpenCode" "$OPENCODE_CFG" 9
-tool_indicator "Claude" "$CLAUDE_CFG" 9
-tool_indicator "Aider" "$AIDER_CFG" 9
-tool_indicator "Codex" "$CODEX_CFG" 0
-printf "\n"
-printf "  "
-tool_indicator "Gemini" "$GEMINI_CFG" 9
-tool_indicator "Goose" "$GOOSE_CFG" 9
-tool_indicator "Vibe" "$VIBE_CFG" 9
-tool_indicator "Amp" "$AMP_CFG" 0
-printf "\n"
-printf "  "
-tool_indicator "Auggie" "$AUGGIE_CFG" 9
-tool_indicator "Kiro" "$KIRO_CFG" 9
-tool_indicator "Droid" "$DROID_CFG" 9
-tool_indicator "Qwen" "$QWEN_CFG" 0
-printf "\n"
+RULE_LINE=$(printf '─%.0s' $(seq 1 "$MW"))
 
-printf "\n%s%s%s\n" "$DIM" "$SEP" "$RESET"
+# Only reached when the ssh row renders, i.e. at least one key exists.
+keys_note() {
+  if (( KEYS == 1 )); then printf '1 key'; else printf '%s keys' "$KEYS"; fi
+}
+self_lede() {
+  if (( KEYS == 1 )); then printf 'This container answers to one SSH key.'
+  elif (( KEYS > 1 )); then printf 'This container answers to %s SSH keys.' "$KEYS"
+  else printf 'Add an SSH key to reach this container over SSH.'; fi
+}
+
+# ── render ─────────────────────────────────────────────────────────────────
+# masthead: wordmark left, identity right, filled to MW; then the rule.
+mast() {
+  local right="$1" left="envhaven" fill
+  fill=$(( MW - ${#left} - ${#right} )); (( fill < 1 )) && fill=1
+  printf '%s%s%s%*s%s%s%s\n' "$BLUE" "$left" "$RST" "$fill" '' "$GREY" "$right" "$RST"
+  printf '%s%s%s\n' "$RULE" "$RULE_LINE" "$RST"
+}
+# ledger row: grey label padded to 9, then a value that carries its own colour.
+row() { printf '%s%-9s%s%s\n' "$GREY" "$1" "$RST" "$2"; }
+
+echo ""
+if (( MANAGED )); then
+  mast "$WS_NAME · managed · $VERSION"
+  echo ""
+  if (( LIVE )); then
+    printf '%sA process is answering on port %s. Live at:%s\n' "$BODY" "$PORT" "$RST"
+    printf '%s%s%s\n\n' "$LBLUEB" "$PREVIEW_URL" "$RST"
+  else
+    printf '%sThe preview URL is ready. Waiting for a process on port %s.%s\n\n' "$BODY" "$PORT" "$RST"
+    row "preview" "${LBLUE}${PREVIEW_URL}${RST}${GREY} · idle${RST}"
+  fi
+  # The ssh command needs a key to authenticate; without one it is noise, so the row
+  # appears only once a key exists (managed workspaces add keys from the sidebar).
+  (( KEYS >= 1 )) && row "ssh" "${BODY}${SSH_CMD}${RST}${GREY} · $(keys_note)${RST}"
+  (( ${#CONNECTED[@]} )) && row "tools" "${BODY}${NAMES}${RST}${GREY} · signed in${RST}"
+  if [[ -n "$UPDATE" ]]; then
+    printf '\n%s%s%s shipped. Update from the dashboard.%s\n' "$AMBER" "$UPDATE" "$BODY" "$RST"
+  fi
+else
+  mast "self-hosted · $VERSION"
+  echo ""
+  printf '%s%s%s\n\n' "$BODY" "$(self_lede)" "$RST"
+  row "ssh" "${BODY}${SSH_CMD}${RST}"
+  (( ${#CONNECTED[@]} )) && row "tools" "${BODY}${NAMES}${RST}${GREY} · signed in${RST}"
+fi
 echo ""
