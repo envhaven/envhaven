@@ -9,6 +9,22 @@ fi
 mkdir -p /config/.local/share /config/.local/bin /config/.local/state /config/.config /config/.cache
 chown -R abc:abc /config/.local /config/.config /config/.cache
 
+# Shared artifacts drop box: agents write downloadable outputs here and users drop
+# files here to reference (the dashboard's Artifacts pane lists it, and a drop types
+# the path into the terminal). Created post-mount so it lives on the persisted volume.
+mkdir -p /config/artifacts
+chown abc:abc /config/artifacts
+
+# Claude Code's native updater manages ~/.local/bin/claude and its launcher check
+# expects it to exist. Seed it once (fresh volume) pointing at the image-baked
+# launcher; the first self-update replaces it with the workspace's own versioned
+# install under /config/.local/share/claude, which then persists and shadows the
+# baked copy via PATH. Guard-before-mutate: a user- or updater-owned launcher wins.
+if [ ! -e /config/.local/bin/claude ]; then
+    ln -s /opt/envhaven/claude-home/.local/bin/claude /config/.local/bin/claude
+    chown -h abc:abc /config/.local/bin/claude
+fi
+
 # Ensure tool directories are writable by abc for runtime updates (npm install -g, mise install, etc.)
 # Runs in background to avoid blocking startup - only changes files not already owned by abc
 find /mise /opt/envhaven ! -user abc -exec chown abc:abc {} + 2>/dev/null &
