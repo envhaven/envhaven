@@ -13,9 +13,17 @@
 
 CLIENT_ID="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 AUTHORIZE_URL="https://claude.ai/oauth/authorize"
-TOKEN_URL="https://console.anthropic.com/v1/oauth/token"
+# Token *exchange* host. Anthropic migrated it to platform.claude.com (the old
+# console.anthropic.com host now 404s). Only the exchange host moved — REDIRECT_URI
+# (the OAuth callback the auth code is issued against) stays console.anthropic.com.
+TOKEN_URL="https://platform.claude.com/v1/oauth/token"
 REDIRECT_URI="https://console.anthropic.com/oauth/code/callback"
 SCOPES="org:create_api_key user:profile user:inference"
+# UA for the token endpoint. Anthropic rate-limits (429) token-endpoint requests
+# by UA: 'claude-code/*' and browser UAs are blocked; the real Claude Code CLI
+# exchanges the code with a bare axios client, so we mirror that here. This is
+# NOT the inference UA — the messages API still wants 'claude-code/...'.
+TOKEN_USER_AGENT="axios/1.7.9"
 BROWSER_HELPER="/app/code-server/lib/vscode/bin/helpers/browser.sh"
 CREDS_FILE="$HOME/.claude/.credentials.json"
 
@@ -38,34 +46,39 @@ AUTH_URL="$AUTH_URL&state=$VERIFIER"
 
 cat << 'BANNER'
 
-  ┌───────────────────────────────────────────────────┐
-  │  Sign in to Claude (Pro/Max subscription):        │
-  │                                                   │
-  │  1. Click Open when prompted.                     │
-  │  2. Authorize Claude Code for this workspace.     │
-  │  3. Copy the code shown on the success page,      │
-  │     then paste it here to finish.                 │
-  └───────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────┐
+│  Sign in to Claude (Pro/Max subscription):        │
+│                                                   │
+│  1. Click Open when prompted.                     │
+│  2. Authorize Claude Code for this workspace.     │
+│  3. Copy the code shown on the success page,      │
+│     then paste it here to finish.                 │
+└───────────────────────────────────────────────────┘
 
 BANNER
 
+# Open the browser automatically where a helper exists (the editor terminal has
+# code-server IPC, which pops an "Open external website?" dialog); the managed
+# console has no IPC, so BROWSER_HELPER is absent and the link is the only path.
+# Either way the URL is rendered — clickable via the console's web-links addon,
+# and copy-pasteable when the auto-open can't reach a browser.
 if [ -x "$BROWSER_HELPER" ]; then
-  printf "  Press Enter to start... "
-  read -r _
   "$BROWSER_HELPER" "$AUTH_URL" >/dev/null 2>&1 &
+  echo ""
+  echo "It should open automatically. If it didn't, click the link below:"
 else
   echo ""
-  echo "  Open this URL in your browser:"
-  echo ""
-  echo "  $AUTH_URL"
-  echo ""
+  echo "Open this URL in your browser:"
 fi
+echo ""
+echo "$AUTH_URL"
+echo ""
 
-printf "  Paste code: "
+printf "Paste code: "
 read -r AUTH_CODE
 if [ -z "${AUTH_CODE:-}" ]; then
   echo ""
-  echo "  Cancelled."
+  echo "Cancelled."
   exit 1
 fi
 
@@ -85,9 +98,8 @@ REQUEST_BODY=$(jq -n \
 
 RESPONSE=$(curl -sS -X POST "$TOKEN_URL" \
   -H "Content-Type: application/json" \
-  -H "User-Agent: claude-cli (external, cli)" \
+  -H "User-Agent: $TOKEN_USER_AGENT" \
   -d "$REQUEST_BODY")
-
 ACCESS_TOKEN=$(printf '%s' "$RESPONSE" | jq -r '.access_token // empty')
 REFRESH_TOKEN=$(printf '%s' "$RESPONSE" | jq -r '.refresh_token // empty')
 EXPIRES_IN=$(printf '%s' "$RESPONSE" | jq -r '.expires_in // 3600')
@@ -95,8 +107,8 @@ EXPIRES_IN=$(printf '%s' "$RESPONSE" | jq -r '.expires_in // 3600')
 if [ -z "$ACCESS_TOKEN" ]; then
   ERROR=$(printf '%s' "$RESPONSE" | jq -r '.error_description // .error // .')
   echo ""
-  echo "  ✗ Login failed: $ERROR"
-  echo "  Try again, or set ANTHROPIC_API_KEY as an alternative."
+  echo "✗ Login failed: $ERROR"
+  echo "Try again, or set ANTHROPIC_API_KEY as an alternative."
   echo ""
   exit 1
 fi
@@ -121,6 +133,6 @@ printf '%s' "$EXISTING" | jq \
 chmod 600 "$CREDS_FILE"
 
 echo ""
-echo "  ✓ Login successful — starting Claude Code..."
+echo "✓ Login successful — starting Claude Code..."
 echo ""
 exec claude
