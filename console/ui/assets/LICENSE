@@ -1,16 +1,24 @@
-Vendored xterm.js assets
-------------------------
+Vendored assets
+---------------
 
-  xterm.js, xterm.css   @xterm/xterm@6.0.0       (lib/xterm.js, css/xterm.css)
-  addon-fit.js          @xterm/addon-fit@0.11.0  (lib/addon-fit.js)
+  xterm.js, xterm.css              @xterm/xterm@6.0.0        (lib/xterm.js, css/xterm.css)
+  addon-fit.js                     @xterm/addon-fit@0.11.0   (lib/addon-fit.js)
+  jetbrains-mono-regular.woff2     JetBrainsMono v2.304      (fonts/webfonts/JetBrainsMono-Regular.woff2)
+  jetbrains-mono-bold.woff2        JetBrainsMono v2.304      (fonts/webfonts/JetBrainsMono-Bold.woff2)
 
-These are byte-identical, unmodified upstream npm builds. Their sha256
-hashes are pinned by TestVendoredAssetsPristine in selfhost_test.go, so any
-in-place edit fails the test suite. To update: download the new tarballs
-from registry.npmjs.org, copy the same three files here, then update the
+These are byte-identical, unmodified upstream builds (xterm from
+registry.npmjs.org, JetBrains Mono from github.com/JetBrains/JetBrainsMono
+releases). Their sha256 hashes are pinned by TestVendoredAssetsPristine in
+selfhost_test.go, so any in-place edit fails the test suite. To update:
+download the new upstream artifacts, copy these files here, then update the
 versions above and the hashes in the test. Never edit these files in place.
 
-Redistributed under the MIT License:
+JetBrains Mono is redistributed under the SIL Open Font License 1.1
+(Copyright 2020 The JetBrains Mono Project Authors,
+https://github.com/JetBrains/JetBrainsMono). The full OFL text ships with
+the upstream release.
+
+xterm.js is redistributed under the MIT License:
 
 Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
 Copyright (c) 2014-2016, SourceLair Private Company (https://www.sourcelair.com)

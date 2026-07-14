@@ -6,8 +6,25 @@
 <title>EnvHaven Terminal</title>
 <link rel="stylesheet" href="/__console/assets/xterm.css">
 <style>
+  /* The dashboard's mono font (JetBrains Mono, next/font --font-mono), vendored so the
+     terminal matches the cockpit chrome with zero external fetches. Hash-pinned like the
+     xterm bundle (TestVendoredAssetsPristine). */
+  @font-face { font-family: 'JetBrains Mono'; font-weight: 400; font-style: normal;
+               src: url('/__console/assets/jetbrains-mono-regular.woff2') format('woff2'); }
+  @font-face { font-family: 'JetBrains Mono'; font-weight: 700; font-style: normal;
+               src: url('/__console/assets/jetbrains-mono-bold.woff2') format('woff2'); }
   html, body { height: 100%; margin: 0; background: #1e1e1e; color: #ccc; font-family: system-ui, sans-serif; }
-  #term { position: absolute; inset: 0; padding: 6px; }
+  #term { position: absolute; inset: 0; }
+  /* A terminal is a whole number of character rows, so the grid floors to a sub-row
+     remainder (< one line) that no fit removes. Fill the panel with xterm's root and
+     center its grid, so the remainder splits evenly top and bottom instead of pooling
+     below the last row. The grid is the root's only in-flow child (its viewport sibling
+     is absolute), so centering shifts the grid alone — and with it the predictive-echo
+     overlay, which lives inside .xterm-screen, so alignment is preserved. xterm.css pins
+     that viewport to #000, so clear it and the split shows the themed page background the
+     body already carries, not a black band under a light dashboard. */
+  #term > div { height: 100%; display: flex; flex-direction: column; justify-content: center; }
+  #term .xterm-viewport { background-color: transparent; }
   #term.hide { display: none; }
   #login { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; }
   #login.show { display: flex; }
@@ -54,33 +71,333 @@
   var DATA = 0x00, RESIZE = 0x01, PGATE = 0x02;
   var enc = new TextEncoder();
 
+  // Query params. ?parent=<origin> marks an EMBEDDED page (the managed dashboard
+  // frames this same file): the token is injected by that parent over postMessage,
+  // because managed mode has no cookie-gated /__console/token to fetch. ?bg/?fg theme
+  // the terminal to the host that framed it; absent, self-host keeps VS Code dark.
+  var params = new URLSearchParams(location.search);
+  var parentOrigin = params.get('parent');
+  var themeBg = params.get('bg') ? '#' + params.get('bg') : '#1e1e1e';
+  var themeFg = params.get('fg') ? '#' + params.get('fg') : null;
+  // Embedded (managed dashboard, ?parent set): the terminal's bg is locked to the dashboard's
+  // exact background (?bg), so it sits flush with no distinct panel and inherits the theme.
+  // The dashboard re-sends bg+fg on a light/dark toggle so the terminal tracks it live.
+  // Self-host keeps its own default bg. `embedded` gates that live-retheme channel.
+  var embedded = !!parentOrigin;
+  // The postMessage wall for everything exchanged with the embedding dashboard:
+  // accept only from the exact ?parent origin AND window.parent, and post only
+  // to that exact origin (never '*'); a foreign frame can neither inject nor read.
+  function fromParent(ev) { return ev.origin === parentOrigin && ev.source === window.parent; }
+  function toParent(msg) { window.parent.postMessage(msg, parentOrigin); }
+
   var termEl = document.getElementById('term');
   var loginEl = document.getElementById('login');
   var errEl = document.getElementById('err');
   var pwEl = document.getElementById('password');
 
-  var term = new Terminal({ cursorBlink: true, fontSize: 13, theme: { background: '#1e1e1e' }, allowProposedApi: true });
+  document.body.style.background = themeBg;
+  // One builder for the xterm theme object, used by the constructor and the live
+  // retheme (undefined-valued and omitted keys are equivalent for xterm). Cursor
+  // wears the theme's ink over the page background (the glyph inside the block
+  // inverts via cursorAccent). Blink itself is xterm's own, engaged by tmux's
+  // cursor-style request (DECSCUSR outranks the cursorBlink option).
+  function themeObj() {
+    return {
+      background: themeBg,
+      foreground: themeFg || undefined,
+      cursor: themeFg || undefined,
+      cursorAccent: themeFg ? themeBg : undefined,
+    };
+  }
+  // scrollback:0 makes this a pure viewport onto the shared tmux session: tmux owns all
+  // history and scrolling (the mouse wheel scrolls tmux's copy mode), so xterm never grows
+  // a buffer of its own. Two things follow. xterm 6's scroll UI — the VS Code-derived
+  // overview-ruler scrollbar — has nothing to show, so it never overlays and clips the
+  // grid's last column. And the bundled fit addon reserves the scrollbar's width only when
+  // scrollback>0, so it now reserves nothing and the grid fills the panel edge to edge with
+  // no custom proposeDimensions override to maintain.
+  // Open a clicked terminal link in a new top-level tab; noopener/noreferrer severs
+  // window.opener to block reverse tabnabbing (the iframe never navigates itself).
+  function openLink(ev, text) { window.open(text, '_blank', 'noopener,noreferrer'); }
+  var term = new Terminal({
+    cursorBlink: true,
+    fontSize: 13,
+    scrollback: 0,
+    theme: themeObj(),
+    allowProposedApi: true,
+    // OSC 8 hyperlinks (tmux forwards them per the terminal-features declaration in
+    // tmux.conf) carry the exact URL out of band, immune to line wrapping — TUIs that
+    // emit them (pi's /login) get precise links; everything else falls back to the
+    // wrapped-URL provider below.
+    linkHandler: { activate: openLink },
+  });
   var fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
+  // URLs printed in the terminal become clickable and open in a NEW top-level browser tab,
+  // never navigating this iframe; noopener/noreferrer severs window.opener to block reverse
+  // tabnabbing. Hover shows a pointer and underline from xterm core's link decorations.
+  //
+  // This is a custom provider rather than @xterm/addon-web-links because tmux repaints
+  // long lines as HARD row breaks (no wrap flags), so per-row detection sees only the
+  // first fragment of a wrapped URL — the classic broken TUI OAuth link (pi and claude
+  // /login). iTerm2's continuation heuristic fixes it: a row whose content runs to the
+  // terminal's last column is joined with the next row before matching, and match
+  // offsets map back to real buffer cells so hover and click cover every row.
+  var URL_RE = /https?:\/\/[^\s"'<>\[\]]+/g;
+  var JOIN_HOP = 6; // rows a single URL may span; bounds the scan either side
+  function rowText(row) {
+    var line = term.buffer.active.getLine(row);
+    return line ? line.translateToString(true) : null; // right-trimmed grid content
+  }
+  // oscRuns reads one row's OSC 8 hyperlink runs off the pinned bundle's cell
+  // attrs. Internal reach is this file's pinned-bundle pattern; if the internals
+  // ever move, oscRuns returns nothing and OSC 8 falls back to per-row links.
+  function oscRuns(row) { // 0-based row -> [{x0,x1,uri}] (1-based inclusive cols)
+    var runs = [];
+    try {
+      var line = term.buffer.active.getLine(row);
+      if (!line) return runs;
+      // Cells must be interrogated through getCell/hasExtendedAttrs: the line's
+      // sparse extended-attrs storage is not scrubbed when a cell is overwritten
+      // with plain content, so reading it directly resurrects links from rows the
+      // application has since repainted (ghost underlines where a dialog used to
+      // be). The has-extended flag on the cell itself is the truth.
+      var work = null, cur = null;
+      for (var x = 0; x < term.cols; x++) {
+        work = line.getCell(x, work || undefined);
+        var live = work && work.hasExtendedAttrs && work.hasExtendedAttrs();
+        var id = live && work.extended ? work.extended.urlId : undefined;
+        var uri = id ? (term._core._oscLinkService.getLinkData(id) || {}).uri : undefined;
+        if (uri && cur && cur.uri === uri) cur.x1 = x + 1;
+        else if (uri) { cur = { x0: x + 1, x1: x + 1, uri: uri }; runs.push(cur); }
+        else cur = null;
+      }
+    } catch (e) { /* internals moved */ }
+    return runs;
+  }
+  term.registerLinkProvider({
+    provideLinks: function (lineNo, cb) { // lineNo is 1-based
+      // While disconnected the grid is a frozen snapshot of a session that has moved
+      // on — its links (and everything else) are stale, so none are offered until the
+      // socket is live again.
+      if (!ws || ws.readyState !== 1) { cb(undefined); return; }
+      var row = lineNo - 1;
+      var links = [];
+
+      // OSC 8 hyperlinks (pi's /login): the bundled OscLinkProvider emits strictly
+      // per-row ranges, so its hover underline never spans a wrapped link, and tmux
+      // re-opens the link per repainted row so each row even gets a fresh urlId. This
+      // provider replaces it: runs are collected per row (oscRuns above), resolved to
+      // their URI, and adjacent rows with the same URI merge into one full-range link.
+      // Registration below puts this provider ahead of the built-in, whose per-row
+      // fragment then loses the linkifier's intersection dedup.
+      oscRuns(row).forEach(function (run) {
+        // Collect the per-row text runs while merging: the link's RANGE must span
+        // them all (activation and the pointer cursor), but a multi-row range is a
+        // contiguous block that would also underline the dialog's indent and padding
+        // cells, so xterm's own underline is disabled and hover paints exactly these
+        // rects instead.
+        var rects = [{ y: lineNo, x0: run.x0, x1: run.x1 }];
+        for (var up = row - 1; up >= row - JOIN_HOP; up--) { // same-URI runs above
+          var r2 = oscRuns(up).filter(function (r3) { return r3.uri === run.uri; }).pop();
+          if (!r2) break;
+          rects.unshift({ y: up + 1, x0: r2.x0, x1: r2.x1 });
+        }
+        for (var dn = row + 1; dn <= row + JOIN_HOP; dn++) { // and below
+          var r4 = oscRuns(dn).filter(function (r5) { return r5.uri === run.uri; }).shift();
+          if (!r4) break;
+          rects.push({ y: dn + 1, x0: r4.x0, x1: r4.x1 });
+        }
+        var head = rects[0], tail = rects[rects.length - 1];
+        links.push({
+          range: { start: { x: head.x0, y: head.y }, end: { x: tail.x1, y: tail.y } },
+          text: run.uri,
+          decorations: { pointerCursor: true, underline: false },
+          hover: function () { paintLinkUnderline(rects); },
+          leave: function () { clearLinkUnderline(); },
+          activate: openLink,
+        });
+      });
+
+      // Wrapped plain-text URLs, matched on the joined row text (see URL_RE above).
+      var first = row, last = row;
+      while (first > row - JOIN_HOP) { // full-width rows above may start the URL
+        var prev = rowText(first - 1);
+        if (prev === null || prev.length < term.cols) break;
+        first--;
+      }
+      while (last < row + JOIN_HOP) { // and it continues below while rows stay full
+        var cur = rowText(last);
+        if (cur === null || cur.length < term.cols) break;
+        last++;
+      }
+      var joined = '', starts = [];
+      for (var r = first; r <= last; r++) {
+        starts.push(joined.length);
+        joined += rowText(r) || '';
+      }
+      function cellOf(offset) { // joined-text offset -> 1-based buffer cell
+        var i = 0;
+        while (i + 1 < starts.length && starts[i + 1] <= offset) i++;
+        return { x: offset - starts[i] + 1, y: first + i + 1 };
+      }
+      var m;
+      URL_RE.lastIndex = 0;
+      while ((m = URL_RE.exec(joined))) {
+        var url = m[0].replace(/[.,;:!?')\]]+$/, ''); // trim trailing prose punctuation
+        if (!url) continue;
+        var start = cellOf(m.index), end = cellOf(m.index + url.length - 1);
+        if (end.y < lineNo || start.y > lineNo) continue; // only links touching this row
+        // OSC 8 already owns these rows; row-range containment suffices because a
+        // merged OSC link spans its continuation rows in full.
+        var insideOsc = links.some(function (l) {
+          return start.y >= l.range.start.y && end.y <= l.range.end.y;
+        });
+        if (insideOsc) continue;
+        links.push({
+          range: { start: start, end: end },
+          text: url,
+          activate: openLink,
+        });
+      }
+
+      cb(links.length ? links : undefined);
+    },
+  });
+  // Ahead of the built-in OscLinkProvider so the merged full-range link wins the
+  // linkifier's first-provider-at-position pick; guarded, worst case is old order.
+  try {
+    var lps = term._core._linkProviderService.linkProviders;
+    if (lps.length > 1) lps.unshift(lps.pop());
+  } catch (e) { /* internals moved: built-in order stands */ }
+
+  // ── Screen geometry + style ───────────────────────────────────────────────
+  // Shared by the link-underline overlay below and the predictive-echo renderer:
+  // overlay layers inside xterm's screen element, the exact cell size, and the
+  // live text style.
+
+  // Lazy overlay layer inside xterm's screen element: absolutely positioned over
+  // the grid, transparent to the mouse, stacked by z. Null until the screen exists.
+  function newScreenLayer(z) {
+    var screen = termEl.querySelector('.xterm-screen');
+    if (!screen) return null;
+    var layer = document.createElement('div');
+    layer.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:' + z;
+    screen.appendChild(layer);
+    return layer;
+  }
+
+  // xterm's exact CSS cell size (pinned build), so an overlay glyph lands on the
+  // same pixel as the real one and does not wiggle when it settles. Falls back to
+  // the averaged screen size if the internal shape ever moves.
+  function cellDims() {
+    try {
+      var c = term._core._renderService.dimensions.css.cell;
+      if (c && c.width) return [c.width, c.height];
+    } catch (e) { /* fall through */ }
+    var s = termEl.querySelector('.xterm-screen');
+    return s ? [s.clientWidth / term.cols, s.clientHeight / term.rows] : [9, 17];
+  }
+
+  // Match the real text so predictions look native under any theme: read the
+  // foreground colour and font off the live xterm rows.
+  var styleFg = '', styleFF = '', styleFS = '', styleBg = '';
+  function refreshStyle() {
+    var rows = termEl.querySelector('.xterm-rows');
+    var cs = rows ? getComputedStyle(rows) : null;
+    styleFg = (term.options.theme && term.options.theme.foreground) || (cs && cs.color) || '#ffffff';
+    styleFF = (cs && cs.fontFamily) || 'monospace';
+    styleFS = (cs && cs.fontSize) || '13px';
+    styleBg = themeBg;
+  }
+
+  // Hover underline for merged OSC 8 links: one hairline per text run, in its own
+  // overlay layer (below the predictor's) using the same exact cell geometry, so
+  // indent and padding cells inside the link's rectangular range stay bare.
+  var linkLayer = null;
+  function clearLinkUnderline() {
+    if (linkLayer) linkLayer.textContent = '';
+  }
+  function paintLinkUnderline(rects) {
+    if (!styleFg) refreshStyle(); // same seed render() uses: the hairline colour has one owner
+    if (!linkLayer || !linkLayer.isConnected) {
+      linkLayer = newScreenLayer(9);
+      if (!linkLayer) return;
+    }
+    clearLinkUnderline();
+    var dims = cellDims(), cw = dims[0], ch = dims[1];
+    rects.forEach(function (r) {
+      var u = document.createElement('div');
+      u.style.cssText = 'position:absolute;height:1px;background:' + (styleFg || '#ffffff');
+      u.style.left = (r.x0 - 1) * cw + 'px';
+      u.style.top = (r.y - 1) * ch + (ch - 1) + 'px';
+      u.style.width = (r.x1 - r.x0 + 1) * cw + 'px';
+      linkLayer.appendChild(u);
+    });
+  }
   term.open(termEl);
   fit.fit();
 
+  // Match the dashboard's mono font. The terminal opens immediately on xterm's default
+  // metrics (in the managed cockpit the parent's loader covers first paint), and once the
+  // vendored JetBrains Mono is loaded, CHANGING fontFamily makes xterm re-measure its
+  // grid — setting an identical value is a no-op, which is why the constructor leaves it
+  // default. If the font never loads, the default stack simply stays.
+  document.fonts.load('13px "JetBrains Mono"').then(function () {
+    return document.fonts.load('bold 13px "JetBrains Mono"');
+  }).then(function () {
+    if (document.fonts.check('13px "JetBrains Mono"')) {
+      term.options.fontFamily = '"JetBrains Mono", monospace';
+      fit.fit();
+    }
+  }).catch(function () {});
+
   // Clipboard bridge. tmux already emits OSC 52 (ESC]52;;<base64>BEL) on every
   // copy because the xterm-256color terminfo carries the Ms capability and the
-  // tmux config sets `set-clipboard on`; we just have to catch it here and write
-  // to the browser clipboard. Write-only on purpose: the '?' read form is ignored
+  // tmux config sets `set-clipboard on`; we just have to catch it here and land it
+  // on the browser clipboard. Write-only on purpose: the '?' read form is ignored
   // so nothing running in the pty can read the operator's clipboard.
   //
-  // navigator.clipboard needs a secure context (https, or localhost), and a
-  // gesture-less write only lands on Chromium with the permission granted, so
-  // this is best-effort. The right-click handler below runs inside a real user
-  // gesture and covers plain http://<lan-ip>; tmux also mirrors every selection
-  // to /tmp/.envhaven-clipboard for the IDE extension regardless.
+  // The OSC 52 arrives on the socket, outside any user gesture. This frame writes the
+  // clipboard itself: during a selection the iframe is the focused document (Chromium
+  // rejects writeText from an unfocused one, which rules the top-level page out at
+  // exactly the moment copies happen) and the dashboard delegates clipboard-write to
+  // it via the iframe allow attribute. The text is still handed up to the dashboard,
+  // which is the fallback writer where delegation is missing and owns the "Copied"
+  // toast. Self-host is top-level, so the direct write is the whole story. Either way
+  // tmux still mirrors every selection to /tmp/.envhaven-clipboard for the extension.
+
+  // Safari rejects every clipboard write that does not START inside a user gesture, and
+  // the OSC 52 for a mouse selection only lands after the tmux round-trip — always too
+  // late. Safari's own escape hatch is a promise-backed ClipboardItem: open the write
+  // synchronously in the gesture (the selection-ending mouseup) and let the imminent
+  // OSC 52 supply the text. A mouseup that produces no copy times out and rejects, which
+  // aborts the write and leaves the clipboard untouched. Chromium takes the writeText
+  // path below regardless, so a double write of the same text is the worst case there.
+  var pendingCopy = null;
+  termEl.addEventListener('mouseup', function () {
+    if (!window.ClipboardItem || !navigator.clipboard || !navigator.clipboard.write) return;
+    if (pendingCopy) { clearTimeout(pendingCopy.timer); pendingCopy.reject(); }
+    var entry = {};
+    var text = new Promise(function (resolve, reject) { entry.resolve = resolve; entry.reject = reject; });
+    entry.timer = setTimeout(function () {
+      if (pendingCopy === entry) { pendingCopy = null; entry.reject(); }
+    }, 500);
+    pendingCopy = entry;
+    navigator.clipboard.write([new ClipboardItem({ 'text/plain': text })]).catch(function () {});
+  }, true);
+
   function writeClipboard(text) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).catch(function () {});
+    if (pendingCopy) { // a gesture-opened write is waiting for exactly this text (Safari path)
+      var entry = pendingCopy;
+      pendingCopy = null;
+      clearTimeout(entry.timer);
+      entry.resolve(new Blob([text], { type: 'text/plain' }));
     }
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).catch(function () {});
+    if (embedded) toParent({ type: 'envhaven-console:clipboard', text: text });
   }
+
   term.parser.registerOscHandler(52, function (data) {
     var i = data.indexOf(';'); // data is "<Pc>;<Pd>"; the 52; identifier is already stripped
     if (i === -1) return true;
@@ -97,6 +414,42 @@
     e.preventDefault();
     writeClipboard(term.getSelection());
   });
+
+  // Image paste. A pasted image has no text form, so xterm's built-in paste — which reads
+  // only clipboardData's 'text/plain' — silently drops it. Catch it here and hand the blob
+  // up to the embedding dashboard, the top-level page that holds the platform session and
+  // uploads it to /config/artifacts, over the same postMessage channel as the clipboard and
+  // token. We read the paste event's OWN clipboardData synchronously inside the gesture,
+  // never navigator.clipboard.read, so no iframe allow="clipboard-read" is required. A plain
+  // text paste carries no image item: we return without preventing default, so xterm pastes
+  // it to the pty exactly as before.
+  //
+  // Capture phase, not bubbling: xterm's own paste handler runs on its hidden textarea and
+  // calls stopPropagation(), so a bubble-phase listener on this element (or document) would
+  // never see the event. Capturing on termEl fires on the way DOWN to the textarea, ahead of
+  // xterm, so an image is caught while text still flows straight through untouched.
+  function pasteImageExt(type) {
+    if (type === 'image/jpeg') return 'jpg';
+    if (type === 'image/gif') return 'gif';
+    if (type === 'image/webp') return 'webp';
+    return 'png'; // image/png, and any unrecognised image/* type
+  }
+  termEl.addEventListener('paste', function (e) {
+    var items = (e.clipboardData || window.clipboardData).items;
+    if (!items) return;
+    var image = null;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].type && items[i].type.indexOf('image/') === 0) { image = items[i]; break; }
+    }
+    if (!image) return;    // no image on the clipboard: let xterm's text paste proceed untouched
+    if (!embedded) return; // self-host has no parent to receive the blob; leave the paste alone
+    e.preventDefault();     // an image must never fall through to the pty
+    e.stopPropagation();    // and xterm's textarea handler must not also paste it as empty text
+    var blob = image.getAsFile();
+    if (!blob) return;     // advertised an image but yielded no file: nothing to hand up
+    var name = 'pasted-' + Date.now() + '.' + pasteImageExt(blob.type);
+    toParent({ type: 'envhaven-console:paste-image', name: name, blob: blob });
+  }, true);
 
   // ── Predictive echo (zero-latency input) ──────────────────────────────────
   // Each printable keystroke is painted instantly over the xterm screen, never
@@ -132,7 +485,7 @@
   // local echo; without the parameter, or with ?echo=0, the page is a plain
   // server-echo terminal that never draws a predicted character. The safety gate
   // below still applies whenever echo is on.
-  var echoEnabled = new URLSearchParams(location.search).get('echo') === '1';
+  var echoEnabled = params.get('echo') === '1';
   var serverSafe = false;  // the sole gate; set by the 0x02 frame, default-off fail-safe
   var inputLen = 0;        // count of the user's own typed chars on the current line; a
                            // predicted delete may never reach below this (never the prompt/output)
@@ -157,25 +510,10 @@
   var predOverlay = null; // the single z-index:10 layer that holds all optimistic drawing
   function overlay() {
     if (predOverlay && predOverlay.isConnected) return predOverlay;
-    var screen = termEl.querySelector('.xterm-screen');
-    if (!screen) return null;
-    predOverlay = document.createElement('div');
-    predOverlay.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:10';
+    predOverlay = newScreenLayer(10);
+    if (!predOverlay) return null;
     glyphLine = coverLine = predCursor = null; // children of a replaced overlay are detached; rebuild them
-    screen.appendChild(predOverlay);
     return predOverlay;
-  }
-
-  // xterm's exact CSS cell size (pinned build), so an overlay glyph lands on the
-  // same pixel as the real one and does not wiggle when it settles. Falls back to
-  // the averaged screen size if the internal shape ever moves.
-  function cellDims() {
-    try {
-      var c = term._core._renderService.dimensions.css.cell;
-      if (c && c.width) return [c.width, c.height];
-    } catch (e) { /* fall through */ }
-    var s = termEl.querySelector('.xterm-screen');
-    return s ? [s.clientWidth / term.cols, s.clientHeight / term.rows] : [9, 17];
   }
 
   // xterm's DOM renderer stretches every cell to exactly cell.width by applying
@@ -200,18 +538,6 @@
   // over it either. Fails toward drawing if the internal shape ever moves.
   function cursorHidden() {
     try { return term._core._coreService.isCursorHidden; } catch (e) { return false; }
-  }
-
-  // Match the real text so predictions look native under any theme: read the
-  // foreground colour and font off the live xterm rows.
-  var styleFg = '', styleFF = '', styleFS = '', styleBg = '';
-  function refreshStyle() {
-    var rows = termEl.querySelector('.xterm-rows');
-    var cs = rows ? getComputedStyle(rows) : null;
-    styleFg = (term.options.theme && term.options.theme.foreground) || (cs && cs.color) || '#ffffff';
-    styleFF = (cs && cs.fontFamily) || 'monospace';
-    styleFS = (cs && cs.fontSize) || '13px';
-    styleBg = (term.options.theme && term.options.theme.background) || (cs && cs.backgroundColor) || '#1e1e1e';
   }
 
   // ── One renderer for the whole optimistic view ────────────────────────────
@@ -351,7 +677,6 @@
     }
     if (!owningNow) { owningNow = true; termEl.classList.add('eh-hide-cursor'); }
   }
-  var refresh = render; // predict()/predictBackspace() ask for a redraw through this name
 
   // Re-check ownership after the grace window even if no further server output arrives
   // to trigger a render. The tick also reconciles, so a burst that never converges
@@ -428,7 +753,7 @@
       }
     }
     predicted.sampled = false; predicted.mismatched = false;
-    touchEdit(); refresh();
+    touchEdit(); render();
   }
 
   function predictBackspace() {
@@ -447,7 +772,7 @@
     predicted.line = predicted.line.slice(0, -1);
     predicted.sampled = false; predicted.mismatched = false;
     inputLen--;                        // consumed one unit of the user's input
-    touchEdit(); refresh();
+    touchEdit(); render();
   }
 
   // One backward-kill-word (Option+Backspace, Ctrl-W): trailing blanks, then the
@@ -467,7 +792,7 @@
     predicted.line = s.slice(0, -k);
     predicted.sampled = false; predicted.mismatched = false;
     inputLen -= k;
-    touchEdit(); refresh();
+    touchEdit(); render();
   }
 
   function predict(d) {
@@ -514,7 +839,7 @@
       predicted.line += d;
       predicted.sampled = false; predicted.mismatched = false;
       inputLen += d.length;
-      touchEdit(); refresh();
+      touchEdit(); render();
       return;
     }
     // Anything else — arrows, Home/End, Ctrl-U/W/K/C line edits, IME, a bracketed
@@ -588,6 +913,7 @@
   var connecting = false;    // single-flight guard for connect()
   var everConnected = false; // once a session worked, a transient token failure retries
                              // via the banner; only a real 401 falls back to the login form
+  var postedReady = false;   // tell the embedding dashboard once, when the socket first opens
 
   function showLogin(msg) {
     errEl.textContent = msg || '';
@@ -602,26 +928,74 @@
     term.focus();
   }
 
-  // connect fetches a short-lived token (cookie-gated) and opens the socket. A
-  // 401 means we are not logged in yet, so show the password form. Single-flight:
-  // `ws` stays null for the whole token round-trip, so without the guard every
-  // key typed in that window would open ANOTHER socket — each one a second tmux
-  // client whose broadcast repaints land in this same terminal, doubling every
-  // echoed character.
-  function connect() {
-    if (connecting || ws) return;
-    connecting = true;
-    fetch('/__console/token').then(function (r) {
+  // getToken resolves the short-lived bearer for the NEXT socket. It is the one
+  // seam between the two deployment modes; everything downstream (openSocket, the
+  // wire protocol, predictive echo) is identical. Self-host fetches the cookie-gated
+  // endpoint (401 → show the password form, resolve null). An embedded managed page
+  // (?parent set) has no such endpoint, so it asks the dashboard that framed it for a
+  // platform-minted JWT over postMessage. Resolving null means "handled, do not open".
+  function getToken() {
+    if (parentOrigin) return requestTokenFromParent();
+    return fetch('/__console/token').then(function (r) {
       if (r.status === 401) { showLogin(''); return null; }
       if (!r.ok) throw new Error('token request failed: ' + r.status);
       return r.text();
-    }).then(function (token) {
-      if (!token) { connecting = false; return; }
+    });
+  }
+
+  // requestTokenFromParent asks the embedding dashboard for a fresh 60s JWT. Only the
+  // parent holds the platform session, so it is the only party that can mint; we
+  // re-ask on every (re)connect, so the token is always fresh with no in-band refresh.
+  // SECURITY: we accept a token ONLY from the exact ?parent origin AND window.parent,
+  // and post the request to that exact origin (never '*'), so the bearer never leaks to
+  // another frame. Bounded retries cover the first-load race where we ask before the
+  // parent's message listener has mounted, AND a slow re-mint on reconnect: the parent's
+  // mint is a session read plus an API round-trip that can take multiple seconds on a
+  // jittery uplink, so the budget is 12s (40 x 300ms), not one race window. Re-asking is
+  // idempotent (each request just mints again); exhausting the budget rejects into the
+  // banner and the next keypress starts a fresh one.
+  function requestTokenFromParent() {
+    return new Promise(function (resolve, reject) {
+      var done = false, tries = 0, timer = 0;
+      function onMsg(ev) {
+        if (!fromParent(ev)) return;
+        if (!ev.data || ev.data.type !== 'envhaven-console:token' || typeof ev.data.token !== 'string') return;
+        done = true; cleanup(); resolve(ev.data.token);
+      }
+      function cleanup() { window.removeEventListener('message', onMsg); if (timer) clearTimeout(timer); }
+      function ask() {
+        if (done) return;
+        if (tries++ >= 40) { cleanup(); reject(new Error('no token from parent')); return; }
+        toParent({ type: 'envhaven-console:token-request' });
+        timer = setTimeout(ask, 300);
+      }
+      window.addEventListener('message', onMsg);
+      ask();
+    });
+  }
+
+  // Yellow status banner, written inline into the terminal (the e2e suite asserts
+  // these exact texts). The positioning prefix stays explicit at each call site.
+  function banner(prefix, msg) {
+    term.write(prefix + '\x1b[33m[' + msg + ']\x1b[0m');
+  }
+
+  // connect gets a short-lived token and opens the socket. Single-flight: `ws` stays
+  // null for the whole token round-trip, so without the guard every key typed in that
+  // window would open ANOTHER socket — each one a second tmux client whose broadcast
+  // repaints land in this same terminal, doubling every echoed character.
+  function connect() {
+    if (connecting || ws) return;
+    connecting = true;
+    getToken().then(function (token) {
+      if (!token) { connecting = false; return; } // self-host showed the login form
       hideLogin();
       openSocket(token);
     }).catch(function (e) {
       connecting = false;
-      if (everConnected) term.write('\r\n\x1b[33m[reconnect failed — press a key to retry]\x1b[0m\r\n');
+      // \r + erase-line makes repeated retries self-replacing instead of accumulating.
+      if (everConnected) banner('\r\x1b[K', 'reconnect failed — press a key to retry');
+      else if (parentOrigin) banner('\r\x1b[K', 'console unavailable — reopen from your dashboard');
       else showLogin(String(e));
     });
   }
@@ -639,7 +1013,11 @@
     var sdec = new TextDecoder(); // per-socket stream state: a chunk cut mid-UTF-8 at disconnect must not bleed into the next session
     ws = sock;
     connecting = false;
-    sock.onopen = function () { everConnected = true; sendResize(); }; // resize catches a fit() that landed between URL build and open
+    sock.onopen = function () {
+      everConnected = true; sendResize(); // resize catches a fit() that landed between URL build and open
+      // Signal the embedding dashboard that the terminal is live, so it can drop its loader.
+      if (embedded && !postedReady) { postedReady = true; toParent({ type: 'envhaven-console:ready' }); }
+    };
     // Handlers ignore a superseded socket: it must never write into the live
     // terminal, and its late close must never clobber the live connection.
     sock.onmessage = function (ev) {
@@ -653,7 +1031,9 @@
       ws = null;
       serverSafe = false; // fail closed: re-arm only when a fresh server "safe" arrives
       resetPredictions();
-      term.write('\r\n\x1b[33m[disconnected — press a key to reconnect]\x1b[0m\r\n');
+      clearLinkUnderline(); // a hovered link's hairlines must not linger over the banner
+      // Inline on the cursor's own line (no newline churn); the reconnect repaint clears it.
+      banner(' ', 'disconnected — press a key to reconnect');
     };
   }
 
@@ -689,6 +1069,23 @@
   });
   term.onResize(sendResize);
   window.addEventListener('resize', function () { fit.fit(); resetPredictions(); });
+
+  // Live re-theme from the embedding dashboard on light/dark toggle — no reload, so the
+  // tmux session and predictor state stay intact. Same wall as the token: accept only from
+  // the exact ?parent origin AND window.parent. Repaints everything the theme touches
+  // (page + xterm background, foreground and cursor colours), then reseeds the cached
+  // style and resets predictions so no overlay keeps painting the old palette.
+  if (embedded) window.addEventListener('message', function (ev) {
+    if (!fromParent(ev)) return;
+    var d = ev.data;
+    if (!d || d.type !== 'envhaven-console:theme') return;
+    if (typeof d.bg === 'string') themeBg = '#' + d.bg;
+    if (typeof d.fg === 'string') themeFg = '#' + d.fg;
+    document.body.style.background = themeBg;
+    term.options.theme = themeObj();
+    refreshStyle();
+    resetPredictions();
+  });
 
   document.getElementById('loginForm').addEventListener('submit', function (e) {
     e.preventDefault();

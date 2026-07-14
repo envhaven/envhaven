@@ -1,0 +1,34 @@
+{
+  "installed": [
+    {
+      "name": "deploy",
+      "description": "Deploy things",
+      "source": "envhaven/envhaven",
+      "path": "/config/.claude/skills/deploy",
+      "agents": ["claude-code", "codex"]
+    },
+    {
+      "name": "scratch",
+      "description": "",
+      "source": null,
+      "path": "/config/.claude/skills/scratch",
+      "agents": []
+    }
+  ],
+  "results": [
+    {
+      "id": "envhaven/envhaven/deploy",
+      "skillId": "deploy",
+      "name": "deploy",
+      "installs": null,
+      "source": "envhaven/envhaven"
+    },
+    {
+      "id": "acme/skills/react-deploy",
+      "skillId": "react-deploy",
+      "name": "react-deploy",
+      "installs": 12,
+      "source": "acme/skills"
+    }
+  ]
+}

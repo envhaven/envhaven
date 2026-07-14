@@ -329,11 +329,21 @@ func (s *selfHost) handleRoot(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/__console/ui", http.StatusFound)
 }
 
-// handleUI serves the embedded terminal page. The page holds no secret: it
-// fetches a token and prompts for the password only if that returns 401.
-func (s *selfHost) handleUI(w http.ResponseWriter, _ *http.Request) {
+// serveUI writes the embedded terminal page. The page holds no secret: self-host
+// fetches a token and prompts for the password only if that returns 401; managed
+// receives a platform JWT from the embedding dashboard over postMessage. The SAME
+// page serves both modes — the only difference is who may frame it. frameAncestors
+// is empty for self-host (opened top-level, so framing is denied outright) and the
+// CSP frame-ancestors origin list for managed (only the dashboard may embed the
+// live terminal). This is the whole anti-clickjacking gate for the page.
+func serveUI(w http.ResponseWriter, frameAncestors []string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store") // tiny page, changes with builds; never cache it
+	if len(frameAncestors) == 0 {
+		w.Header().Set("X-Frame-Options", "DENY")
+	} else {
+		w.Header().Set("Content-Security-Policy", "frame-ancestors "+strings.Join(frameAncestors, " "))
+	}
 	_, _ = w.Write(terminalHTML)
 }
 

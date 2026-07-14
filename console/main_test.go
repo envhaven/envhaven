@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -232,7 +233,7 @@ func TestHandleConsoleAuth(t *testing.T) {
 				r.Header.Set("Sec-WebSocket-Protocol", c.proto)
 			}
 			w := httptest.NewRecorder()
-			serveConsole(ctx, w, r, &jwtAuth{jwks: jwks, workspaceID: wsID}, origins)
+			serveConsole(ctx, w, r, &jwtAuth{jwks: jwks, workspaceID: wsID}, origins, true)
 			if w.Code != c.want {
 				t.Fatalf("status = %d, want %d (body %q)", w.Code, c.want, w.Body.String())
 			}
@@ -246,7 +247,7 @@ func TestHandleConsoleAuth(t *testing.T) {
 		r := httptest.NewRequest(http.MethodGet, "/__console", nil)
 		r.Header.Set("Sec-WebSocket-Protocol", "envhaven.console, "+signEdDSA(base()))
 		w := httptest.NewRecorder()
-		serveConsole(ctx, w, r, &jwtAuth{jwks: jwks, workspaceID: wsID}, origins)
+		serveConsole(ctx, w, r, &jwtAuth{jwks: jwks, workspaceID: wsID}, origins, true)
 		if w.Code == http.StatusUnauthorized || w.Code == http.StatusForbidden {
 			t.Fatalf("valid token rejected at auth: status %d (body %q)", w.Code, w.Body.String())
 		}
@@ -312,9 +313,10 @@ func TestOriginEnforcement(t *testing.T) {
 		auth    authenticator
 		bearer  string
 		origins []string
+		managed bool
 	}{
-		{"managed", &jwtAuth{jwks: jwks, workspaceID: "ws_test"}, signEdDSA(validClaims("ws_test")), []string{"envhaven.com"}},
-		{"self-host", sh.wsAuth(), mintToken(sh.secret, ctxWS, time.Now(), wsTokenTTL), sh.origins},
+		{"managed", &jwtAuth{jwks: jwks, workspaceID: "ws_test"}, signEdDSA(validClaims("ws_test")), []string{"envhaven.com"}, true},
+		{"self-host", sh.wsAuth(), mintToken(sh.secret, ctxWS, time.Now(), wsTokenTTL), sh.origins, false},
 	}
 	cases := []struct {
 		name          string
@@ -330,7 +332,7 @@ func TestOriginEnforcement(t *testing.T) {
 		for _, c := range cases {
 			t.Run(a.name+"/"+c.name, func(t *testing.T) {
 				w := httptest.NewRecorder()
-				serveConsole(context.Background(), w, wsUpgradeRequest(subprotocol+", "+a.bearer, c.origin), a.auth, a.origins)
+				serveConsole(context.Background(), w, wsUpgradeRequest(subprotocol+", "+a.bearer, c.origin), a.auth, a.origins, a.managed)
 				if c.wantForbidden {
 					if w.Code != http.StatusForbidden {
 						t.Fatalf("origin %q = %d, want 403 (body %q)", c.origin, w.Code, w.Body.String())
@@ -373,12 +375,15 @@ func TestManagedOriginDefault(t *testing.T) {
 }
 
 // TestNewHandlerModes pins the ENVHAVEN_MANAGED mode switch — the one check
-// that decides which authenticator guards the shell. Managed must bind
-// loopback and register ONLY the WebSocket route (no login surface); without
-// the marker, password auth serves the full self-host surface. This matters
-// because managed containers also carry HASHED_PASSWORD for code-server: a
-// regressed marker check would silently fall through to password mode on all
-// interfaces, and nothing else would go red.
+// that decides which authenticator guards the shell. Managed binds loopback and
+// serves the WebSocket plus the static terminal page + assets (the dashboard
+// embeds that one page), but NO password/login surface; without the marker,
+// password auth serves the full self-host surface. This matters because managed
+// containers also carry HASHED_PASSWORD for code-server: a regressed marker check
+// would silently fall through to password mode on all interfaces, and nothing
+// else would go red. Both modes must also mount the Cockpit API: /__console/stats
+// answering 401 (guarded), never 404 (unmounted), pins the registerAPI call in
+// each newHandler branch.
 func TestNewHandlerModes(t *testing.T) {
 	t.Run("managed", func(t *testing.T) {
 		pub, _, err := ed25519.GenerateKey(rand.Reader)
@@ -401,9 +406,11 @@ func TestNewHandlerModes(t *testing.T) {
 			want         int
 		}{
 			{http.MethodGet, "/__console", http.StatusUnauthorized},
-			{http.MethodPost, "/__console/login", http.StatusNotFound},
-			{http.MethodGet, "/__console/token", http.StatusNotFound},
-			{http.MethodGet, "/__console/ui", http.StatusNotFound},
+			{http.MethodGet, "/__console/stats", http.StatusUnauthorized}, // Cockpit API mounted, guarded
+			{http.MethodPost, "/__console/login", http.StatusNotFound},    // no password surface in managed
+			{http.MethodGet, "/__console/token", http.StatusNotFound},     // tokens are platform-minted
+			{http.MethodGet, "/__console/ui", http.StatusOK},              // the ONE client, embedded by the dashboard
+			{http.MethodGet, "/__console/assets/xterm.js", http.StatusOK}, // served alongside the page
 			{http.MethodGet, "/", http.StatusNotFound},
 		}
 		for _, c := range checks {
@@ -433,7 +440,8 @@ func TestNewHandlerModes(t *testing.T) {
 			{http.MethodGet, "/__console/token", http.StatusUnauthorized},     // no cookie
 			{http.MethodGet, "/__console/ui", http.StatusOK},
 			{http.MethodGet, "/__console/assets/xterm.js", http.StatusOK},
-			{http.MethodGet, "/__console", http.StatusUnauthorized}, // no bearer
+			{http.MethodGet, "/__console", http.StatusUnauthorized},       // no bearer
+			{http.MethodGet, "/__console/stats", http.StatusUnauthorized}, // Cockpit API mounted, guarded
 		}
 		for _, c := range checks {
 			w := httptest.NewRecorder()
@@ -443,4 +451,46 @@ func TestNewHandlerModes(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestFrameAncestors pins the origin list derived from the console-origins env:
+// the scheme-qualified origins allowed to embed the managed terminal (and, as
+// the same list, to pass the API CORS check), defaulting to the production
+// dashboard. Distinct from originHosts (bare hosts).
+func TestFrameAncestors(t *testing.T) {
+	if got := frameAncestors(""); !slices.Equal(got, []string{"https://envhaven.com"}) {
+		t.Fatalf("empty = %v, want default [https://envhaven.com]", got)
+	}
+	if got := frameAncestors("https://app-x.envhaven.dev, https://envhaven.com"); !slices.Equal(got, []string{"https://app-x.envhaven.dev", "https://envhaven.com"}) {
+		t.Fatalf("list = %v, want both origins in order", got)
+	}
+}
+
+// TestServeUIFraming pins the anti-clickjacking header split that lets the dashboard
+// embed the managed terminal while denying every other framer, and forbids framing
+// the self-host page outright. The page is the SAME bytes in both modes; only the
+// framing headers differ, and they are the whole gate.
+func TestServeUIFraming(t *testing.T) {
+	// Self-host (no frameAncestors): opened top-level, so deny all framing.
+	w := httptest.NewRecorder()
+	serveUI(w, nil)
+	if got := w.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Fatalf("self-host X-Frame-Options = %q, want DENY", got)
+	}
+	if got := w.Header().Get("Content-Security-Policy"); got != "" {
+		t.Fatalf("self-host must set no CSP, got %q", got)
+	}
+	// Managed: only the given dashboard origins may frame; no XFO (CSP supersedes it,
+	// and XFO cannot express an allowed origin).
+	w = httptest.NewRecorder()
+	serveUI(w, []string{"https://envhaven.com"})
+	if got := w.Header().Get("Content-Security-Policy"); got != "frame-ancestors https://envhaven.com" {
+		t.Fatalf("managed CSP = %q, want frame-ancestors https://envhaven.com", got)
+	}
+	if got := w.Header().Get("X-Frame-Options"); got != "" {
+		t.Fatalf("managed must set no X-Frame-Options, got %q", got)
+	}
+	if got := w.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Fatalf("content-type = %q", got)
+	}
 }

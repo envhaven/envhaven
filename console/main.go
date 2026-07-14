@@ -1,6 +1,7 @@
 // Command envhaven-console is the per-container terminal server. It runs in
 // every workspace and attaches a pty running the login shell (which auto-joins
-// the shared `envhaven` tmux session). The browser connects directly to the
+// the shared tmux windows: the base `envhaven` session when managed, a grouped
+// `console-view` session when self-hosted). The browser connects directly to the
 // container; there is no central proxy. Two authentication modes, chosen once
 // at startup: managed workspaces validate a short-lived platform-minted EdDSA
 // JWT against the platform JWKS (this file), self-hosted containers validate
@@ -88,19 +89,34 @@ func main() {
 }
 
 // newHandler picks the mode ONCE, explicitly, on the marker the rest of the
-// image uses (ENVHAVEN_MANAGED). Managed validates a platform-minted EdDSA JWT
-// against the platform JWKS; self-hosted validates the operator's own web
-// password. Exactly one authenticator is ever built; if neither can be
-// configured the process refuses to start (newManagedAuth / newSelfHost
-// fatal). There is no unauthenticated path: auth and the pty share one port,
-// so nothing on the network or in the container can reach a shell without a
-// credential.
+// image uses (ENVHAVEN_MANAGED); the decision threads to serveConsole and
+// pumpSession as `managed`, so no later code re-reads the marker. Managed
+// validates a platform-minted EdDSA JWT against the platform JWKS; self-hosted
+// validates the operator's own web password. Exactly one authenticator is ever
+// built; if neither can be configured the process refuses to start
+// (newManagedAuth / newSelfHost fatal). There is no unauthenticated path: auth
+// and the pty share one port, so nothing on the network or in the container
+// can reach a shell without a credential.
 func newHandler(ctx context.Context) (string, *http.ServeMux) {
 	mux := http.NewServeMux()
 	if os.Getenv("ENVHAVEN_MANAGED") == "true" {
 		auth, origins := newManagedAuth(ctx)
+		// Serve the SAME terminal page self-host serves, so the managed dashboard
+		// embeds the one client instead of reimplementing it. The dashboard injects
+		// the platform JWT over postMessage (the page has ?parent set); there is no
+		// login/token route here because managed tokens are platform-minted. The WS
+		// Origin allowlist (origins) is untouched: the iframe is served from the
+		// workspace's own tunnel host, so its socket is same-host and auto-authorized.
+		fa := frameAncestors(os.Getenv("_ENVHAVEN_CONSOLE_ORIGINS"))
+		mux.HandleFunc("GET /__console/ui", func(w http.ResponseWriter, _ *http.Request) { serveUI(w, fa) })
+		mux.Handle("GET /__console/assets/", assetsHandler())
+		// The Cockpit HUD's out-of-band HTTP API (stats, tools, skills, artifacts,
+		// tmux actions). It rides the SAME EdDSA JWT wall as the socket; CORS echoes
+		// only the dashboard origins (the scheme-qualified frameAncestors list), so a
+		// cross-site page holding no token still cannot read a response.
+		registerAPI(mux, auth.verify, fa)
 		mux.HandleFunc("/__console", func(w http.ResponseWriter, r *http.Request) {
-			serveConsole(r.Context(), w, r, auth, origins)
+			serveConsole(r.Context(), w, r, auth, origins, true)
 		})
 		return managedAddr, mux
 	}
@@ -108,10 +124,19 @@ func newHandler(ctx context.Context) (string, *http.ServeMux) {
 	mux.HandleFunc("GET /{$}", sh.handleRoot)
 	mux.HandleFunc("POST /__console/login", sh.handleLogin)
 	mux.HandleFunc("GET /__console/token", sh.handleToken)
-	mux.HandleFunc("GET /__console/ui", sh.handleUI)
+	mux.HandleFunc("GET /__console/ui", func(w http.ResponseWriter, _ *http.Request) { serveUI(w, nil) })
 	mux.Handle("GET /__console/assets/", assetsHandler())
+	// The SAME Cockpit HTTP API, guarded by the self-host 60s HMAC bearer. No CORS
+	// allowlist (nil origins) → no Access-Control-Allow-Origin is ever emitted, so
+	// the API is same-origin only, at parity with the socket.
+	registerAPI(mux, func(token string) error {
+		if !verifyToken(sh.secret, ctxWS, token, time.Now()) {
+			return errUnauthorized
+		}
+		return nil
+	}, nil)
 	mux.HandleFunc("/__console", func(w http.ResponseWriter, r *http.Request) {
-		serveConsole(r.Context(), w, r, sh.wsAuth(), sh.origins)
+		serveConsole(r.Context(), w, r, sh.wsAuth(), sh.origins, false)
 	})
 	return selfHostAddr, mux
 }
@@ -133,8 +158,10 @@ type authError struct {
 func (e *authError) Error() string { return e.msg }
 
 // newManagedAuth builds the platform-JWT authenticator and its Origin allowlist,
-// failing closed if the workspace id is missing or the JWKS is unreachable.
-func newManagedAuth(ctx context.Context) (authenticator, []string) {
+// failing closed if the workspace id is missing or the JWKS is unreachable. It
+// returns the concrete *jwtAuth because registerAPI wants its verify method;
+// serveConsole consumes it through the authenticator interface.
+func newManagedAuth(ctx context.Context) (*jwtAuth, []string) {
 	workspaceID := os.Getenv("_ENVHAVEN_WORKSPACE_ID")
 	if workspaceID == "" {
 		fatal("_ENVHAVEN_WORKSPACE_ID is not set")
@@ -185,6 +212,15 @@ func (a *jwtAuth) authorize(r *http.Request) error {
 	if token == "" {
 		return &authError{http.StatusUnauthorized, "missing token"}
 	}
+	return a.verify(token)
+}
+
+// verify validates a presented platform JWT: EdDSA signature against the JWKS,
+// issuer, audience, required expiry, and the workspace binding. It is shared by
+// the WebSocket authorizer (authorize) and the Cockpit HTTP API guard (api.go),
+// so the managed console has exactly ONE token-validation path. Every option
+// here is load-bearing: there is no platform-side fallback.
+func (a *jwtAuth) verify(token string) error {
 	var c claims
 	_, err := jwt.ParseWithClaims(token, &c, a.jwks.Keyfunc,
 		jwt.WithValidMethods([]string{"EdDSA"}),
@@ -204,8 +240,9 @@ func (a *jwtAuth) authorize(r *http.Request) error {
 
 // serveConsole authorizes the request, upgrades to WebSocket, and pumps the pty.
 // Authorization happens BEFORE Accept: a bad credential never reaches the
-// upgrade, so unauthenticated callers get a plain HTTP rejection.
-func serveConsole(ctx context.Context, w http.ResponseWriter, r *http.Request, auth authenticator, originPatterns []string) {
+// upgrade, so unauthenticated callers get a plain HTTP rejection. managed is
+// newHandler's once-read mode marker, passed through to pumpSession.
+func serveConsole(ctx context.Context, w http.ResponseWriter, r *http.Request, auth authenticator, originPatterns []string, managed bool) {
 	if err := auth.authorize(r); err != nil {
 		var ae *authError
 		if errors.As(err, &ae) {
@@ -229,7 +266,7 @@ func serveConsole(ctx context.Context, w http.ResponseWriter, r *http.Request, a
 	defer conn.CloseNow()
 	conn.SetReadLimit(1 << 20) // 1 MiB: large pastes, well above the 32 KiB default
 
-	if err := pumpSession(ctx, conn, initialWinsize(r), predictAllowed(r)); err != nil {
+	if err := pumpSession(ctx, conn, initialWinsize(r), managed, predictAllowed(r)); err != nil {
 		conn.Close(websocket.StatusInternalError, "session ended")
 		return
 	}
@@ -291,6 +328,26 @@ func originHosts(v string) []string {
 		} else {
 			out = append(out, o)
 		}
+	}
+	return out
+}
+
+// frameAncestors parses the console-origins env into the list of origins
+// allowed to embed the managed terminal page. Unlike originHosts (which strips
+// to bare hosts for the WebSocket Origin check), this keeps the scheme, because
+// CSP host-sources are scheme-qualified. Empty falls back to the production
+// dashboard. Same env var (_ENVHAVEN_CONSOLE_ORIGINS), two parsers. The one
+// parse feeds both consumers: registerAPI takes the list as its CORS allowlist,
+// serveUI joins it into the CSP `frame-ancestors` header value.
+func frameAncestors(v string) []string {
+	var out []string
+	for _, o := range strings.Split(v, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			out = append(out, o)
+		}
+	}
+	if len(out) == 0 {
+		return []string{"https://envhaven.com"}
 	}
 	return out
 }

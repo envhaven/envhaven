@@ -64,10 +64,12 @@ type pumpConfig struct {
 	maxLife  time.Duration
 }
 
-// pumpSession starts the login shell on a pty and hands it to pump. On idle
-// timeout or the hard maximum lifetime, the socket closes cleanly and the
-// browser shows its manual reconnect button.
-func pumpSession(parent context.Context, conn *websocket.Conn, size *pty.Winsize, predict bool) error {
+// pumpSession starts the login shell on a pty and hands it to pump. managed is
+// the mode marker newHandler read ONCE at startup (main.go), threaded here so
+// the gate session can never fork from the mode switch. On idle timeout or the
+// hard maximum lifetime, the socket closes cleanly and the browser shows its
+// manual reconnect button.
+func pumpSession(parent context.Context, conn *websocket.Conn, size *pty.Winsize, managed, predict bool) error {
 	// The shell inherits the abc user from s6-setuidgid; we never set uid/gid
 	// here. `-l` makes it a login shell so it auto-attaches the tmux session,
 	// at parity with SSH and the IDE terminal.
@@ -75,7 +77,12 @@ func pumpSession(parent context.Context, conn *websocket.Conn, size *pty.Winsize
 	// terminal); predictive echo draws a client-side overlay and needs no
 	// custom terminfo.
 	cmd := exec.Command("zsh", "-l")
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	// gateSessionFor keeps the predict gate on the exact session the console
+	// renders (base envhaven for managed, the grouped console-view for self-host).
+	gateSession, extraEnv := gateSessionFor(managed)
+	env := append(os.Environ(), "TERM=xterm-256color")
+	env = append(env, extraEnv...)
+	cmd.Env = env
 	ptmx, err := pty.StartWithSize(cmd, size)
 	if err != nil {
 		return err
@@ -91,10 +98,24 @@ func pumpSession(parent context.Context, conn *websocket.Conn, size *pty.Winsize
 	}()
 	return pump(parent, conn, ptmx, pumpConfig{
 		predict:  predict,
-		paneSafe: paneSafe,
+		paneSafe: func(c context.Context) bool { return paneSafe(c, gateSession) },
 		idle:     idleTimeout,
 		maxLife:  hardMaxLife,
 	})
+}
+
+// gateSessionFor returns the tmux session the predict gate must watch, plus any
+// extra environment the login shell needs. The managed console attaches the base
+// `envhaven` session, where tmux.conf leaves the status bar off (the dashboard
+// Cockpit renders windows instead). The self-host console has no such UI, so it
+// shows the bar via its OWN grouped session (selfhostGateSession); welcome.sh
+// reads ENVHAVEN_CONSOLE_SESSION to build it. Either way the gate watches the
+// exact session the console renders, so the two can never diverge.
+func gateSessionFor(managed bool) (session string, extraEnv []string) {
+	if managed {
+		return tmuxSession, nil
+	}
+	return selfhostGateSession, []string{"ENVHAVEN_CONSOLE_SESSION=" + selfhostGateSession}
 }
 
 // pump bridges the pty and the WebSocket using the 0x00/0x01 wire protocol

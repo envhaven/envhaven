@@ -318,3 +318,17 @@ func TestPumpNoPredictFrames(t *testing.T) {
 		}
 	}
 }
+
+// TestGateSessionFor pins the mode->gate-session mapping (pump.go): managed watches
+// the base envhaven session with no extra env; self-host watches its own grouped
+// console-view and exports ENVHAVEN_CONSOLE_SESSION so envhaven-welcome.sh builds it.
+func TestGateSessionFor(t *testing.T) {
+	if s, env := gateSessionFor(true); s != tmuxSession || len(env) != 0 {
+		t.Errorf("gateSessionFor(true) = (%q, %v), want (%q, [])", s, env, tmuxSession)
+	}
+	s, env := gateSessionFor(false)
+	wantEnv := "ENVHAVEN_CONSOLE_SESSION=" + selfhostGateSession
+	if s != selfhostGateSession || len(env) != 1 || env[0] != wantEnv {
+		t.Errorf("gateSessionFor(false) = (%q, %v), want (%q, [%q])", s, env, selfhostGateSession, wantEnv)
+	}
+}

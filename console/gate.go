@@ -27,6 +27,12 @@ import (
 // session share its active window, so this pane is exactly what the console shows.
 const tmuxSession = "envhaven"
 
+// selfhostGateSession is the self-host console's own grouped view of that
+// session (pump.go exports it as ENVHAVEN_CONSOLE_SESSION and gates on it).
+// envhaven-welcome.sh keys off this EXACT value to build the grouped session,
+// so the value is frozen alongside tmuxSession.
+const selfhostGateSession = "console-view"
+
 // secretReaders is one coherent set: foreground commands whose keystroke echo we
 // cannot vouch for, because the character is either deliberately hidden or handled
 // on the far side of something we cannot see into. The ICANON test in isRawPane
@@ -66,12 +72,15 @@ var secretReaders = map[string]bool{
 // place to draw predicted keystrokes. It fails closed: any error (no tmux, no
 // session, a dead pane, copy-mode, an unreadable tty, a secret reader in the
 // foreground, or a canonical-mode prompt) yields false.
-func paneSafe(ctx context.Context) bool {
+func paneSafe(ctx context.Context, session string) bool {
 	c, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
 	// One field string, '|'-separated (no field can contain '|'): pts path,
-	// foreground command name, in-copy-mode flag, dead flag.
-	out, err := exec.CommandContext(c, "tmux", "display-message", "-p", "-t", tmuxSession,
+	// foreground command name, in-copy-mode flag, dead flag. The session is the one
+	// THIS console renders: base `envhaven` for the managed console, or the
+	// self-host console's own grouped view (which has its own current window). The
+	// safety logic below is identical regardless of which session we read.
+	out, err := exec.CommandContext(c, "tmux", "display-message", "-p", "-t", session,
 		"#{pane_tty}|#{pane_current_command}|#{pane_in_mode}|#{pane_dead}").Output()
 	if err != nil {
 		return false

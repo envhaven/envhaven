@@ -357,18 +357,17 @@ func TestLoginRateLimit(t *testing.T) {
 // serve, and that a missing asset is a clean 404 (not a panic or a directory
 // listing escape).
 func TestUIAndAssets(t *testing.T) {
-	sh := newTestSelfHost(t)
 	uw := httptest.NewRecorder()
-	sh.handleUI(uw, httptest.NewRequest(http.MethodGet, "/__console/ui", nil))
+	serveUI(uw, nil)
 	if uw.Code != http.StatusOK || !strings.Contains(uw.Body.String(), "EnvHaven Terminal") {
-		t.Fatalf("handleUI = %d, body missing the page", uw.Code)
+		t.Fatalf("serveUI = %d, body missing the page", uw.Code)
 	}
 	if ct := uw.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
-		t.Fatalf("handleUI content-type = %q, want text/html", ct)
+		t.Fatalf("serveUI content-type = %q, want text/html", ct)
 	}
 
 	h := assetsHandler()
-	for _, name := range []string{"xterm.js", "xterm.css", "addon-fit.js"} {
+	for _, name := range []string{"xterm.js", "xterm.css", "addon-fit.js", "jetbrains-mono-regular.woff2", "jetbrains-mono-bold.woff2"} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/__console/assets/"+name, nil))
 		if w.Code != http.StatusOK || w.Body.Len() == 0 {
@@ -382,17 +381,20 @@ func TestUIAndAssets(t *testing.T) {
 	}
 }
 
-// TestVendoredAssetsPristine pins the vendored xterm build byte-for-byte to
-// the upstream npm artifacts recorded in ui/assets/LICENSE (@xterm/xterm@6.0.0,
-// @xterm/addon-fit@0.11.0). terminal.html reaches into xterm internals for the
-// predictive-echo overlay, so a drifted or locally-edited bundle must fail
-// loudly here, never ship silently. When deliberately updating xterm: replace
-// the files, then update these hashes and the versions in ui/assets/LICENSE.
+// TestVendoredAssetsPristine pins the vendored assets byte-for-byte to the
+// upstream artifacts recorded in ui/assets/LICENSE (@xterm/xterm@6.0.0,
+// @xterm/addon-fit@0.11.0, JetBrains Mono v2.304). terminal.html reaches
+// into xterm internals for the predictive-echo overlay, so a drifted or locally-
+// edited bundle must fail loudly here, never ship silently. When deliberately
+// updating an asset: replace the files, then update these hashes and the
+// versions in ui/assets/LICENSE.
 func TestVendoredAssetsPristine(t *testing.T) {
 	want := map[string]string{
-		"ui/assets/xterm.js":     "14903579ff54664cd72f8e8699e6961a6272c21863ec1c3b118cdc8af5d4a972",
-		"ui/assets/xterm.css":    "854a7c0fb70e8b1a083c16797ab827299fb18744f5ad34f227b48337e33293c6",
-		"ui/assets/addon-fit.js": "ba3ea256ce0620a0992a197d6c9baea64823fc93d8da07a9e366ca9943c18527",
+		"ui/assets/xterm.js":                     "14903579ff54664cd72f8e8699e6961a6272c21863ec1c3b118cdc8af5d4a972",
+		"ui/assets/xterm.css":                    "854a7c0fb70e8b1a083c16797ab827299fb18744f5ad34f227b48337e33293c6",
+		"ui/assets/addon-fit.js":                 "ba3ea256ce0620a0992a197d6c9baea64823fc93d8da07a9e366ca9943c18527",
+		"ui/assets/jetbrains-mono-regular.woff2": "a9cb1cd82332b23a47e3a1239d25d13c86d16c4220695e34b243effa999f45f2",
+		"ui/assets/jetbrains-mono-bold.woff2":    "c503cc5ec5f8b2c7666b7ecda1adf44bd45f2e6579b2eba0fc292150416588a2",
 	}
 	for name, hash := range want {
 		b, err := assetsFS.ReadFile(name)

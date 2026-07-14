@@ -1,0 +1,42 @@
+{
+  "tools": [
+    {
+      "id": "alpha",
+      "name": "Alpha",
+      "command": "sh",
+      "authCommand": null,
+      "description": "Alpha tool",
+      "docsUrl": "https://example.com/alpha",
+      "envVars": ["ALPHA_KEY"],
+      "setupSteps": [],
+      "installed": true,
+      "authStatus": "ready",
+      "connectedVia": "ALPHA_KEY"
+    },
+    {
+      "id": "beta",
+      "name": "Beta",
+      "command": "envhaven-absent-cmd-xyz",
+      "authCommand": "beta login",
+      "description": "Beta tool",
+      "docsUrl": "https://example.com/beta",
+      "envVars": ["BETA_KEY"],
+      "setupSteps": [{ "instruction": "Run beta init", "command": "beta init" }],
+      "installed": false,
+      "authStatus": "needs-auth",
+      "connectedVia": null
+    }
+  ],
+  "envVarMeta": {
+    "ALPHA_KEY": {
+      "placeholder": "alpha-...",
+      "hint": "Alpha key hint",
+      "url": "https://example.com/alpha-key"
+    },
+    "BETA_KEY": {
+      "placeholder": "beta-...",
+      "hint": "Beta key hint",
+      "url": null
+    }
+  }
+}
