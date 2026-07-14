@@ -1,0 +1,21 @@
+#!/usr/bin/with-contenv bash
+
+# Managed VMs provisioned before 2026-04 pass the platform vars without the
+# _ prefix, and their container start scripts are frozen at provision time.
+# Canonicalize the container environment here so every consumer (console,
+# extension, init scripts) reads exactly one name: _ENVHAVEN_*. Any new
+# consumer of these vars must also declare dependencies.d/init-env-compat
+# in the Dockerfile so it cannot start before this runs.
+cd /run/s6/container_environment || exit 1
+
+copied=0
+for var in WORKSPACE_ID WORKSPACE_NAME PUBLIC_URL PREVIEW_URL API_URL WORKSPACE_TOKEN; do
+    if [ -f "ENVHAVEN_${var}" ] && [ ! -f "_ENVHAVEN_${var}" ]; then
+        cp "ENVHAVEN_${var}" "_ENVHAVEN_${var}"
+        copied=$((copied + 1))
+    fi
+done
+
+if [ "$copied" -gt 0 ]; then
+    echo "env-compat: canonicalized ${copied} legacy ENVHAVEN_* var(s)"
+fi

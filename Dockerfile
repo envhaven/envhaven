@@ -181,7 +181,8 @@ RUN mkdir -p /app/pre-installed-extensions && \
 # ============================================
 # s6 Services
 # ============================================
-RUN mkdir -p /etc/s6-overlay/s6-rc.d/init-extensions/dependencies.d \
+RUN mkdir -p /etc/s6-overlay/s6-rc.d/init-env-compat/dependencies.d \
+             /etc/s6-overlay/s6-rc.d/init-extensions/dependencies.d \
              /etc/s6-overlay/s6-rc.d/init-vscode-settings/dependencies.d \
              /etc/s6-overlay/s6-rc.d/init-agents-md/dependencies.d \
              /etc/s6-overlay/s6-rc.d/init-agent-config/dependencies.d \
@@ -192,6 +193,7 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/init-extensions/dependencies.d \
              /etc/s6-overlay/s6-rc.d/svc-console/dependencies.d \
              /etc/s6-overlay/s6-rc.d/user/contents.d
 
+COPY runtime/scripts/init-env-compat-run /etc/s6-overlay/s6-rc.d/init-env-compat/run
 COPY runtime/scripts/init-extensions-run /etc/s6-overlay/s6-rc.d/init-extensions/run
 COPY runtime/scripts/init-vscode-settings-run /etc/s6-overlay/s6-rc.d/init-vscode-settings/run
 COPY runtime/scripts/init-agents-md-run /etc/s6-overlay/s6-rc.d/init-agents-md/run
@@ -203,7 +205,7 @@ COPY runtime/scripts/svc-cloudflared-run /etc/s6-overlay/s6-rc.d/svc-cloudflared
 COPY runtime/scripts/svc-console-run /etc/s6-overlay/s6-rc.d/svc-console/run
 COPY runtime/scripts/svc-console-finish /etc/s6-overlay/s6-rc.d/svc-console/finish
 
-RUN for svc in init-extensions init-vscode-settings init-agents-md init-agent-config init-user-config init-zsh-config; do \
+RUN for svc in init-env-compat init-extensions init-vscode-settings init-agents-md init-agent-config init-user-config init-zsh-config; do \
         echo "oneshot" > /etc/s6-overlay/s6-rc.d/$svc/type && \
         echo "/etc/s6-overlay/s6-rc.d/$svc/run" > /etc/s6-overlay/s6-rc.d/$svc/up && \
         chmod +x /etc/s6-overlay/s6-rc.d/$svc/run && \
@@ -222,6 +224,9 @@ RUN for svc in init-extensions init-vscode-settings init-agents-md init-agent-co
     chmod +x /etc/s6-overlay/s6-rc.d/svc-console/finish && \
     touch /etc/s6-overlay/s6-rc.d/svc-console/dependencies.d/init-user-config && \
     touch /etc/s6-overlay/s6-rc.d/svc-console/dependencies.d/init-zsh-config && \
+    touch /etc/s6-overlay/s6-rc.d/svc-console/dependencies.d/init-env-compat && \
+    touch /etc/s6-overlay/s6-rc.d/init-agents-md/dependencies.d/init-env-compat && \
+    touch /etc/s6-overlay/s6-rc.d/svc-code-server/dependencies.d/init-env-compat && \
     touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-console
 
 # ============================================
