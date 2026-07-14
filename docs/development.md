@@ -18,6 +18,9 @@ Access at `http://localhost:8443` (password: `test`)
 - Docker 20.10+
 - Git
 - [Bun](https://bun.sh) 1.1+ (for extension, CLI, and dev TUI)
+- An x86-64 CPU with AVX2 (Intel Haswell 2013+ / AMD Zen+). Some bundled AI CLIs ship
+  binaries that require it; on older CPUs they die with `Illegal instruction`, which
+  also fails the image build's tool verification.
 
 ## Development TUI (`eh`)
 
@@ -154,7 +157,7 @@ bun dev/scripts/test-extension.ts
 cd console && go vet ./... && go test -race -count=1 ./...
 ```
 
-CI runs the same on every pull request. The suite covers both auth modes (platform JWT and web password), the session pump wire protocol, and pins the vendored xterm assets byte-for-byte (see `console/ui/assets/LICENSE`).
+CI runs the same on every pull request. The suite covers both auth modes (platform JWT and web password), the session pump wire protocol, the HTTP API guard and its CORS behavior, the tmux action allowlist, page framing (CSP `frame-ancestors` and `X-Frame-Options`), the skills domain (`console/skills.go` + `skills_test.go`), and pins the vendored xterm assets byte-for-byte (see `console/ui/assets/LICENSE`). The `/tools` and `/skills` wire shapes are pinned by `console/testdata/*.golden.json`, which the extension's `bun test` also reads for its conformance check, so a change on either side of that contract fails a test.
 
 ## Project Structure
 
@@ -225,8 +228,8 @@ Based on `linuxserver/code-server:latest`:
 2. **Tool directory** - `/opt/envhaven/bin` (survives `/config` mount)
 3. **mise** - Manages Node.js, Bun, Python, Go, and some AI tools (opencode, goose)
 4. **Rust** - Installed via rustup (cargo, rustc)
-5. **uv** - Python tool installer (aider, vibe)
-6. **AI Tools** - npm globals (claude, codex, gemini, qwen, amp, auggie) + standalone installers (kiro, droid)
+5. **uv** - Python tool installer (aider, vibe, hermes)
+6. **AI Tools** - npm globals (codex, gemini, qwen, amp, auggie, pi, openclaw) + standalone installers (claude, kiro, droid)
 7. **VS Code Extension** - Pre-installed to `/app/pre-installed-extensions`
 8. **s6-overlay Services** - Init scripts from `runtime/scripts/`
 
@@ -312,7 +315,7 @@ Scripts in `runtime/scripts/` run at container startup via s6-overlay:
 | `init-vscode-settings-run` | Apply VS Code settings |
 | `init-agents-md-run` | Generate AGENTS.md |
 | `init-agent-config-run` | Seed AI agent configs (Claude, Codex) |
-| `init-user-config-run` | Configure git, SSH, and user shell |
+| `init-user-config-run` | Configure git, SSH, and user shell; create `/config/artifacts` |
 | `init-zsh-config-run` | Configure zsh |
 | `svc-sshd-run` | Run SSH daemon |
 | `svc-cloudflared-run` | Cloudflare tunnel (if `CLOUDFLARE_TUNNEL_TOKEN` set) |
@@ -322,7 +325,7 @@ User-facing scripts (installed to `/opt/envhaven/bin/`):
 
 | Script | Command | Purpose |
 |--------|---------|---------|
-| `envhaven-status` | `envhaven` | Full status display |
+| `envhaven-status` | `envhaven` | Workspace status banner |
 | `envhaven-welcome.sh` | - | Shell init (auto-attach) |
 
 ## GitHub Actions

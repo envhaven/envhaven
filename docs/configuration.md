@@ -35,13 +35,13 @@ Set the key(s) for the tools you use. This is the complete list of recognized va
 
 | Variable | Notes |
 |----------|-------|
-| `ANTHROPIC_API_KEY` | `sk-ant-...` — Claude Code, OpenCode, Aider, Goose |
+| `ANTHROPIC_API_KEY` | `sk-ant-...` — Claude Code, OpenCode, Pi, OpenClaw, Hermes Agent, Aider, Goose |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Use a Claude subscription instead of a key (`claude setup-token`) |
-| `OPENAI_API_KEY` | `sk-...` — Codex, OpenCode, Aider, Goose, Qwen Code |
-| `GEMINI_API_KEY` | Gemini CLI, OpenCode, Aider |
-| `GOOGLE_API_KEY` | Alias for Gemini access (Gemini CLI, OpenCode) |
+| `OPENAI_API_KEY` | `sk-...` — Codex, OpenCode, Pi, OpenClaw, Hermes Agent, Aider, Goose, Qwen Code |
+| `GEMINI_API_KEY` | Gemini CLI, OpenCode, Pi, OpenClaw, Hermes Agent, Aider |
+| `GOOGLE_API_KEY` | Alias for Gemini access (Gemini CLI, OpenCode, Pi, OpenClaw, Hermes Agent) |
 | `MISTRAL_API_KEY` | Mistral Vibe |
-| `OPENROUTER_API_KEY` | Aider (OpenRouter models) |
+| `OPENROUTER_API_KEY` | Aider, Hermes Agent (OpenRouter models) |
 | `AMP_API_KEY` | Amp |
 | `AUGMENT_SESSION_AUTH` | Augment (`auggie token print`) |
 | `FACTORY_API_KEY` | Factory Droid |
@@ -161,7 +161,7 @@ environment:
 
 ## Browser Terminal
 
-Alongside the VS Code IDE, the container serves a standalone browser terminal on port **7681**. It is a full xterm.js terminal attached to the same shared tmux session as SSH and the IDE's integrated terminal, so a session you start in one place shows up in the others.
+Alongside the VS Code IDE, the container serves a standalone browser terminal on port **7681**. It is a full xterm.js terminal attached to the same tmux windows as SSH and the IDE's integrated terminal, so a session you start in one place shows up in the others.
 
 The terminal reuses your web password. It is gated by the same `PASSWORD` or `HASHED_PASSWORD` you already set for the IDE: log in once and the page connects. If you set neither, the terminal disables itself and port 7681 never opens, so a passwordless container never exposes a shell.
 
@@ -176,7 +176,20 @@ Then visit `http://<host>:7681/` and enter your web password.
 
 > **Put TLS in front.** The login submits your password and the terminal carries live shell traffic, so run port 7681 behind the same HTTPS reverse proxy or tunnel you use for the IDE. Over plain HTTP the password and session ride the wire in the clear, exactly as they would for code-server itself.
 
-Briefly, how the auth works: a successful login sets a `SameSite=Strict`, `HttpOnly` session cookie scoped to `/__console`, valid for 12 hours. The page exchanges that cookie for a 60-second token and presents the token when it opens the WebSocket. The password never crosses the socket, and rotating it invalidates every issued cookie and token.
+Briefly, how the auth works: a successful login sets a `SameSite=Strict`, `HttpOnly` session cookie scoped to `/__console`, valid for 12 hours. The page exchanges that cookie for a 60-second token and presents the token when it opens the WebSocket. The password never crosses the socket, and rotating it invalidates every issued cookie and token. The same token also authenticates the console HTTP API below.
+
+### Console API
+
+The console port also serves a small HTTP API under `/__console/`, used by the extension sidebar and the managed dashboard. Every route requires the same `Authorization: Bearer` token the WebSocket presents; there is no separate credential.
+
+- `GET /__console/stats`: CPU, RAM, disk, tmux windows, preview-port status
+- `GET|POST /__console/tools`: the AI-tool catalog with per-tool install and auth status; `POST` sets an API key or signs a tool out
+- `GET|POST|DELETE /__console/env`: names of dashboard-managed env vars (never their values); `POST` sets one, `DELETE` removes one
+- `GET|POST /__console/skills`: installed list, registry search, install/remove; `GET /__console/skills/markdown` and `.../skills/local` fetch a skill's SKILL.md
+- `GET|POST|DELETE /__console/artifacts`: list, upload, delete files in `/config/artifacts`; `GET /__console/artifacts/raw` downloads one
+- `POST /__console/action`: tmux actions, fixed allowlist: `launch`, `connect`, `new-window`, `select-window`, `kill-window`, `insert-path`
+
+Self-hosted, the API never sets `Access-Control-Allow-Origin`, so browsers can call it same-origin only; a CORS allowlist exists solely for the managed dashboard's origins. The self-host terminal page also refuses to be embedded (`X-Frame-Options: DENY`); open it top-level.
 
 ### Predictive echo
 
@@ -192,7 +205,7 @@ Predictive echo is built to stay away from secrets, and it fails toward caution.
 
 One honest caveat. A program that draws its own masked password field while keeping the terminal in a mode indistinguishable from a normal editor, and that is not on the server's known-reader list, can have a typed character painted for a moment before the mask catches up. The list covers the common cases; if that residual risk matters for your threat model, leave predictive echo off.
 
-Setting `ENVHAVEN_SKIP_WELCOME=1` disables predictive echo entirely. The safety gate watches the shared tmux session that shells normally auto-attach, and skipping the attach breaks that link, so the server refuses to predict rather than vouch for a pane it may not be showing.
+Setting `ENVHAVEN_SKIP_WELCOME=1` disables predictive echo entirely. The safety gate watches the tmux session the console renders (its own `console-view` grouped session when self-hosting; the shared `envhaven` session on managed hosting), and skipping the auto-attach breaks that link, so the server refuses to predict rather than vouch for a pane it may not be showing.
 
 ## Bundled Developer Tools
 
@@ -220,6 +233,7 @@ RUN apt-get update && apt-get install -y neovim && rm -rf /var/lib/apt/lists/*
 |------|-------------|
 | `/config` | All persistent data (workspace, settings, extensions, SSH keys) |
 | `/config/workspace` | Your project files |
+| `/config/artifacts` | Drop folder for agent deliverables; the managed dashboard's Artifacts pane lists it |
 
 ## Ports
 

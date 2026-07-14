@@ -1,23 +1,26 @@
 # AI Tools Guide
 
-EnvHaven includes 12 CLI-based AI coding assistants pre-installed and ready to use.
+EnvHaven includes 15 CLI-based AI agents pre-installed and ready to use.
 
 ## Available Tools
 
 | Tool | Command | Description | API Key / Auth |
 |------|---------|-------------|----------------|
-| **OpenCode** | `opencode` | SST's autonomous coding agent | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` |
 | **Claude Code** | `claude` | Anthropic's official CLI | `ANTHROPIC_API_KEY` or `/login` in CLI |
-| **Aider** | `aider` | AI pair programming | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, or `OPENROUTER_API_KEY` |
 | **Codex** | `codex` | OpenAI's coding agent | `OPENAI_API_KEY` or ChatGPT login |
 | **Gemini CLI** | `gemini` | Google's AI in terminal | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
+| **OpenCode** | `opencode` | SST's autonomous coding agent | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` |
+| **Pi** | `pi` | Minimal extensible coding agent | Provider API keys or `/login` in CLI |
+| **OpenClaw** | `openclaw` | Personal AI assistant gateway | Provider API keys or `openclaw onboard` |
+| **Hermes Agent** | `hermes` | Self-improving agent from Nous Research | Provider API keys or `hermes setup` |
 | **Goose** | `goose` | Block's developer agent | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` (run `goose configure`) |
-| **Mistral Vibe** | `vibe` | Powered by Devstral | `MISTRAL_API_KEY` |
+| **Aider** | `aider` | AI pair programming | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, or `OPENROUTER_API_KEY` |
 | **Qwen Code** | `qwen` | Alibaba's coding assistant | `QWEN_API_KEY` or `OPENAI_API_KEY` (compatible endpoint) |
-| **Amp** | `amp` | Sourcegraph's coding agent | `AMP_API_KEY` or `amp login` |
-| **Augment** | `auggie` | Context-aware coding agent | Browser login via `auggie login` |
-| **Kiro** | `kiro-cli` | AWS-powered AI CLI | Browser login (GitHub/Google/AWS Builder ID) |
+| **Mistral Vibe** | `vibe` | Powered by Devstral | `MISTRAL_API_KEY` |
 | **Factory Droid** | `droid` | Factory's AI agent | Browser login or `FACTORY_API_KEY` |
+| **Kiro** | `kiro-cli` | AWS-powered AI CLI | Browser login (GitHub/Google/AWS Builder ID) |
+| **Amp** | `amp` | Frontier coding agent | `AMP_API_KEY` or `amp login` |
+| **Augment** | `auggie` | Context-aware coding agent | Browser login via `auggie login` |
 
 ## API Key Configuration
 
@@ -49,12 +52,12 @@ The EnvHaven extension in the VS Code sidebar provides a UI for setting API keys
 
 | API Key | Tools |
 |---------|-------|
-| `ANTHROPIC_API_KEY` | Claude Code, OpenCode, Aider, Goose |
+| `ANTHROPIC_API_KEY` | Claude Code, OpenCode, Pi, OpenClaw, Hermes Agent, Aider, Goose |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code (subscription auth) |
-| `OPENAI_API_KEY` | Codex, OpenCode, Aider, Goose, Qwen Code |
-| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Gemini CLI, OpenCode, Aider |
+| `OPENAI_API_KEY` | Codex, OpenCode, Pi, OpenClaw, Hermes Agent, Aider, Goose, Qwen Code |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Gemini CLI, OpenCode, Pi, OpenClaw, Hermes Agent, Aider |
 | `MISTRAL_API_KEY` | Mistral Vibe |
-| `OPENROUTER_API_KEY` | Aider |
+| `OPENROUTER_API_KEY` | Aider, Hermes Agent |
 | `AMP_API_KEY` | Amp |
 | `AUGMENT_SESSION_AUTH` | Augment |
 | `FACTORY_API_KEY` | Factory Droid |
@@ -125,6 +128,27 @@ codex
 ```bash
 gemini
 # Select auth method on first run
+```
+
+### Pi
+
+```bash
+pi
+# Type /login to authenticate, or set a provider API key
+```
+
+### OpenClaw
+
+```bash
+openclaw onboard  # First time setup
+openclaw          # Start the assistant
+```
+
+### Hermes Agent
+
+```bash
+hermes setup  # First time setup
+hermes        # Start coding
 ```
 
 ### Goose
@@ -243,6 +267,9 @@ See [cli/README.md](../cli/README.md) for full documentation.
 
 - [OpenCode Docs](https://opencode.ai/docs)
 - [Claude Code Docs](https://docs.anthropic.com/en/docs/claude-code)
+- [Pi Docs](https://pi.dev/docs/latest)
+- [OpenClaw Docs](https://docs.openclaw.ai)
+- [Hermes Agent Docs](https://hermes-agent.nousresearch.com/docs)
 - [Aider Docs](https://aider.chat/docs)
 - [Codex CLI](https://github.com/openai/codex)
 - [Gemini CLI](https://github.com/google-gemini/gemini-cli)

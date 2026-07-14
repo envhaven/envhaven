@@ -162,7 +162,7 @@ Scripts in `runtime/scripts/` run at container startup via s6-overlay:
 | `init-vscode-settings-run` | Apply VS Code settings |
 | `init-agents-md-run` | Generate AGENTS.md |
 | `init-agent-config-run` | Seed AI agent configs (Claude, Codex) |
-| `init-user-config-run` | Configure git, SSH, user shell |
+| `init-user-config-run` | Configure git, SSH, user shell; create `/config/artifacts` |
 | `init-zsh-config-run` | Configure zsh |
 | `svc-sshd-run` | Run SSH daemon |
 | `svc-cloudflared-run` | Cloudflare tunnel (if `CLOUDFLARE_TUNNEL_TOKEN` set) |
@@ -172,7 +172,7 @@ User-facing scripts in `runtime/scripts/` (installed to `/opt/envhaven/bin/`):
 
 | Script | Purpose |
 |--------|---------|
-| `envhaven-status` | Full status display (`envhaven` command) |
+| `envhaven-status` | Workspace status banner (`envhaven` command) |
 | `envhaven-welcome.sh` | Shell init (auto-attach to tmux) |
 
 ### Templates

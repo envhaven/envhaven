@@ -40,7 +40,7 @@ Give autonomous agents full access in a containerized environment. If they break
 Start Claude Code on your laptop, close the lid, resume from your desktop—same session, same state. Your AI agents and dev servers keep running while you're away. Come back from any device.
 
 🌲 **Evergreen AI Tooling**
-The landscape moves too fast to manage manually. EnvHaven ships with 12+ AI CLI tools (Claude Code, OpenCode, Aider, Codex, Gemini CLI, Goose, Mistral Vibe, etc.) built-in and ready to run.
+The landscape moves too fast to manage manually. EnvHaven ships with 15+ AI CLI tools (Claude Code, OpenCode, Aider, Codex, Gemini CLI, Goose, Mistral Vibe, etc.) built-in and ready to run.
 
 🌐 **Instant Public URLs** *(Managed only)*
 Every managed workspace gets a wildcard `*.envhaven.app` domain. Deploy a web app, webhook receiver, or Discord bot—live instantly. No ngrok, no tunnels, no DNS.
@@ -50,7 +50,7 @@ Unlike ephemeral environments (Codespaces) or walled gardens (Replit), EnvHaven 
 
 ⚡ **Open Model**
 - **Self-Hosted**: Free forever, open-source Docker image and CLI. Run it on your own server.
-- **Managed** ($10/mo): Zero-config hosting with custom domains, always-on workspaces, and no DevOps.
+- **Managed** (from $12/mo): Zero-config hosting with custom domains, always-on workspaces, and no DevOps.
 
 ---
 
@@ -122,18 +122,21 @@ You can also provide your own keys via env vars (`-e ANTHROPIC_API_KEY=...`) or 
 
 | Tool | Command | Description |
 |------|---------|-------------|
-| **OpenCode** | `opencode` | SST's autonomous coding agent |
 | **Claude Code** | `claude` | Anthropic's official CLI |
-| **Aider** | `aider` | AI pair programming |
 | **Codex** | `codex` | OpenAI's coding agent |
 | **Gemini CLI** | `gemini` | Google's AI in terminal |
+| **OpenCode** | `opencode` | SST's autonomous coding agent |
+| **Pi** | `pi` | Minimal extensible coding agent |
+| **OpenClaw** | `openclaw` | Personal AI assistant gateway |
+| **Hermes Agent** | `hermes` | Self-improving agent from Nous Research |
 | **Goose** | `goose` | Block's developer agent |
-| **Mistral Vibe** | `vibe` | Powered by Devstral |
+| **Aider** | `aider` | AI pair programming |
 | **Qwen Code** | `qwen` | Alibaba's coding assistant |
-| **Amp** | `amp` | Sourcegraph's coding agent |
-| **Augment** | `auggie` | Context-aware coding agent |
-| **Kiro** | `kiro-cli` | AWS-powered AI CLI |
+| **Mistral Vibe** | `vibe` | Powered by Devstral |
 | **Factory Droid** | `droid` | Factory's AI agent |
+| **Kiro** | `kiro-cli` | AWS-powered AI CLI |
+| **Amp** | `amp` | Frontier coding agent |
+| **Augment** | `auggie` | Context-aware coding agent |
 
 ### Zero-Friction Permissions
 
@@ -263,7 +266,7 @@ See [Configuration Reference](docs/configuration.md) for all SSH options.
 
 ## Documentation
 
-- **[AI Tools Guide](docs/ai-tools.md)** — Setup guides, API keys, and usage examples for all 12+ AI coding tools
+- **[AI Tools Guide](docs/ai-tools.md)** — Setup guides, API keys, and usage examples for all 15+ AI coding tools
 - **[Configuration Reference](docs/configuration.md)** — Complete env vars, SSH setup, bundled tools, and compose examples
 - **[Development Guide](docs/development.md)** — Building from source, testing, and contributing
 - **[Haven CLI](cli/README.md)** — CLI source and architecture
