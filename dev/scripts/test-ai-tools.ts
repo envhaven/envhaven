@@ -1,25 +1,12 @@
 #!/usr/bin/env bun
-import { $ } from 'bun';
 import { loadConfig, log, formatTestSummary, dockerExec, isContainerRunning } from './lib';
+import toolDefs from '../../tool-definitions.json';
 
 const config = loadConfig();
 
-// AI tools with their verification commands
-// These must match the tools installed in the Dockerfile
-const AI_TOOLS = [
-  { name: 'OpenCode', cmd: 'opencode --version' },
-  { name: 'Claude Code', cmd: 'claude --version' },
-  { name: 'Aider', cmd: 'aider --version' },
-  { name: 'Codex', cmd: 'codex --version' },
-  { name: 'Gemini CLI', cmd: 'gemini --version' },
-  { name: 'Goose', cmd: 'goose --version' },
-  { name: 'Vibe', cmd: 'vibe --version' },
-  { name: 'Qwen', cmd: 'qwen --version' },
-  { name: 'Kiro CLI', cmd: 'kiro-cli --version' },
-  { name: 'Factory Droid', cmd: 'droid --version' },
-  { name: 'Amp', cmd: 'amp --version' },
-  { name: 'Auggie', cmd: 'auggie --version' },
-];
+// Derived from the catalog, like the Dockerfile verification block and
+// test-image.ts — the roster has one source of truth.
+const AI_TOOLS = toolDefs.tools.map(({ name, command }) => ({ name, cmd: `${command} --version` }));
 
 async function runTests() {
   log.header('AI Coding Tools Verification');

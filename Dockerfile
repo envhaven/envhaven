@@ -124,12 +124,19 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no
 ENV UV_TOOL_DIR="/opt/envhaven/uv-tools"
 ENV UV_TOOL_BIN_DIR="/opt/envhaven/bin"
 ENV PATH="/opt/envhaven/bin:$PATH"
-RUN uv tool install aider-chat && uv tool install mistral-vibe
+# User-space overrides win: /config is the mounted volume, so anything a user (or a
+# tool's self-updater, e.g. Claude Code's) installs into /config/.local/bin shadows
+# the image-baked copy and persists across restarts. Empty at build time.
+ENV PATH="/config/.local/bin:$PATH"
+# Python CLI agents via uv: aider, mistral-vibe, hermes-agent (Nous Research's Hermes)
+RUN uv tool install aider-chat && uv tool install mistral-vibe && uv tool install hermes-agent
 
 RUN npm install -g pnpm yarn
-RUN npm install -g @anthropic-ai/claude-code
 RUN npm install -g @openai/codex @google/gemini-cli @qwen-code/qwen-code
-RUN npm install -g @sourcegraph/amp @augmentcode/auggie
+RUN npm install -g @ampcode/cli @augmentcode/auggie
+# Pi's docs prescribe --ignore-scripts (the package needs no install scripts)
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+RUN npm install -g openclaw
 
 # ============================================
 # Playwright (Chromium only for browser automation)
@@ -142,6 +149,14 @@ RUN curl -fsSL https://cli.kiro.dev/install | bash && \
     mv /config/.local/bin/kiro* /opt/envhaven/bin/ 2>/dev/null || true
 RUN curl -fsSL https://app.factory.ai/cli | sh && \
     mv /config/.local/bin/droid /opt/envhaven/bin/ 2>/dev/null || true
+# Claude Code via its native installer: versioned binaries plus an atomic symlink flip
+# (.local/share/claude/versions/<v> ← .local/bin/claude), so an interrupted self-update
+# can never orphan the launcher — the npm-global install this replaces bricked its mise
+# shim exactly that way when an update died between npm's delete and rename. At runtime
+# the updater writes new versions under /config/.local (first on PATH), so updates
+# apply per-workspace and persist; this baked copy is the always-working baseline.
+RUN HOME=/opt/envhaven/claude-home bash -o pipefail -c 'curl -fsSL https://claude.ai/install.sh | bash -s -- stable' && \
+    ln -s /opt/envhaven/claude-home/.local/bin/claude /opt/envhaven/bin/claude
 
 # In-container console server (loopback terminal behind the /__console tunnel rule)
 COPY --from=console-builder /out/envhaven-console /opt/envhaven/bin/envhaven-console
@@ -242,12 +257,12 @@ RUN WORKBENCH_HTML="/app/code-server/lib/vscode/out/vs/code/browser/workbench/wo
     sed -i 's/content="Code"/content="EnvHaven"/' "$WORKBENCH_HTML" && \
     sed -i 's|href="{{BASE}}/_static/src/browser/media/favicon-dark-support.svg"|href="{{BASE}}/_static/src/browser/media/favicon.png"|' "$WORKBENCH_HTML" && \
     sed -i 's|href="{{BASE}}/_static/src/browser/media/favicon.ico" type="image/x-icon"|href="{{BASE}}/_static/src/browser/media/favicon.png" type="image/png"|' "$WORKBENCH_HTML" && \
-    sed -i '/<meta charset="utf-8"/a \    <meta name="description" content="Your AI agent workspace. 12+ coding tools built-in. Full filesystem access." />' "$WORKBENCH_HTML" && \
+    sed -i '/<meta charset="utf-8"/a \    <meta name="description" content="Your AI agent workspace. 15+ coding tools built-in. Full filesystem access." />' "$WORKBENCH_HTML" && \
     LOGIN_HTML="/app/code-server/src/browser/pages/login.html" && \
     sed -i 's|href="{{CS_STATIC_BASE}}/src/browser/media/favicon-dark-support.svg"|href="{{CS_STATIC_BASE}}/src/browser/media/favicon.png"|' "$LOGIN_HTML" && \
     sed -i 's|href="{{CS_STATIC_BASE}}/src/browser/media/favicon.ico"|href="{{CS_STATIC_BASE}}/src/browser/media/favicon.png"|' "$LOGIN_HTML" && \
     VSCODE_JS="/app/code-server/out/node/routes/vscode.js" && \
-    sed -i 's|Run Code on a remote server.|Your AI agent workspace. 12+ coding tools built-in.|' "$VSCODE_JS"
+    sed -i 's|Run Code on a remote server.|Your AI agent workspace. 15+ coding tools built-in.|' "$VSCODE_JS"
 
 # ============================================
 # Templates & Defaults
@@ -268,6 +283,7 @@ COPY runtime/templates/claude-config.json /defaults/claude-config.json
 COPY runtime/templates/codex-config.toml /defaults/codex-config.toml
 COPY runtime/scripts/bashrc-additions /defaults/bashrc-additions
 COPY runtime/scripts/zshrc-additions /defaults/zshrc-additions
+COPY runtime/templates/envhaven.zsh-theme /defaults/envhaven.zsh-theme
 RUN chmod +x /defaults/envhaven-welcome.sh /opt/envhaven/bin/envhaven /opt/envhaven/bin/envhaven-version-check /opt/envhaven/bin/tmux-copy-hint /opt/envhaven/bin/claude-auth-helper
 
 # ============================================
@@ -306,6 +322,9 @@ VOLUME /config
 # ============================================
 # Verification
 # ============================================
+# AI tools verify from tool-definitions.json, so the roster cannot drift from it. The
+# count floor fails the build when jq errors or the list is empty — a bare pipe exits 0
+# having tested nothing (the project's "no pipe-masked exits" rule).
 RUN node --version && \
     python3 --version && \
     go version && \
@@ -313,11 +332,8 @@ RUN node --version && \
     bun --version && \
     gh --version && \
     fd --version && \
-    opencode --version && \
-    aider --version && \
-    goose --version && \
-    kiro-cli --version && \
-    droid --version && \
+    [ "$(jq -r '.tools | length' /opt/envhaven/tool-definitions.json)" -ge 12 ] && \
+    jq -r '.tools[].command' /opt/envhaven/tool-definitions.json | while read -r cmd; do "$cmd" --version || exit 1; done && \
     ([ "$INSTALL_DOCKER" != "true" ] || docker --version) && \
     ffmpeg -version && \
     playwright --version && \

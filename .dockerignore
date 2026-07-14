@@ -8,10 +8,13 @@
 # Documentation (not needed in image)
 docs/
 *.md
-!templates/*.md
+
+# Dependencies (reinstalled in-image from lockfiles; never copied from context)
+# `**` matches any number of directories INCLUDING ZERO, so this one pattern
+# also covers a root-level node_modules.
+**/node_modules
 
 # Extension build artifacts (source is copied, not artifacts)
-extension/node_modules
 extension/out
 extension/*.vsix
 

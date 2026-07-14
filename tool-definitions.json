@@ -1,19 +1,6 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "description": "Single source of truth for AI tool definitions. Used by both extension and runtime scripts.",
+  "description": "Single source of truth for AI tool definitions. Consumed by the Go console (console/tools.go), the VS Code extension, and runtime scripts.",
   "tools": [
-    {
-      "id": "opencode",
-      "name": "OpenCode",
-      "command": "opencode",
-      "authCommand": "opencode providers login",
-      "description": "AI coding agent from SST",
-      "docsUrl": "https://opencode.ai/docs",
-      "envVars": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"],
-      "authFiles": [".local/share/opencode/auth.json"],
-      "skillsAgent": "opencode",
-      "setupSteps": []
-    },
     {
       "id": "claude",
       "name": "Claude Code",
@@ -24,18 +11,6 @@
       "envVars": ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
       "authFiles": [".claude/.credentials.json"],
       "skillsAgent": "claude-code",
-      "setupSteps": []
-    },
-    {
-      "id": "gemini",
-      "name": "Gemini CLI",
-      "command": "gemini",
-      "authCommand": "gemini",
-      "description": "Google's AI in your terminal",
-      "docsUrl": "https://github.com/google-gemini/gemini-cli",
-      "envVars": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-      "authFiles": [".gemini/oauth_creds.json", ".gemini/settings.json"],
-      "skillsAgent": "gemini-cli",
       "setupSteps": []
     },
     {
@@ -51,14 +26,63 @@
       "setupSteps": []
     },
     {
-      "id": "aider",
-      "name": "Aider",
-      "command": "aider",
-      "authCommand": null,
-      "description": "AI pair programming",
-      "docsUrl": "https://aider.chat",
-      "envVars": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY"],
-      "authFiles": [],
+      "id": "gemini",
+      "name": "Gemini CLI",
+      "command": "gemini",
+      "authCommand": "gemini",
+      "description": "Google's AI in your terminal",
+      "docsUrl": "https://github.com/google-gemini/gemini-cli",
+      "envVars": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+      "authFiles": [".gemini/oauth_creds.json", ".gemini/settings.json"],
+      "skillsAgent": "gemini-cli",
+      "setupSteps": []
+    },
+    {
+      "id": "opencode",
+      "name": "OpenCode",
+      "command": "opencode",
+      "authCommand": "opencode providers login",
+      "description": "AI coding agent from SST",
+      "docsUrl": "https://opencode.ai/docs",
+      "envVars": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"],
+      "authFiles": [".local/share/opencode/auth.json"],
+      "skillsAgent": "opencode",
+      "setupSteps": []
+    },
+    {
+      "id": "pi",
+      "name": "Pi",
+      "command": "pi",
+      "authCommand": "pi",
+      "description": "Minimal extensible coding agent",
+      "docsUrl": "https://pi.dev/docs/latest",
+      "envVars": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"],
+      "authFiles": [".pi/agent/auth.json"],
+      "skillsAgent": "pi",
+      "setupSteps": []
+    },
+    {
+      "id": "openclaw",
+      "name": "OpenClaw",
+      "command": "openclaw",
+      "authCommand": "openclaw onboard",
+      "description": "Personal AI assistant gateway",
+      "docsUrl": "https://docs.openclaw.ai",
+      "envVars": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"],
+      "authFiles": [".openclaw/openclaw.json", ".openclaw/.env"],
+      "skillsAgent": "openclaw",
+      "setupSteps": []
+    },
+    {
+      "id": "hermes",
+      "name": "Hermes Agent",
+      "command": "hermes",
+      "authCommand": "hermes setup",
+      "description": "Self-improving agent from Nous Research",
+      "docsUrl": "https://hermes-agent.nousresearch.com/docs",
+      "envVars": ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"],
+      "authFiles": [".hermes/auth.json", ".hermes/.env"],
+      "skillsAgent": "hermes-agent",
       "setupSteps": []
     },
     {
@@ -75,6 +99,29 @@
       "setupSteps": []
     },
     {
+      "id": "aider",
+      "name": "Aider",
+      "command": "aider",
+      "authCommand": null,
+      "description": "AI pair programming",
+      "docsUrl": "https://aider.chat",
+      "envVars": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY"],
+      "authFiles": [],
+      "setupSteps": []
+    },
+    {
+      "id": "qwen",
+      "name": "Qwen Code",
+      "command": "qwen",
+      "authCommand": "qwen",
+      "description": "Alibaba's coding assistant",
+      "docsUrl": "https://qwenlm.github.io/qwen-code-docs",
+      "envVars": ["QWEN_API_KEY", "OPENAI_API_KEY"],
+      "authFiles": [".qwen/config.json", ".config/qwen/config.json"],
+      "skillsAgent": "qwen-code",
+      "setupSteps": []
+    },
+    {
       "id": "vibe",
       "name": "Mistral Vibe",
       "command": "vibe",
@@ -84,30 +131,6 @@
       "envVars": ["MISTRAL_API_KEY"],
       "authFiles": [],
       "skillsAgent": "mistral-vibe",
-      "setupSteps": []
-    },
-    {
-      "id": "amp",
-      "name": "Amp",
-      "command": "amp",
-      "authCommand": "amp login",
-      "description": "Frontier coding agent",
-      "docsUrl": "https://ampcode.com/manual",
-      "envVars": ["AMP_API_KEY"],
-      "authFiles": [".config/amp/auth.json", ".amp/credentials"],
-      "skillsAgent": "amp",
-      "setupSteps": []
-    },
-    {
-      "id": "auggie",
-      "name": "Augment",
-      "command": "auggie",
-      "authCommand": "auggie login",
-      "description": "Context-aware coding agent",
-      "docsUrl": "https://docs.augmentcode.com/cli/overview",
-      "envVars": ["AUGMENT_SESSION_AUTH"],
-      "authFiles": [],
-      "skillsAgent": "augment",
       "setupSteps": []
     },
     {
@@ -135,15 +158,27 @@
       "setupSteps": []
     },
     {
-      "id": "qwen",
-      "name": "Qwen Code",
-      "command": "qwen",
-      "authCommand": "qwen",
-      "description": "Alibaba's coding assistant",
-      "docsUrl": "https://qwenlm.github.io/qwen-code-docs",
-      "envVars": ["QWEN_API_KEY", "OPENAI_API_KEY"],
-      "authFiles": [".qwen/config.json", ".config/qwen/config.json"],
-      "skillsAgent": "qwen-code",
+      "id": "amp",
+      "name": "Amp",
+      "command": "amp",
+      "authCommand": "amp login",
+      "description": "Frontier coding agent",
+      "docsUrl": "https://ampcode.com/manual",
+      "envVars": ["AMP_API_KEY"],
+      "authFiles": [".config/amp/auth.json", ".amp/credentials"],
+      "skillsAgent": "amp",
+      "setupSteps": []
+    },
+    {
+      "id": "auggie",
+      "name": "Augment",
+      "command": "auggie",
+      "authCommand": "auggie login",
+      "description": "Context-aware coding agent",
+      "docsUrl": "https://docs.augmentcode.com/cli/overview",
+      "envVars": ["AUGMENT_SESSION_AUTH"],
+      "authFiles": [],
+      "skillsAgent": "augment",
       "setupSteps": []
     }
   ],

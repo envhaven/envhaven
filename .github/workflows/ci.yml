@@ -87,33 +87,31 @@ jobs:
           docker exec test-nopass bash -c '! curl -s --max-time 2 http://localhost:7681/'
           docker rm -f test-console test-nopass
 
-      - name: Test runtimes
+      - name: Test runtimes and AI CLI tools
+        # Runs inside a BOOTED container as the workspace user (abc, HOME=/config) —
+        # the context every tool actually executes in. Root skips init and newer mise
+        # refuses shim configs for root, so a bare `docker run image bash -c` gate
+        # tests an environment no user ever sees. The AI roster is derived from
+        # tool-definitions.json like every other gate; a hand-list here could drift.
         run: |
-          docker run --rm envhaven:test bash -c "
-            node --version &&
-            python --version &&
-            go version &&
-            rustc --version &&
-            pnpm --version &&
+          docker run -d --name test-tools envhaven:test
+          sleep 15
+          docker exec -u abc -e HOME=/config test-tools bash -c '
+            set -e
+            node --version
+            python --version
+            go version
+            rustc --version
+            pnpm --version
             uv --version
-          "
-
-      - name: Test AI CLI tools
-        run: |
-          docker run --rm envhaven:test bash -c "
-            opencode --version &&
-            claude --version &&
-            aider --version &&
-            codex --version &&
-            gemini --version &&
-            goose --version &&
-            vibe --version &&
-            qwen --version &&
-            kiro-cli --version &&
-            droid --version &&
-            amp --version &&
-            auggie --version
-          "
+          '
+          docker exec -u abc -e HOME=/config test-tools bash -c '
+            set -eo pipefail
+            [ "$(jq -r ".tools | length" /opt/envhaven/tool-definitions.json)" -ge 12 ]
+            jq -r ".tools[].command" /opt/envhaven/tool-definitions.json |
+              while read -r cmd; do "$cmd" --version || exit 1; done
+          '
+          docker rm -f test-tools
 
       - name: Test CLI tools (DOCKER_MODS)
         run: |
@@ -161,6 +159,10 @@ jobs:
           # `go 1.22` directive is the language minimum, not the toolchain.
           go-version: stable
           cache-dependency-path: console/go.sum
+
+      - name: Format
+        run: test -z "$(gofmt -l .)"
+        working-directory: console
 
       - name: Vet
         run: go vet ./...

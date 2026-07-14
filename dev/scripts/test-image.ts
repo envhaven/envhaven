@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { $ } from 'bun';
 import { loadConfig, getTestConfigPath, log, formatTestSummary, dockerExec } from './lib';
+import toolDefs from '../../tool-definitions.json';
 
 const config = loadConfig();
 const containerName = `envhaven-test-${Date.now()}`;
@@ -26,23 +27,13 @@ const tests = [
   { name: 'ripgrep', cmd: 'rg --version' },
   { name: 'jq', cmd: 'jq --version' },
   
-  { name: 'claude', cmd: 'claude --version' },
-  { name: 'codex', cmd: 'codex --version' },
-  { name: 'gemini', cmd: 'gemini --version' },
-  { name: 'qwen', cmd: 'qwen --version' },
-  { name: 'amp', cmd: 'amp --version' },
-  { name: 'auggie', cmd: 'auggie --version' },
-  
-  { name: 'aider', cmd: 'aider --version' },
-  { name: 'vibe', cmd: 'vibe --version' },
-  
-  { name: 'opencode', cmd: 'opencode --version' },
-  { name: 'goose', cmd: 'goose --version' },
-  { name: 'kiro', cmd: 'kiro-cli --version' },
-  { name: 'droid', cmd: 'droid --version' },
-  
+  // AI tools derive from tool-definitions.json — the roster's single source of truth.
+  ...toolDefs.tools.map(({ command }) => ({ name: command, cmd: `${command} --version` })),
+
   { name: 'AGENTS.md', cmd: 'test -f /config/workspace/AGENTS.md' },
   { name: 'VS Code settings', cmd: 'test -f /config/data/User/settings.json' },
+  { name: 'artifacts drop folder', cmd: 'test -d /config/artifacts' },
+  { name: 'claude seed symlink', cmd: 'test -L /config/.local/bin/claude && test -e /config/.local/bin/claude' },
 ];
 
 async function cleanup() {
