@@ -3,47 +3,87 @@
 
 ## Managed Workspace
 
-This is an **EnvHaven Managed** workspace with automatic HTTPS and SSH access.
+This is an **EnvHaven Managed** workspace. HTTPS, a public preview URL, and SSH are already wired up for you. Your job is to connect the user to their work: when something runs, hand them the public link that serves it. Don't just say it's "up on port 3000."
 
-### URLs
+### URLs you can hand the user
 
-| Service | URL |
-|---------|-----|
-| **Web IDE** | ${_ENVHAVEN_PUBLIC_URL} |
-| **Preview** | ${_ENVHAVEN_PREVIEW_URL} |
-| **SSH** | `ssh abc@${ENVHAVEN_SSH_HOST}` |
+| Service | URL | Use it for |
+|---------|-----|-----------|
+| **Web IDE** | ${_ENVHAVEN_PUBLIC_URL} | Where the user opens this workspace in a browser. |
+| **Preview** | ${_ENVHAVEN_PREVIEW_URL} | Public HTTPS in front of whatever the user is building. Serves the **preview port** (3000 by default). This is the link you give them to see their app. |
+| **SSH** | `ssh abc@${ENVHAVEN_SSH_HOST}` | The user's own machine or Haven CLI. They run it, not you. |
 
-### Haven CLI Connection
+Local editor over SSH, via Haven CLI (the user runs this on their machine):
 
 ```bash
-# From your local machine
 haven connect . ${_ENVHAVEN_WORKSPACE_NAME}
 ```
 
-### Preview URL
+### Default to port 3000
 
-Apps running on **port 3000** (default) are accessible via the preview URL.
+The preview URL is permanently pointed at **port 3000**. That makes 3000 your default for everything: whenever you start a web app, dev server, static site, or API, bind it to **`0.0.0.0:3000`** and the preview URL works instantly, giving you a live HTTPS link to hand the user.
 
-| Property | Value |
-|----------|-------|
-| **Preview URL** | ${_ENVHAVEN_PREVIEW_URL} |
-| **Default Port** | 3000 |
+- Bind to `0.0.0.0`, never `localhost` or `127.0.0.1`. On loopback the preview URL sees nothing.
+- No port specified by the user? Use 3000.
+- Only one app is previewed at a time. If several are running, put the one they want to see on 3000.
 
-Change the port in the EnvHaven extension sidebar if needed.
+```bash
+next dev -H 0.0.0.0 -p 3000       # Next.js
+vite --host 0.0.0.0 --port 3000   # Vite
+# then hand the user: ${_ENVHAVEN_PREVIEW_URL}
+```
 
-**Reminder:** Apps MUST bind to `0.0.0.0` to be accessible via preview URL.
+Run these in a named tmux window (see "Running Dev Servers" above) so they survive disconnects and show up in the sidebar.
 
-### Custom Domains
+### When the app can't run on 3000
 
-You can serve this workspace's preview on your own domain. Manage domains from the dashboard: https://envhaven.com/dashboard/domains
+Some things are pinned to another port: a prebuilt image, a tool hardcoded to 8080, a framework you can't cleanly re-flag. Handle it in this order.
 
-| Step | Action |
-|------|--------|
-| 1 | In the dashboard Domains page, add your hostname |
-| 2 | At your DNS provider, add a CNAME from that hostname to `domains.envhaven.app` |
-| 3 | Wait for it to verify: status goes from `pending_dns` to `active`, or `failed` if the DNS record is missing or wrong |
+1. **Move it to 3000 if you can.** A port flag, a config value, or a `PORT=3000` env var is usually all it takes, and it keeps the default intact.
 
-When the domain is `active`, it serves the preview (port 3000 by default).
+2. **Otherwise, repoint the preview URL yourself.** This is the same operation as the extension's sidebar port control, and you can run it from the terminal. It reconfigures the workspace tunnel so the preview URL serves the port you name. The credentials are already in your environment (this is a managed workspace); nothing secret is written into this file.
+
+```bash
+# Point the preview URL at, e.g., 8080:
+curl -sS -X POST \
+  "$_ENVHAVEN_API_URL/v1/internal/workspace/$_ENVHAVEN_WORKSPACE_ID/port" \
+  -H "Authorization: Bearer $_ENVHAVEN_WORKSPACE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"port": 8080}'
+# → {"success":true,"exposedPort":8080}
+```
+
+- Allowed range is **1024–65535**. Ports below 1024 (80, 443) are rejected, so keep apps on 3000 or another high port.
+- It applies within a few seconds. The preview URL itself doesn't change: **${_ENVHAVEN_PREVIEW_URL}** now serves that port, so the user's link keeps working.
+- If the call reports missing credentials, fall back to guiding the user to set the port in the EnvHaven sidebar (it shows a live preview thumbnail).
+
+### Custom domains
+
+A custom domain serves the user's **app**: whatever the preview URL serves, on a hostname they own. The workspace's Web IDE URL never changes. When they ask, walk them through it instead of pointing at a page and leaving:
+
+1. Open https://envhaven.com/dashboard/domains and click **Add Domain**.
+2. Enter the full hostname (for example `app.theirdomain.com`) and pick this workspace in the workspace field. An unpointed domain serves nothing; it can also be pointed later from the domain's row menu.
+3. At their DNS provider, add a **CNAME** from that hostname to `domains.envhaven.app`. The domain's **DNS Setup** panel in the dashboard shows the exact record with copy buttons.
+4. Wait for verification. EnvHaven checks every 2 minutes, so the badge on the Domains page flips from **Pending DNS** to **Active** within a couple of minutes of DNS propagating. HTTPS is automatic. **Failed** shows a retry button: fix the CNAME, then retry.
+
+Subdomains (`app.`, `www.`) work with any DNS provider. An apex domain (`theirdomain.com`) is accepted but works only where the provider supports CNAME at the root (flattening or ALIAS); otherwise suggest a subdomain.
+
+You can't add the domain or edit their DNS; those clicks are the user's. Your job is making sure the right app answers: the custom domain serves the same port as the preview URL and follows it if you repoint (see "When the app can't run on 3000"). Limits: one domain per workspace, up to two domains per seat.
+
+### Secrets and environment variables
+
+When you need a secret from the user (an API key, a token, a password), send them to the **Variables** pane in their dashboard, never the terminal. It is the `Vars` tab in the workspace toolbar, beside Skills and Artifacts. Tell them the variable **name** your code expects (`OPENAI_API_KEY`, `DATABASE_URL`) and let them paste the value once; the pane exports it into the shell and keeps it write-only, so neither you nor the browser can read it back. Open a fresh terminal (or `source ~/.zshrc`) and it is waiting as `$OPENAI_API_KEY`. Keys the user sets for an AI tool from the Launch menu land in this same store and show up here too.
+
+**Never print a secret.** Don't `echo`, `cat`, log, or paste a variable's value into the terminal, a file, or your reply. Reference it by name and let the program read it from the environment. A value printed once leaks into scrollback, tmux history, and anything watching the pane; a name never does.
+
+### Artifacts
+
+`/config/artifacts` is the shared drop box between you and the user, and it works both ways.
+
+- **Files you make for them:** write anything the user should be able to download to `/config/artifacts`. It appears in the dashboard's Artifacts pane with a one-click download. Prefer this over naming a path they cannot reach.
+- **Files they give you:** when the user drops a file onto the workspace, it lands in `/config/artifacts` and its path is typed into your terminal, ready to reference.
+
+Give artifacts human, specific names (`invoice-q3.pdf`, not `out.bin`). The directory persists for the life of the workspace.
 
 ---
 

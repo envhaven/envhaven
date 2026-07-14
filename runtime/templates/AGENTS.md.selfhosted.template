@@ -26,12 +26,12 @@ Map container ports in `docker-compose.yml`:
 ports:
   - "8443:8443"   # Web IDE
   - "2222:22"     # SSH
-  - "3000:3000"   # App dev server (optional)
+  # - "127.0.0.1:3000:3000"   # App dev server (optional; drop 127.0.0.1 to expose)
 ```
 
 ### Starting Dev Servers
 
-Ensure the port is mapped in `docker-compose.yml`, then access at `http://<your-host>:<port>`
+Default apps to **port 3000** and bind `0.0.0.0`. Map that port in `docker-compose.yml`: the reference compose ships it commented out and loopback-bound (`127.0.0.1:3000:3000`), so uncomment the line and drop the `127.0.0.1` prefix to reach it from other machines. Then hand the user the link to open: `http://<your-host>:3000`. Give them the URL, not just the port.
 
 ### Cloudflare Tunnels (Optional)
 

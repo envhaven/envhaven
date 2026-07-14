@@ -14,7 +14,12 @@ if [ ! -f "$AGENTS_FILE" ]; then
     export WORKSPACE_PATH="/config/workspace"
     envsubst < /defaults/AGENTS.md.template > "$AGENTS_FILE"
     if [ "${ENVHAVEN_MANAGED:-false}" = "true" ]; then
-        envsubst < /defaults/AGENTS.md.managed.template >> "$AGENTS_FILE"
+        # Substitute only the display URLs. The managed template also contains literal
+        # $_ENVHAVEN_API_URL / $_ENVHAVEN_WORKSPACE_ID / $_ENVHAVEN_WORKSPACE_TOKEN references
+        # that the agent expands from its own environment at call time; keeping them out of the
+        # allowlist leaves them verbatim, so the workspace token is never written into AGENTS.md.
+        envsubst '$_ENVHAVEN_PUBLIC_URL $_ENVHAVEN_PREVIEW_URL $_ENVHAVEN_WORKSPACE_NAME $ENVHAVEN_SSH_HOST' \
+            < /defaults/AGENTS.md.managed.template >> "$AGENTS_FILE"
     else
         envsubst < /defaults/AGENTS.md.selfhosted.template >> "$AGENTS_FILE"
     fi

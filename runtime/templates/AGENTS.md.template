@@ -9,9 +9,20 @@
 | **Shell** | zsh (oh-my-zsh) or bash |
 | **Workspace** | `${WORKSPACE_PATH}` |
 
+### What persists
+
+Your home is `/config`, the only directory mounted from outside the container. **`/config` survives workspace updates and restarts; everything else resets to the image on update.**
+
+| Survives an update? | What |
+|---------------------|------|
+| **Yes** | Everything under `/config`: your `${WORKSPACE_PATH}` projects, dotfiles, `~/.zshrc`, SSH keys, and `/config/.local/bin` (first on `PATH`) |
+| **No** | `apt` packages and anything under `/usr`, `/opt`, `/mise`; global installs (`npm i -g`, `cargo install`, `uv tool install`, `mise use -g`) |
+
+Keep dependencies inside the project: `node_modules`, `.venv`, and Go modules live under `${WORKSPACE_PATH}`, so they persist for free. If you install a global CLI the user will want tomorrow, drop the binary in `/config/.local/bin`. Pre-installed tools always come back; they ship in the image.
+
 ### Web Servers
 
-**MUST bind to `0.0.0.0`**, not localhost or 127.0.0.1, for apps to be accessible outside the container.
+**MUST bind to `0.0.0.0`**, not localhost or 127.0.0.1, for apps to be accessible outside the container. **Default to port 3000** unless the user asks otherwise. When a server is up, hand the user its URL to open, don't just report the port; the exact host is in the Managed or Self-Hosted section at the end of this file (Managed workspaces get an automatic HTTPS preview URL wired to 3000).
 
 ```javascript
 // Express
@@ -42,51 +53,13 @@ Use **SQLite** by default: `sqlite3 myapp.db`
 
 ## Terminal Sessions (tmux)
 
-EnvHaven uses a **single persistent tmux session** named `envhaven`. This enables:
-
-- **Cross-device continuity**: Same session from browser, SSH, or Haven CLI
-- **Process persistence**: Dev servers and AI tools keep running if you disconnect
-- **Multi-window workflow**: Run AI tool in one window, dev server in another
-
-### Bottom Bar
-
-The tmux status bar shows:
-
-| Element | Description |
-|---------|-------------|
-| **Session name** | `envhaven` (left side) |
-| **Window list** | Numbered tabs, current highlighted |
-| **Version** | EnvHaven version + update indicator |
-| **Hotkeys** | Press `Ctrl+B` to see options |
-
-### Hotkeys (after `Ctrl+B`)
-
-| Key | Action |
-|-----|--------|
-| `n` | New window |
-| `x` | Close current pane |
-| `0-9` | Switch to window by number |
-| `Shift+Click` | Close window (in status bar) |
-| `Ctrl+D` | Close pane (no prefix needed — sends EOF to shell) |
-
-### Default Behavior
-
-- New terminal sessions auto-attach to the `envhaven` session
-- Windows are numbered starting at 1
-- Closing last window ends the session (new one created on next terminal open)
-
-### Power User Override
-
-To bypass auto-attach (e.g., for nested tmux):
-```bash
-ENVHAVEN_SKIP_WELCOME=1 zsh
-```
+You share one persistent tmux session named `envhaven` with the user, reachable from browser, SSH, or Haven CLI. Run long-lived processes (dev servers, AI tools) in **named, detached windows** (see [Running Dev Servers](#running-dev-servers)) so they survive disconnects and appear in the user's window list (the VS Code sidebar, or the tmux status bar over SSH, which also flags available EnvHaven updates). The user switches windows with `Ctrl+B` then a number; you drive them with `tmux` commands. To bypass auto-attach (e.g. nested tmux): `ENVHAVEN_SKIP_WELCOME=1 zsh`.
 
 ---
 
 ## VS Code Extension (Sidebar)
 
-The EnvHaven sidebar (Activity Bar icon) is the human's control panel for terminals, AI-tool sign-in and API keys, SSH access, and skills. You act through the terminal instead: `tmux` for windows, `export` or the tool's config file for keys (see [AI Coding Tools](#ai-coding-tools)), and `PUBLIC_KEY_URL` or `~/.ssh/authorized_keys` for SSH.
+The EnvHaven sidebar (Activity Bar icon) is the human's control panel for terminals, AI-tool sign-in and API keys, SSH access, and skills. You act through the terminal instead: `tmux` for windows, `export` or the tool's config file for keys (see [AI Coding Tools](#ai-coding-tools)), and `PUBLIC_KEY_URL` or `~/.ssh/authorized_keys` for SSH. Run `envhaven` any time for a live status snapshot (URLs, installed tools, versions) to orient yourself.
 
 ---
 
@@ -104,37 +77,40 @@ The EnvHaven sidebar (Activity Bar icon) is the human's control panel for termin
 
 ## AI Coding Tools
 
-12 AI coding tools are pre-installed. Most require API keys.
+15 AI coding tools are pre-installed. Most require API keys.
 
 ### CLI Tools
 
 | Tool | Command | API Key / Auth |
 |------|---------|----------------|
-| **OpenCode** | `opencode` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` |
 | **Claude Code** | `claude` | `ANTHROPIC_API_KEY` or `/login` in CLI |
-| **Aider** | `aider` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, or `OPENROUTER_API_KEY` |
 | **Codex** | `codex` | `OPENAI_API_KEY` or ChatGPT login |
 | **Gemini CLI** | `gemini` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
+| **OpenCode** | `opencode` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` |
+| **Pi** | `pi` | Provider API keys or `/login` in CLI |
+| **OpenClaw** | `openclaw` | Provider API keys or `openclaw onboard` |
+| **Hermes Agent** | `hermes` | Provider API keys or `hermes setup` |
 | **Goose** | `goose` | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` (run `goose configure`) |
-| **Mistral Vibe** | `vibe` | `MISTRAL_API_KEY` |
+| **Aider** | `aider` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, or `OPENROUTER_API_KEY` |
 | **Qwen Code** | `qwen` | `QWEN_API_KEY` or `OPENAI_API_KEY` (compatible endpoint) |
+| **Mistral Vibe** | `vibe` | `MISTRAL_API_KEY` |
+| **Factory Droid** | `droid` | Browser login or `FACTORY_API_KEY` |
+| **Kiro** | `kiro-cli` | Browser login (GitHub / Google / AWS Builder ID) |
 | **Amp** | `amp` | `AMP_API_KEY` or `amp login` |
 | **Augment** | `auggie` | Browser login via `auggie login` |
-| **Kiro** | `kiro-cli` | Browser login (GitHub / Google / AWS Builder ID) |
-| **Factory Droid** | `droid` | Browser login or `FACTORY_API_KEY` |
 
 ### API Key Configuration
 
 Set keys via environment variables or the EnvHaven sidebar:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...   # Claude Code, Aider, OpenCode, Goose
-export OPENAI_API_KEY=sk-...          # Codex, OpenCode, Aider, Goose, Qwen
-export GEMINI_API_KEY=...             # Gemini CLI, OpenCode, Aider
-export GOOGLE_API_KEY=...             # Gemini CLI, OpenCode (alternative)
+export ANTHROPIC_API_KEY=sk-ant-...   # Claude Code, OpenCode, Pi, OpenClaw, Hermes, Aider, Goose
+export OPENAI_API_KEY=sk-...          # Codex, OpenCode, Pi, OpenClaw, Hermes, Aider, Goose, Qwen
+export GEMINI_API_KEY=...             # Gemini CLI, OpenCode, Pi, OpenClaw, Hermes, Aider
+export GOOGLE_API_KEY=...             # Gemini CLI, OpenCode, Pi, OpenClaw, Hermes (alternative)
 export MISTRAL_API_KEY=...            # Mistral Vibe
 export AMP_API_KEY=...                # Amp
-export OPENROUTER_API_KEY=...         # Aider (OpenRouter)
+export OPENROUTER_API_KEY=...         # Aider, Hermes (OpenRouter)
 export QWEN_API_KEY=...               # Qwen Code
 export FACTORY_API_KEY=...            # Factory/Droid
 ```
@@ -171,13 +147,14 @@ Other tools (Goose, Amp, Kiro, etc.) either have no permission system or auto-ap
 | **htop** | `htop` | Process viewer |
 | **cloudflared** | `cloudflared` | Cloudflare tunnel CLI |
 | **ffmpeg** | `ffmpeg` | Video/audio processing |
-| **Playwright** | `playwright` | Browser automation (Chromium) |
+| **Playwright** | `playwright` | Headless Chromium: scraping, screenshots, E2E |
+| **Docker** | `docker` | Build and run containers (when the socket is mounted) |
 
 ---
 
 ## Running Dev Servers
 
-Use named tmux windows for dev servers. This makes them visible in the sidebar and status bar.
+Use named tmux windows for dev servers. This makes them visible in the sidebar and in the SSH status bar.
 
 ### Naming Convention
 
@@ -275,33 +252,6 @@ User must add their SSH public key via:
 │   └── authorized_keys     # For SSH/Haven CLI access
 ├── .zshrc                  # Shell config (API keys persisted here)
 └── .config/                # Tool configurations
-```
-
----
-
-## Quick Start Examples
-
-### Node.js/Bun Project
-
-```bash
-mkdir myapp && cd myapp
-bun init
-bun add express
-```
-
-### Python Project
-
-```bash
-mkdir myapp && cd myapp
-uv init
-uv add fastapi uvicorn
-```
-
-### Go Project
-
-```bash
-mkdir myapp && cd myapp
-go mod init myapp
 ```
 
 ---
@@ -432,7 +382,7 @@ The user runs the installer themselves. When done, they close the pane with `Ctr
 
 ## Constraints
 
-1. **Storage**: Workspace data persists in `${WORKSPACE_PATH}`
+1. **Storage**: `/config` (home and projects) persists across updates; everything else resets to the image (see the What persists table above)
 2. **Network**: Container has full internet access
-3. **Permissions**: Running as non-root user `abc` (sudo available)
-4. **Docker**: Docker-in-Docker available if socket is mounted
+3. **Permissions**: Running as non-root user `abc` (sudo available, but `apt` installs don't survive an update)
+4. **Docker**: The `docker` CLI is installed; build and run containers when the socket is mounted (Managed Plus/Pro, or self-hosted with the mount)
