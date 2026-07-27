@@ -17,6 +17,7 @@ bun dev/scripts/test-image.ts      # Validate Docker image
 bun dev/scripts/test-ai-tools.ts   # Verify all AI CLI tools
 bun dev/scripts/test-cli.ts        # Test Haven CLI
 bun dev/scripts/test-extension.ts  # Test extension build
+bun dev/scripts/measure-tui.ts     # Check the console's TUI geometry table
 ```
 
 Or use the TUI which wraps these scripts with a nice interface:
@@ -40,6 +41,7 @@ eh                        # Press 'b' for build, 's' for start, 't' for test, et
 | `test-extension.ts` | Build extension and verify artifacts | |
 | `extension-build.ts` | Build extension host and webview | `--webview-only`, `--host-only` |
 | `extension-install.ts` | Package and install extension in container | |
+| `measure-tui.ts` | Measure AI CLI composer geometry against the console's `TUI` table | `--print`, `--container=`, `<app>...` |
 
 ## Configuration
 
