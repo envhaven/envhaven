@@ -338,7 +338,7 @@ func (s *selfHost) handleRoot(w http.ResponseWriter, r *http.Request) {
 // live terminal). This is the whole anti-clickjacking gate for the page.
 func serveUI(w http.ResponseWriter, frameAncestors []string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store") // tiny page, changes with builds; never cache it
+	w.Header().Set("Cache-Control", "no-store") // changes with every build; never serve a stale one
 	if len(frameAncestors) == 0 {
 		w.Header().Set("X-Frame-Options", "DENY")
 	} else {
