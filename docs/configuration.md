@@ -178,6 +178,24 @@ Then visit `http://<host>:7681/` and enter your web password.
 
 Briefly, how the auth works: a successful login sets a `SameSite=Strict`, `HttpOnly` session cookie scoped to `/__console`, valid for 12 hours. The page exchanges that cookie for a 60-second token and presents the token when it opens the WebSocket. The password never crosses the socket, and rotating it invalidates every issued cookie and token. The same token also authenticates the console HTTP API below.
 
+If the connection drops, the terminal says so on top of the grid and offers a Reconnect button. Your shell keeps running. The session lives in tmux, so reconnecting drops you back exactly where you were. Nothing about the connection is ever written into the scrollback, because that scrollback belongs to your shell.
+
+### Keys
+
+Almost every keystroke goes straight to the shell. A handful of chords are translated first, so the keys a desktop editor binds do the same thing here:
+
+| Key | Sends | Effect |
+|-----|-------|--------|
+| `Option`/`Alt` + `←` `→` | `ESC b` / `ESC f` | Move one word left or right |
+| `Option`/`Alt` + `↑` `↓` | `ESC [A` / `ESC [B` | Plain up and down |
+| `⌘` + `←` `→` (macOS) | `^A` / `^E` | Jump to the start or end of the line |
+| `⌘` + `⌫` (macOS) | `^U` | Kill the line (zsh clears it entirely; Claude Code kills back to the input start) |
+| `Ctrl` + `Backspace` (Windows, Linux) | `^W` | Delete the previous word |
+
+Two of these deserve a note. `⌘⌫` deletes the whole line rather than one character, which is what it does in a macOS text field and what VS Code's terminal sends. `Option+Arrow` is translated because stock zsh leaves the raw sequence unbound and prints a stray letter instead of moving the cursor.
+
+Everything else stays with the browser. `⌘C`, `⌘V`, `⌘A` and every chord not listed above are passed through untouched.
+
 ### Console API
 
 The console port also serves a small HTTP API under `/__console/`, used by the extension sidebar and the managed dashboard. Every route requires the same `Authorization: Bearer` token the WebSocket presents; there is no separate credential.

@@ -155,9 +155,26 @@ bun dev/scripts/test-extension.ts
 
 ```bash
 cd console && go vet ./... && go test -race -count=1 ./...
+bun dev/scripts/test-console-ui.ts   # terminal page structure, run from the repo root
 ```
 
-CI runs the same on every pull request. The suite covers both auth modes (platform JWT and web password), the session pump wire protocol, the HTTP API guard and its CORS behavior, the tmux action allowlist, page framing (CSP `frame-ancestors` and `X-Frame-Options`), the skills domain (`console/skills.go` + `skills_test.go`), and pins the vendored xterm assets byte-for-byte (see `console/ui/assets/LICENSE`). The `/tools` and `/skills` wire shapes are pinned by `console/testdata/*.golden.json`, which the extension's `bun test` also reads for its conformance check, so a change on either side of that contract fails a test.
+The browser terminal predicts where an AI CLI's input box will wrap, from a table
+of measured constants in `console/ui/terminal.html`. Those applications redesign
+their composers between releases, so the table has an instrument rather than a
+comment vouching for it:
+
+```bash
+bun dev/scripts/measure-tui.ts                # check every row against a real terminal
+bun dev/scripts/measure-tui.ts --print codex  # measure one app and print its row
+```
+
+It needs a running workspace container (`bun dev/scripts/start.ts`), drives each
+application in tmux on a socket of its own, and measures at two widths. Run it
+when a wrap starts looking wrong, and replace the row it reports. It is not in CI:
+it drives third-party TUIs whose startup screens change, and a gate that breaks
+when someone else ships an onboarding dialog would cost more than it catches.
+
+CI runs both of the checks above on every pull request. The Go suite covers both auth modes (platform JWT and web password), the session pump wire protocol, the HTTP API guard and its CORS behavior, the tmux action allowlist, page framing (CSP `frame-ancestors` and `X-Frame-Options`), the skills domain (`console/skills.go` + `skills_test.go`), and pins the vendored xterm assets byte-for-byte (see `console/ui/assets/LICENSE`). The `/tools` and `/skills` wire shapes are pinned by `console/testdata/*.golden.json`, which the extension's `bun test` also reads for its conformance check, so a change on either side of that contract fails a test.
 
 ## Project Structure
 

@@ -192,6 +192,7 @@ User-facing scripts in `runtime/scripts/` (installed to `/opt/envhaven/bin/`):
    bun dev/scripts/test-image.ts      # Validate image
    bun dev/scripts/test-extension.ts  # Test extension build
    bun dev/scripts/test-cli.ts --ci   # Test Haven CLI
+   bun dev/scripts/test-console-ui.ts # Check the terminal page structure
    ```
 
 2. **Update documentation** if adding features
@@ -235,10 +236,12 @@ All commits **must** follow [Conventional Commits](https://www.conventionalcommi
 Common scopes for this project:
 
 - `cli` - Haven CLI
+- `console` - In-container console server and terminal page
 - `extension` - VS Code extension
-- `image` - Docker image / Dockerfile
+- `docker` - Docker image / Dockerfile
 - `dev` - Development tooling (eh TUI, scripts)
 - `runtime` - Runtime scripts and templates
+- `skills` - Bundled agent skills
 
 ### Examples
 
@@ -246,7 +249,7 @@ Common scopes for this project:
 feat(cli): add connect command
 fix(extension): resolve sidebar crash on reload
 docs: update contributing guide
-build(image): add rust toolchain
+build(docker): add rust toolchain
 chore: bump dependencies
 ```
 
