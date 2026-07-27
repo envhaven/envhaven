@@ -30,7 +30,18 @@ const (
 	// Wire protocol frame types (first byte of every binary frame).
 	frameData    = 0x00 // terminal bytes, both directions
 	frameResize  = 0x01 // resize request, browser to server only
-	framePredict = 0x02 // predictive-echo safety gate, server to browser only: 1 byte, 1=safe 0=unsafe
+	framePredict = 0x02 // predictive-echo safety gate, server to browser only:
+	// [safe byte (1=safe 0=unsafe), pane app name (valid UTF-8, at most
+	// maxAppName bytes, may be empty)]. Sent whenever either part changes, so the
+	// browser always knows both whether it may draw and WHICH application it
+	// would be drawing into.
+
+	// maxAppName bounds the name in a 0x02 frame so a hostile argv[0] cannot
+	// bloat a frame the browser reads on every poll. The bound is declared with the
+	// frame it protects and enforced where the name is produced (gate.go's clampApp),
+	// so there is one clamp rather than two disagreeing ones. Production has exactly
+	// one producer; a test injecting its own paneState is trusted to behave.
+	maxAppName = 32
 
 	// predictPoll is how often the gate re-inspects the active pane. It must beat
 	// human reaction to a freshly-drawn password prompt (hundreds of ms) with
@@ -43,8 +54,11 @@ const (
 	// the grace spans the gap between the Enter and the app flipping its tty to
 	// no-echo: the gate cannot re-arm inside that gap, so a password typed ahead in
 	// the same burst as its command is never predicted. It also forces a real
-	// safe->unsafe->safe transition on every newline, which re-arms the browser
-	// (whose own newline-disarm is otherwise never cleared by a change-only feed).
+	// safe->unsafe->safe transition on every newline, which is what re-arms the
+	// browser after its own newline-disarm. Note the browser must not treat just any
+	// "safe" frame as that re-arm: the feed also emits one when only the pane's app
+	// name changed, which can land mid-submit. The browser waits for the explicit
+	// "unsafe" this grace guarantees (see localDisarm in terminal.html).
 	predictSubmitGrace = 200 * time.Millisecond
 )
 
@@ -58,10 +72,10 @@ type wireConn interface {
 // pumpConfig carries the pump's collaborators and limits. pumpSession wires the
 // production values; tests inject a fake pane gate and short timeouts.
 type pumpConfig struct {
-	predict  bool
-	paneSafe func(context.Context) bool
-	idle     time.Duration
-	maxLife  time.Duration
+	predict   bool
+	paneState func(context.Context) (safe bool, app string)
+	idle      time.Duration
+	maxLife   time.Duration
 }
 
 // pumpSession starts the login shell on a pty and hands it to pump. managed is
@@ -97,10 +111,10 @@ func pumpSession(parent context.Context, conn *websocket.Conn, size *pty.Winsize
 		_ = cmd.Wait()
 	}()
 	return pump(parent, conn, ptmx, pumpConfig{
-		predict:  predict,
-		paneSafe: func(c context.Context) bool { return paneSafe(c, gateSession) },
-		idle:     idleTimeout,
-		maxLife:  hardMaxLife,
+		predict:   predict,
+		paneState: func(c context.Context) (bool, string) { return paneState(c, gateSession) },
+		idle:      idleTimeout,
+		maxLife:   hardMaxLife,
 	})
 }
 
@@ -188,19 +202,31 @@ func pump(parent context.Context, conn wireConn, ptmx *os.File, cfg pumpConfig) 
 		}()
 		tick := time.NewTicker(predictPoll)
 		defer tick.Stop()
-		last := int8(-1) // sentinel: force the first frame so the browser learns the initial state
+		lastSafe := int8(-1) // sentinel: force the first frame so the browser learns the initial state
+		lastApp := ""
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-tick.C:
+				safe, app := cfg.paneState(ctx)
+				if app == "" {
+					// No information (no tmux, malformed output, the read timed
+					// out), not "the app changed to nothing". The browser has no
+					// unknown case: it would take the empty name as a real app
+					// change and pay a heavy handoff out and another back, the
+					// second landing exactly as the user resumes typing. Carry the
+					// last known name so an unreadable pane can only flip SAFETY,
+					// which already fails closed.
+					app = lastApp
+				}
 				cur := int8(0)
-				if cfg.paneSafe(ctx) && time.Now().UnixNano() >= armAfter.Load() {
+				if safe && time.Now().UnixNano() >= armAfter.Load() {
 					cur = 1
 				}
-				if cur != last {
-					last = cur
-					if werr := writeFrame([]byte{framePredict, byte(cur)}); werr != nil {
+				if cur != lastSafe || app != lastApp {
+					lastSafe, lastApp = cur, app
+					if werr := writeFrame(append([]byte{framePredict, byte(cur)}, app...)); werr != nil {
 						errc <- werr
 						return
 					}

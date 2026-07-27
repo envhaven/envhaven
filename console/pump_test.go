@@ -50,9 +50,9 @@ func (c *fakeConn) Write(ctx context.Context, _ websocket.MessageType, p []byte)
 // pane gate, and limits far beyond any test's runtime.
 func testCfg() pumpConfig {
 	return pumpConfig{
-		paneSafe: func(context.Context) bool { return false },
-		idle:     time.Minute,
-		maxLife:  time.Minute,
+		paneState: func(context.Context) (bool, string) { return false, "" },
+		idle:      time.Minute,
+		maxLife:   time.Minute,
 	}
 }
 
@@ -258,22 +258,33 @@ func TestPumpMaxLife(t *testing.T) {
 }
 
 // TestPumpPredictGate pins the 0x02 leg end to end: the browser learns the
-// initial state, sees safe/unsafe transitions (only transitions), and a
-// submitted newline forces unsafe for the full grace before re-arming — the
-// transition that also re-arms the browser's own newline-disarm.
+// initial state (safety AND pane app), sees safe/unsafe transitions (only
+// transitions), sees a frame when the pane app changes even while safety does
+// not, and a submitted newline forces unsafe for the full grace before
+// re-arming — the transition that also re-arms the browser's own newline-disarm.
 func TestPumpPredictGate(t *testing.T) {
 	var safe atomic.Bool
+	var app atomic.Value
+	app.Store("zsh")
 	cfg := testCfg()
 	cfg.predict = true
-	cfg.paneSafe = func(context.Context) bool { return safe.Load() }
+	cfg.paneState = func(context.Context) (bool, string) { return safe.Load(), app.Load().(string) }
 	conn, _, done := startPump(t, cfg)
 
-	if f := readFrame(t, conn, framePredict); f[1] != 0 {
-		t.Fatalf("initial gate frame = %d, want 0 (fail closed)", f[1])
+	if f := readFrame(t, conn, framePredict); f[1] != 0 || string(f[2:]) != "zsh" {
+		t.Fatalf("initial gate frame = %d %q, want 0 (fail closed) with app zsh", f[1], f[2:])
 	}
 	safe.Store(true)
-	if f := readFrame(t, conn, framePredict); f[1] != 1 {
-		t.Fatalf("gate frame after pane became safe = %d, want 1", f[1])
+	if f := readFrame(t, conn, framePredict); f[1] != 1 || string(f[2:]) != "zsh" {
+		t.Fatalf("gate frame after pane became safe = %d %q, want 1 zsh", f[1], f[2:])
+	}
+
+	// The foreground app changes while safety does not: still a frame, so the
+	// browser can swap its per-app prediction facts the moment the pane's
+	// application does.
+	app.Store("claude")
+	if f := readFrame(t, conn, framePredict); f[1] != 1 || string(f[2:]) != "claude" {
+		t.Fatalf("gate frame after app change = %d %q, want 1 claude", f[1], f[2:])
 	}
 
 	// Enter: unsafe within a poll, re-armed no sooner than the submit grace.
@@ -293,11 +304,68 @@ func TestPumpPredictGate(t *testing.T) {
 	waitDone(t, done, 2*time.Second)
 }
 
+// TestPumpPredictGateUnreadablePane pins what an empty app name MEANS. paneState
+// reports one on every failure — no tmux, malformed output, the 500ms read timing
+// out — and that is "no information", not "the app changed to nothing". The
+// browser has no unknown case: an empty name reads as a real app change, so it
+// would hand off to nothing and hand back again, and the second handoff lands
+// exactly as the user resumes typing, which is the latency this feature exists to
+// hide. So the last known name carries forward, and an unreadable pane may move
+// only the safety byte, which already fails closed.
+func TestPumpPredictGateUnreadablePane(t *testing.T) {
+	var unreadable atomic.Bool
+	cfg := testCfg()
+	cfg.predict = true
+	cfg.paneState = func(context.Context) (bool, string) {
+		if unreadable.Load() {
+			return false, "" // every paneState error path, verbatim
+		}
+		return true, "claude"
+	}
+	conn, _, done := startPump(t, cfg)
+
+	if f := readFrame(t, conn, framePredict); f[1] != 1 || string(f[2:]) != "claude" {
+		t.Fatalf("initial gate frame = %d %q, want 1 claude", f[1], f[2:])
+	}
+
+	// The pane goes unreadable. The safety flip must still be delivered — that is
+	// the half that protects a secret — but it must carry the app the browser is
+	// already set up for, not an empty name.
+	unreadable.Store(true)
+	if f := readFrame(t, conn, framePredict); f[1] != 0 || string(f[2:]) != "claude" {
+		t.Fatalf("gate frame for an unreadable pane = %d %q, want 0 claude", f[1], f[2:])
+	}
+
+	// It stays unreadable for several more polls. Nothing has changed, so nothing
+	// may be sent: each spurious frame here is a heavy handoff the user pays for.
+	quiet := time.After(4 * predictPoll)
+	for settled := false; !settled; {
+		select {
+		case f := <-conn.out:
+			if len(f) > 0 && f[0] == framePredict {
+				t.Fatalf("gate frame %d %q while the pane stayed unreadable and nothing changed", f[1], f[2:])
+			}
+		case <-quiet:
+			settled = true
+		}
+	}
+
+	// Readable again: one frame back to safe, still the same app throughout, so
+	// the round trip cost the browser no handoff at all.
+	unreadable.Store(false)
+	if f := readFrame(t, conn, framePredict); f[1] != 1 || string(f[2:]) != "claude" {
+		t.Fatalf("gate frame after the pane became readable = %d %q, want 1 claude", f[1], f[2:])
+	}
+
+	close(conn.in)
+	waitDone(t, done, 2*time.Second)
+}
+
 // TestPumpNoPredictFrames: a session that did not opt in must never see a 0x02
 // frame, even with a safe pane (the managed dashboard client relies on this).
 func TestPumpNoPredictFrames(t *testing.T) {
 	cfg := testCfg()
-	cfg.paneSafe = func(context.Context) bool { return true }
+	cfg.paneState = func(context.Context) (bool, string) { return true, "zsh" }
 	conn, tts, done := startPump(t, cfg)
 
 	if _, err := tts.Write([]byte("ok")); err != nil {

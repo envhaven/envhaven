@@ -15,6 +15,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -68,32 +69,214 @@ var secretReaders = map[string]bool{
 	"su": true, "sudo": true, "doas": true, "passwd": true, "login": true,
 }
 
-// paneSafe reports whether the active pane of the login tmux session is a safe
-// place to draw predicted keystrokes. It fails closed: any error (no tmux, no
-// session, a dead pane, copy-mode, an unreadable tty, a secret reader in the
-// foreground, or a canonical-mode prompt) yields false.
-func paneSafe(ctx context.Context, session string) bool {
+// paneState reports whether the active pane of the login tmux session is a safe
+// place to draw predicted keystrokes, plus the name of the application running
+// there (lowercased, e.g. "zsh", "claude"; empty when unreadable) — the pane's
+// foreground command, or what that command was told to run when it is only a
+// language runtime (see runtimeWrappers). Safety fails
+// closed: any error (no tmux, no session, a dead pane, copy-mode, an unreadable
+// tty, a secret reader in the foreground, or a canonical-mode prompt) yields
+// false. The command name rides the same gate frame so the browser can scope
+// per-application prediction facts (a line editor's wrap style) to the app that
+// exhibited them — zsh and Claude Code wrap differently, and a style learned in
+// one must never be applied to the other.
+func paneState(ctx context.Context, session string) (bool, string) {
 	c, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
-	// One field string, '|'-separated (no field can contain '|'): pts path,
-	// foreground command name, in-copy-mode flag, dead flag. The session is the one
+	// One field string, '|'-separated: pts path, foreground command name,
+	// in-copy-mode flag, dead flag, the pane process's pid. A name may itself
+	// contain '|' (tmux passes argv[0] through), which yields more than five
+	// fields and is refused below: the safe direction, and unspoofable, since the
+	// count is 5 plus the number of pipes. The session is the one
 	// THIS console renders: base `envhaven` for the managed console, or the
 	// self-host console's own grouped view (which has its own current window). The
 	// safety logic below is identical regardless of which session we read.
 	out, err := exec.CommandContext(c, "tmux", "display-message", "-p", "-t", session,
-		"#{pane_tty}|#{pane_current_command}|#{pane_in_mode}|#{pane_dead}").Output()
+		"#{pane_tty}|#{pane_current_command}|#{pane_in_mode}|#{pane_dead}|#{pane_pid}").Output()
 	if err != nil {
-		return false
+		return false, ""
 	}
 	f := strings.Split(strings.TrimSpace(string(out)), "|")
-	if len(f) != 4 {
+	if len(f) != 5 {
+		return false, ""
+	}
+	tty, cmd, inMode, dead, panePID := f[0], strings.ToLower(f[1]), f[2], f[3], f[4]
+	if tty == "" || inMode == "1" || dead == "1" || !plainName(cmd) || secretReaders[cmd] {
+		return false, clampApp(cmd)
+	}
+	// The name a runtime was told to run, when tmux reported the runtime itself.
+	// Only ever the LABEL: the safety decision above is taken on the name tmux
+	// gave us and stays there, because resolving deeper would lose the wrapper —
+	// `sudo cat` would report "cat" and stop blocking sudo's password prompt.
+	// Resolving can only ADD a refusal, never remove one.
+	app := cmd
+	if runtimeWrappers[cmd] {
+		if inner := wrappedApp(panePID); inner != "" {
+			if secretReaders[inner] {
+				return false, clampApp(inner)
+			}
+			app = inner
+		}
+	}
+	return isRawPane(tty), clampApp(app)
+}
+
+// runtimeWrappers are command names that name a language runtime rather than an
+// application. An npm-installed CLI is often a shim that STAYS RUNNING as the
+// parent of the real binary, and tmux reports the parent, so a pane running the
+// tool reports the runtime. Measured on codex 0.145.0: `node .../bin/codex`
+// holds the pane while the Rust binary runs as its child, and
+// pane_current_command is "node" for the whole session — which is every codex
+// session, so the browser could never scope anything to codex at all.
+//
+// This is the MEASURED set, not the plausible one. Every entry renames panes
+// that are running something perfectly identifiable already: adding "python3"
+// turned `python3 /tmp/composer.py` from "python3" into "composer.py", which is
+// arguably more precise and is certainly a different name than everything
+// downstream was written against. An entry earns its place by a pane observed
+// reporting a runtime while a real application ran in it — bun, deno, python and
+// ruby are all capable of it and none of them was caught doing it here. Add one
+// when a pane is seen doing it, with the observation in the commit.
+var runtimeWrappers = map[string]bool{
+	"node": true,
+}
+
+// wrappedApp reports what the tty's foreground runtime was told to run: the
+// basename of its first non-flag argument, so `node /opt/envhaven/bin/codex`
+// is "codex". Empty whenever that cannot be established — an interactive
+// runtime with no script, an unreadable /proc entry, a name that is not a plain
+// command name — and the caller then keeps the runtime's own name.
+// The pid comes from tmux, and it is about to be spliced into a /proc path, so
+// it is checked for what it claims to be rather than trusted to be it.
+func isDigits(s string) bool {
+	if s == "" {
 		return false
 	}
-	tty, cmd, inMode, dead := f[0], strings.ToLower(f[1]), f[2], f[3]
-	if tty == "" || inMode == "1" || dead == "1" || secretReaders[cmd] {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func wrappedApp(panePID string) string {
+	if !isDigits(panePID) {
+		return ""
+	}
+	// The foreground process group leader IS the process tmux named, so its argv
+	// answers the question. tcgetpgrp cannot ask: the ioctl is only valid on the
+	// caller's OWN controlling terminal and returns ENOTTY on any other pts
+	// (measured). The pane process's tpgid is the same number, and reading it
+	// touches nothing.
+	b, err := os.ReadFile("/proc/" + panePID + "/stat")
+	if err != nil {
+		return ""
+	}
+	tpgid := statTPGID(string(b))
+	if tpgid <= 0 {
+		return ""
+	}
+	c, err := os.ReadFile("/proc/" + strconv.Itoa(tpgid) + "/cmdline")
+	if err != nil {
+		return ""
+	}
+	return wrappedName(string(c))
+}
+
+// statTPGID pulls the foreground process group out of /proc/<pid>/stat, whose
+// fields run: pid (comm) state ppid pgrp session tty_nr tpgid ... comm is the
+// only one that can hold spaces or parentheses and it is the only parenthesised
+// one, so everything after the LAST ')' splits on whitespace cleanly. Zero on
+// anything unexpected, which the caller reads as "cannot tell".
+func statTPGID(stat string) int {
+	i := strings.LastIndexByte(stat, ')')
+	if i < 0 {
+		return 0
+	}
+	f := strings.Fields(stat[i+1:])
+	if len(f) < 6 {
+		return 0
+	}
+	n, err := strconv.Atoi(f[5])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// wrappedName picks the application out of a runtime's argv: the basename of the
+// first argument that names a FILE, lowercased. /proc/<pid>/cmdline is the raw
+// NUL-separated argv.
+//
+// "Names a file" means it carries a path separator, which is what separates the
+// script a runtime was handed from a word it was given: `bun run dev` is not an
+// application called "run", and `python3 -m http.server` is not one called
+// "http.server". A launcher shim always passes an absolute path (measured:
+// `node /mise/installs/node/22/bin/codex`), so the rule keeps every real case
+// and drops the guesses. Anything left that is not a plain command name is
+// refused outright rather than trimmed into one.
+func wrappedName(cmdline string) string {
+	argv := strings.Split(cmdline, "\x00")
+	for _, a := range argv[1:] {
+		if a == "" || strings.HasPrefix(a, "-") {
+			continue // runtime flags: `node --enable-source-maps script`
+		}
+		slash := strings.LastIndexByte(a, '/')
+		if slash < 0 {
+			return "" // a word, not a script: nothing here names an application
+		}
+		name := strings.ToLower(a[slash+1:])
+		if !plainName(name) {
+			return ""
+		}
+		return name
+	}
+	return ""
+}
+
+// plainName reports whether the name looks like a command name we can reason
+// about. tmux hands us argv[0] verbatim apart from a leading '-' or spaces, so a
+// process is free to call itself "\tssh" or "​ssh": the secretReaders lookup
+// then MISSES, and the pane falls through to isRawPane — which an ssh session
+// passes, because ssh puts the tty in raw mode. That combination reports a live
+// ssh session as a safe place to draw, and the next thing typed into it may be a
+// passphrase. (Measured against tmux 3.4: `exec -a $'\tssh' ssh host` yields
+// pane_current_command "\tssh".) Refusing the name outright is the fix rather
+// than guessing what was meant: an unrecognisable name is one we decline to
+// predict in, and the whole set of real names — zsh, node, python3, claude,
+// opencode — is spelled from this alphabet. cmd is already lowercased.
+func plainName(s string) bool {
+	if s == "" {
 		return false
 	}
-	return isRawPane(tty)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'a' && c <= 'z' || c >= '0' && c <= '9' ||
+			c == '.' || c == '_' || c == '-' || c == '+' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// clampApp bounds the pane's command name for the gate frame. A hostile argv[0]
+// must not bloat the wire, and a byte-sliced name must not leave a split rune
+// behind: the frame declares UTF-8. Applied only to the value that LEAVES
+// paneState, never to the name the secretReaders decision is taken on — a wire
+// size has no business shortening a name the security lookup is about to miss on.
+// The scrub is what makes the truncation safe. What reaches here is already valid:
+// paneState lowercases the name first, and strings.ToLower maps every invalid byte
+// to U+FFFD. But that replacement is three bytes wide, so an argv[0] of invalid
+// bytes expands past the bound and the cut can land inside a U+FFFD — which is
+// exactly the split rune the frame's UTF-8 contract forbids. ToValidUTF8 returns an
+// already-valid string unchanged, so the ordinary "zsh" case costs one scan.
+func clampApp(cmd string) string {
+	if len(cmd) > maxAppName {
+		cmd = cmd[:maxAppName]
+	}
+	return strings.ToValidUTF8(cmd, "")
 }
 
 // isRawPane reports whether the pts is in non-canonical (raw) mode, the mode a
