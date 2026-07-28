@@ -44,15 +44,12 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/envhaven-console .
 # ============================================
 FROM linuxserver/code-server:latest
 
-# Version tracking for updates
-ARG ENVHAVEN_VERSION=dev
-ENV ENVHAVEN_VERSION=$ENVHAVEN_VERSION
+# Version tracking for updates lives at the END of this stage. See the note there.
 
 LABEL maintainer="EnvHaven Team"
 LABEL org.opencontainers.image.source="https://github.com/envhaven/envhaven"
 LABEL org.opencontainers.image.description="Batteries-included environments for AI agents"
 LABEL org.opencontainers.image.licenses="MIT"
-LABEL org.opencontainers.image.version=$ENVHAVEN_VERSION
 
 # ============================================
 # System Dependencies
@@ -343,6 +340,22 @@ RUN node --version && \
     ffmpeg -version && \
     playwright --version && \
     /opt/envhaven/bin/envhaven-console --version
+
+# ============================================
+# Version
+# ============================================
+# Last on purpose. An ENV whose value changes every build invalidates every layer built
+# after it, and this used to sit as the second instruction of the stage, above 29 RUN
+# steps that install the language runtimes, the npm globals, the uv tools and a browser.
+# docker.yml passes a fresh `dev-<sha>` on each master push, so every commit rebuilt the
+# whole image from the first apt-get down.
+#
+# Nothing in the build reads this value. The only consumer is the extension, which reads
+# it out of the environment at runtime (extension/src/environment.ts), so it just has to
+# be present in the final image.
+ARG ENVHAVEN_VERSION=dev
+ENV ENVHAVEN_VERSION=$ENVHAVEN_VERSION
+LABEL org.opencontainers.image.version=$ENVHAVEN_VERSION
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8443/healthz || exit 1
