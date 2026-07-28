@@ -292,6 +292,37 @@ Then, always:
    CI, and the platform e2e suite all run `command --version` for every catalog entry, so the
    roster cannot drift.
 
+7. If it is an interactive TUI that draws its own input box, seed the browser terminal for it.
+   The console paints each keystroke before the server echoes it, and it can only predict a
+   wrap whose shape it knows. A tool with no row still works, and after its first wrap the
+   engine learns the style from what it just watched. What the row buys is that first wrap of
+   each session, which rides the round trip instead of being painted.
+
+   ```bash
+   bun dev/scripts/measure-tui.ts --print <tool>   # drives it in a real terminal, prints the row
+   ```
+
+   Put the row it prints into `var TUI` in `console/ui/terminal.html`. Never hand-derive those
+   numbers. The script exists because these applications redesign their composers between
+   releases, and a measured constant is the only kind worth committing.
+
+   Two follow-ons, both easy to miss:
+
+   - **npm-installed CLIs are usually shims.** The launcher keeps running as the parent of the
+     real binary and tmux reports the parent, so the pane reads as `node` and the console can
+     never scope anything to the tool. Measured on codex 0.145.0, `pane_current_command` is
+     `node` for the entire session. Check it directly, with the tool running in a pane:
+     `tmux display-message -p '#{pane_current_command}'`. If that prints the runtime rather
+     than the tool, add the runtime to `runtimeWrappers` in `console/gate.go`, on that
+     observation and with the observation in the commit rather than on a guess.
+   - **A row nothing tests is a row that rots.** Three lists, and each one is a separate
+     edit: `APPS` in `dev/scripts/lib/console-rig.ts`, `SEED_TABLE` and `KEEP_TABLE` in
+     `dev/scripts/lib/console-checks/wrap.ts`. Then run
+     `bun dev/scripts/test-console-echo.ts seedwrap wrapkeep`. Miss `KEEP_TABLE` and
+     `wrapkeep` prints green without ever having touched the new tool. `seedwrap` goes red if
+     the engine stops seeding what the table claims, which is what keeps the table
+     load-bearing instead of decorative. Deleting a row must fail that check.
+
 ## Persistent Terminal Sessions
 
 EnvHaven provides persistent terminal sessions that survive reconnects. This enables long-running AI agent sessions while you disconnect and reconnect freely.
