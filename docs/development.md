@@ -159,7 +159,7 @@ bun dev/scripts/test-console-ui.ts   # terminal page structure, run from the rep
 ```
 
 The browser terminal predicts where an AI CLI's input box will wrap, from a table
-of measured constants in `console/ui/terminal.html`. Those applications redesign
+of measured constants in `console/ui/assets/eh-engine.js`. Those applications redesign
 their composers between releases, so the table has an instrument rather than a
 comment vouching for it:
 

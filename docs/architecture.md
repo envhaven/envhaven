@@ -302,7 +302,7 @@ Then, always:
    bun dev/scripts/measure-tui.ts --print <tool>   # drives it in a real terminal, prints the row
    ```
 
-   Put the row it prints into `var TUI` in `console/ui/terminal.html`. Never hand-derive those
+   Put the row it prints into `var TUI` in `console/ui/assets/eh-engine.js`. Never hand-derive those
    numbers. The script exists because these applications redesign their composers between
    releases, and a measured constant is the only kind worth committing.
 

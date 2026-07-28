@@ -347,7 +347,8 @@ func serveUI(w http.ResponseWriter, frameAncestors []string) {
 	_, _ = w.Write(terminalHTML)
 }
 
-// assetsHandler serves the vendored xterm.js assets from the embedded FS, with
+// assetsHandler serves the embedded FS behind /__console/assets: the vendored xterm
+// bundles and fonts, plus eh-engine.js, which is ours and is the terminal itself. With
 // content types inferred from their extensions.
 func assetsHandler() http.Handler {
 	sub, err := fs.Sub(assetsFS, "ui/assets")

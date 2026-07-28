@@ -181,12 +181,13 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
-      # terminal.html is embedded into the binary and served verbatim, and nothing else
-      # in this workflow looks inside it: the image job only greps the served page for
-      # its <title>. Parse the engine here so a syntax error cannot ship green. Needs no
-      # `bun install` — the script imports only runtime builtins and dev/scripts/lib.
-      # Ahead of the Go steps because it is the cheapest check in the job by two orders
-      # of magnitude, and a broken page should not wait on `go test -race` to be found.
+      # The page and its engine are embedded into the binary and served verbatim, and
+      # nothing else in this workflow looks inside either: the image job only greps the
+      # served page for its <title>. Parse the engine here so a syntax error cannot ship
+      # green. Needs no `bun install`, since the script imports only runtime builtins and
+      # dev/scripts/lib. Ahead of the Go steps because it is the cheapest check in the job
+      # by two orders of magnitude, and a broken terminal should not wait on
+      # `go test -race` to be found.
       - name: Terminal page
         run: bun dev/scripts/test-console-ui.ts
 

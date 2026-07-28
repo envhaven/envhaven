@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Composer geometry of the AI CLIs, measured against real terminals.
 //
-// console/ui/terminal.html predicts where a TUI's input box will wrap, so a
+// console/ui/assets/eh-engine.js predicts where a TUI's input box will wrap, so a
 // keystroke can be painted before the round trip instead of after it. Those
 // predictions come from a table of measured constants (`var TUI`), and a
 // constant measured once is a constant that goes stale: these applications
@@ -24,7 +24,9 @@ import { join } from 'path';
 import { $ } from 'bun';
 import { REPO_ROOT, loadConfig, log, formatTestSummary, isContainerRunning } from './lib';
 
-const PAGE = join(REPO_ROOT, 'console/ui/terminal.html');
+// The engine moved out of terminal.html into its own classic script, and the table
+// went with it. Read it where it lives.
+const ENGINE = join(REPO_ROOT, 'console/ui/assets/eh-engine.js');
 const WIDTHS = [120, 100];
 const ROWS = 30;
 const SETTLE_MS = 160;   // one keystroke's render; Ink and Bubbletea both repaint whole frames
@@ -38,13 +40,13 @@ interface Row {
   prompt: string | null;
 }
 
-// The table in terminal.html is the single source of truth; this reads it rather
+// The table in the engine is the single source of truth; this reads it rather
 // than restating it. `new Function` evaluates the object literal exactly as the
 // browser will, so \u escapes and comments need no parser of our own.
 function tableFromPage(): Record<string, Row> {
-  const html = readFileSync(PAGE, 'utf8');
-  const m = html.match(/\n {2}var TUI = (\{[\s\S]*?\n {2}\});/);
-  if (!m) throw new Error(`Could not find "var TUI = {...}" in ${PAGE}`);
+  const src = readFileSync(ENGINE, 'utf8');
+  const m = src.match(/\n {2}var TUI = (\{[\s\S]*?\n {2}\});/);
+  if (!m) throw new Error(`Could not find "var TUI = {...}" in ${ENGINE}`);
   return new Function(`return ${m[1]}`)() as Record<string, Row>;
 }
 
@@ -265,7 +267,7 @@ for (const app of targets) {
     log.error(`${app}: table is stale on ${wrong.join(', ')}`);
     log.info(`  table:    ${describe(want)}`);
     log.info(`  measured: ${describe(a)}`);
-    log.info(`  Replace the row in console/ui/terminal.html with the measured one.`);
+    log.info(`  Replace the row in console/ui/assets/eh-engine.js with the measured one.`);
     failed++;
   }
 }
