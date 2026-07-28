@@ -9,15 +9,28 @@ on:
 
 concurrency:
   group: docker-${{ github.ref }}
-  cancel-in-progress: true
+  # Never cancel a release. Master pushes still coalesce, because only the newest of
+  # those is worth an image, but a half-published tag is worse than a slow one.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # Nothing reaches ghcr until CI is green. One workflow cannot `needs:` another, so the
+  # checks are called in as a job here and `needs: checks` below waits on the whole of
+  # ci.yml, every job in it. Called workflows run under THIS workflow's ref and event, so
+  # on a v* tag they check the tagged tree, which is the tree being published.
+  checks:
+    name: Checks
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   build:
     name: Build (${{ matrix.platform }})
+    needs: checks
     strategy:
       fail-fast: false
       matrix:

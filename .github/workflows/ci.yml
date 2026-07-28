@@ -4,10 +4,20 @@ on:
   pull_request:
     branches:
       - master
+  # Callable, so the release path runs these same checks instead of its own copy.
+  # docker.yml gates its build on this file: one workflow cannot `needs:` another, it
+  # can only call it, and calling is what stops a bad image before it reaches ghcr.
+  workflow_call:
 
 concurrency:
-  group: ci-${{ github.head_ref }}
-  cancel-in-progress: true
+  # head_ref is empty on anything but a pull request. This file now also runs as a called
+  # workflow on pushes and tags, where a bare `ci-${{ github.head_ref }}` would put every
+  # one of them in the same unnamed bucket.
+  group: ci-${{ github.head_ref || github.ref }}
+  # Only pull request runs are worth superseding. On the called path the caller decides
+  # anyway, since cancelling docker.yml cancels the jobs it called; this keeps the direct
+  # pull request behaviour and makes the called case explicit rather than accidental.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   cli:
@@ -52,8 +62,16 @@ jobs:
           context: .
           load: true
           tags: envhaven:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # The same scope docker.yml builds into, so on a release this job builds the
+          # image and docker.yml's push reuses the layers instead of paying for a second
+          # cold build. That only works because ENVHAVEN_VERSION is set at the END of the
+          # Dockerfile: it is the one build-arg that differs between the two jobs, and
+          # while it sat above the install steps it invalidated all of them.
+          # Pinned to linux/amd64 because that is the runner's native platform and this
+          # job never sets `platforms`. Bumping the -v2 suffix means bumping it in
+          # docker.yml too, or the two silently stop sharing.
+          cache-from: type=gha,scope=linux/amd64-v2
+          cache-to: type=gha,mode=max,scope=linux/amd64-v2
 
       - name: Test code-server health
         run: |

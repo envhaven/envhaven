@@ -17,6 +17,10 @@ concurrency:
   group: cli-${{ github.ref }}
   cancel-in-progress: true
 
+# Both jobs below run the CLI checks inline rather than calling ci.yml the way docker.yml
+# does. That is deliberate: docker.yml already calls ci.yml on every push and tag, and a
+# second caller would run a second nested copy of every job in it, including the image
+# build. Duplicating four cheap bun steps costs less than duplicating that.
 jobs:
   release:
     name: Release
