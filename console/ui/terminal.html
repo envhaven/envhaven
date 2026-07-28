@@ -832,6 +832,12 @@
   // and checks this table against them. It is how a row gets written, and it is
   // the answer when one of them redesigns its composer: measure again, replace
   // the row. Never hand-derive these numbers.
+  //
+  // A row also needs a check that presses it, or it rots unnoticed: add the app to
+  // dev/scripts/lib/console-rig.ts and to seedwrap's own table, which restates
+  // these numbers on purpose so drift between the two shows up as a failure. The
+  // whole procedure for a newly added tool is docs/architecture.md, "Adding New
+  // Tools", step 7.
   var TUI = {
     // Rules above and below, no side borders, the box pinned to the bottom of the
     // screen and lifting into the space above as it grows. The separator after ❯
@@ -956,12 +962,17 @@
       (predicted !== null || (performance.now() - lastEditAt) < CURSOR_GRACE);
   }
   function releaseCursor() {
-    if (glyphLine) glyphLine.style.display = 'none';
-    if (coverLine) coverLine.style.display = 'none';
-    if (predCursor) predCursor.style.display = 'none';
-    if (edgeLine) edgeLine.style.display = 'none';
-    if (boxLine) boxLine.style.display = 'none';
-    if (wipeLine) wipeLine.style.display = 'none';
+    // Every child of the overlay, whatever it is called. This used to name the six
+    // layers one by one, which made a seventh layer two edits: its own drawing code,
+    // and a line here. Forgetting the second left that layer painted over a live
+    // terminal after the engine had let go of it, with nothing left to take it down.
+    // The overlay already knows what it is holding, so ask it rather than keeping a
+    // second list in step with the first.
+    if (predOverlay) {
+      for (var li = 0; li < predOverlay.children.length; li++) {
+        predOverlay.children[li].style.display = 'none';
+      }
+    }
     if (owningNow) { owningNow = false; termEl.classList.remove('eh-hide-cursor'); }
     lastMeasureS = null; // drop the cached x; cell width may differ next session (resize)
   }
