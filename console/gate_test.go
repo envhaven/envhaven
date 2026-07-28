@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/creack/pty"
@@ -122,31 +124,86 @@ func TestPaneStateRefuses(t *testing.T) {
 		t.Fatalf("TCSETS raw: %v", err)
 	}
 
+	// wantApp is not decoration. The label rides the same frame as the verdict, and the
+	// browser keys everything it learns about an application by it, so "refused" and
+	// "refused, and here is a name we already declared unreasonable" are different
+	// answers. Reading only `safe` let three separate behaviours revert green.
 	for _, tc := range []struct {
-		name string
-		cmd  string
-		mode string
-		safe bool
+		name    string
+		cmd     string
+		mode    string
+		safe    bool
+		wantApp string
 	}{
-		{"an editor on a raw pane is predictable", "nvim", "0", true},
-		{"a known secret reader is refused", "ssh", "0", false},
-		{"a secret reader wearing a tab is refused", "\tssh", "0", false},
-		{"a secret reader wearing a zero-width space is refused", "​su", "0", false},
-		{"a name carrying an escape sequence is refused", "\x1b[2Jzsh", "0", false},
+		{"an editor on a raw pane is predictable", "nvim", "0", true, "nvim"},
+		{"a known secret reader is refused", "ssh", "0", false, "ssh"},
+		{"a secret reader wearing a tab is refused", "\tssh", "0", false, ""},
+		{"a secret reader wearing a zero-width space is refused", "​su", "0", false, ""},
+		{"a name carrying an escape sequence is refused", "\x1b[2Jzsh", "0", false, ""},
 		// A '|' in argv[0] splits into a sixth field. Refusing on an exact count is what
 		// makes the separator unspoofable; accepting "at least five" would read the name's
 		// first half as the command and the rest as the flags.
-		{"a name carrying the field separator is refused", "ss|h", "0", false},
-		{"a pane in copy mode is refused", "nvim", "1", false},
+		{"a name carrying the field separator is refused", "ss|h", "0", false, ""},
+		{"a pane in copy mode is refused", "nvim", "1", false, "nvim"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fakeTmux(t, tty.Name()+"|"+tc.cmd+"|"+tc.mode+"|0|1\n")
-			safe, _ := paneState(context.Background(), "any-session")
+			safe, app := paneState(context.Background(), "any-session")
+			if app != tc.wantApp {
+				t.Errorf("paneState app = %q, want %q: a name the gate refused to reason "+
+					"about must not become a cache key in the browser", app, tc.wantApp)
+			}
 			if safe != tc.safe {
 				t.Fatalf("paneState safe=%v, want %v for pane_current_command %q in_mode %s",
 					safe, tc.safe, tc.cmd, tc.mode)
 			}
 		})
+	}
+}
+
+// TestGateHelperProcess is not a test. It is the child TestPaneStateCopyModeKeepsResolvedApp
+// starts, so that a real pid with a real /proc/<pid>/cmdline exists to resolve.
+func TestGateHelperProcess(t *testing.T) {
+	if os.Getenv("GO_GATE_HELPER") != "1" {
+		t.Skip("helper process, started by TestPaneStateCopyModeKeepsResolvedApp")
+	}
+	time.Sleep(30 * time.Second)
+}
+
+// TestPaneStateCopyModeKeepsResolvedApp pins the reason the wrapper resolution runs
+// before the verdict rather than after it.
+//
+// An npm-installed CLI keeps its launcher running as the parent of the real binary, and
+// tmux reports the parent, so a codex pane reads as `node` until wrappedApp resolves it.
+// Resolving only on the paths that end in "safe" meant entering copy-mode flipped the
+// label to `node` and leaving it flipped back, and the browser drops everything it has
+// learned about an application whenever that label changes. Two full relearns per scroll.
+//
+// The pty is what makes this work: pty.Start puts the child in its own session with the
+// pty as controlling terminal, so it is the foreground process group and /proc/<pid>/stat
+// reports tpgid == its own pid. Without a controlling terminal tpgid is -1, wrappedApp
+// returns "", and the test would pass for the wrong reason.
+func TestPaneStateCopyModeKeepsResolvedApp(t *testing.T) {
+	child := exec.Command(os.Args[0], "-test.run=TestGateHelperProcess", "--", "/x/codex")
+	child.Args[0] = "node" // argv[0], which is what a launcher shim shows
+	child.Env = append(os.Environ(), "GO_GATE_HELPER=1")
+	ptmx, err := pty.Start(child)
+	if err != nil {
+		t.Fatalf("start helper on a pty: %v", err)
+	}
+	defer ptmx.Close()
+	defer func() { _ = child.Process.Kill() }()
+
+	// in_mode 1: the pane is in copy-mode, so this frame is refused either way. What is
+	// under test is the name that rides the refusal.
+	fakeTmux(t, ptmx.Name()+"|node|1|0|"+strconv.Itoa(child.Process.Pid)+"\n")
+	safe, app := paneState(context.Background(), "any-session")
+	if safe {
+		t.Fatal("a pane in copy mode reported safe")
+	}
+	if app != "codex" {
+		t.Fatalf("copy-mode app = %q, want \"codex\": the label flips node<->codex on every "+
+			"scroll and the browser pays a full relearn each way", app)
 	}
 }
 

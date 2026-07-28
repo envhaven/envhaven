@@ -12,7 +12,9 @@ package main
 // console's own (always-raw) outer pty. We read it directly.
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -101,22 +103,34 @@ func paneState(ctx context.Context, session string) (bool, string) {
 		return false, ""
 	}
 	tty, cmd, inMode, dead, panePID := f[0], strings.ToLower(f[1]), f[2], f[3], f[4]
-	if tty == "" || inMode == "1" || dead == "1" || !plainName(cmd) || secretReaders[cmd] {
-		return false, clampApp(cmd)
+	// A name outside the alphabet is one we decline to reason about, and declining has
+	// to include declining to LABEL with it. The browser keys per-application
+	// prediction facts by this string, so handing back a name we just rejected would
+	// let a process pick its own argv[0] and earn a cache entry, and a heavy handoff,
+	// for every invisible-character spelling of a real application's name. Empty is the
+	// sentinel every other error path here already returns.
+	if !plainName(cmd) {
+		return false, ""
 	}
-	// The name a runtime was told to run, when tmux reported the runtime itself.
-	// Only ever the LABEL: the safety decision above is taken on the name tmux
-	// gave us and stays there, because resolving deeper would lose the wrapper —
-	// `sudo cat` would report "cat" and stop blocking sudo's password prompt.
-	// Resolving can only ADD a refusal, never remove one.
+	// The name a runtime was told to run, when tmux reported the runtime itself. LABEL
+	// only, and resolved before the verdict below so a codex pane keeps reporting
+	// `codex` through copy-mode instead of flipping to `node` and back. The browser
+	// drops everything it has learned about an application when that label changes, and
+	// copy-mode is entered and left constantly, so each scroll cost two full relearns.
 	app := cmd
 	if runtimeWrappers[cmd] {
 		if inner := wrappedApp(panePID); inner != "" {
-			if secretReaders[inner] {
-				return false, clampApp(inner)
-			}
 			app = inner
 		}
+	}
+	// One refusal, and secretReaders is asked about BOTH names. The name tmux gave us,
+	// so `sudo cat` keeps blocking on sudo rather than resolving past it to cat. And the
+	// name that resolved to, so an npm-shimmed ssh blocks too. Resolving above can
+	// therefore only ever ADD a disjunct here, which is exactly what makes it safe to
+	// run before the verdict rather than after it: the answer is unchanged on every
+	// input, and you can see that without holding the two branches in your head.
+	if tty == "" || inMode == "1" || dead == "1" || secretReaders[cmd] || secretReaders[app] {
+		return false, clampApp(app)
 	}
 	return isRawPane(tty), clampApp(app)
 }
@@ -177,11 +191,31 @@ func wrappedApp(panePID string) string {
 	if tpgid <= 0 {
 		return ""
 	}
-	c, err := os.ReadFile("/proc/" + strconv.Itoa(tpgid) + "/cmdline")
+	// Bounded. This runs on every gate poll, and /proc/<pid>/cmdline hands back the
+	// whole argument area, which the kernel lets grow into the megabytes. wrappedName
+	// stops at the first argument carrying a path, so a few kilobytes is already far
+	// more than the answer can need.
+	fh, err := os.Open("/proc/" + strconv.Itoa(tpgid) + "/cmdline")
 	if err != nil {
 		return ""
 	}
-	return wrappedName(string(c))
+	defer fh.Close()
+	var buf [4096]byte
+	n, err := io.ReadFull(fh, buf[:])
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return ""
+	}
+	// A cut argument is worse than a missing one, because half a path still yields a
+	// plausible basename. argv is NUL-separated, so on a full buffer anything past the
+	// last NUL is a fragment and goes.
+	if n == len(buf) {
+		if i := bytes.LastIndexByte(buf[:n], 0); i >= 0 {
+			n = i + 1
+		} else {
+			n = 0
+		}
+	}
+	return wrappedName(string(buf[:n]))
 }
 
 // statTPGID pulls the foreground process group out of /proc/<pid>/stat, whose
