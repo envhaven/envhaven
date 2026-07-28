@@ -11,7 +11,7 @@
     "outDir": "dist",
     "jsx": "react-jsx",
     "types": ["bun-types", "react"],
-    "lib": ["ES2022"]
+    "lib": ["ES2022", "DOM"]
   },
   "include": ["src/**/*", "scripts/**/*"],
   "exclude": ["node_modules", "dist"]

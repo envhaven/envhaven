@@ -174,7 +174,31 @@ when a wrap starts looking wrong, and replace the row it reports. It is not in C
 it drives third-party TUIs whose startup screens change, and a gate that breaks
 when someone else ships an onboarding dialog would cost more than it catches.
 
-CI runs both of the checks above on every pull request. The Go suite covers both auth modes (platform JWT and web password), the session pump wire protocol, the HTTP API guard and its CORS behavior, the tmux action allowlist, page framing (CSP `frame-ancestors` and `X-Frame-Options`), the skills domain (`console/skills.go` + `skills_test.go`), and pins the vendored xterm assets byte-for-byte (see `console/ui/assets/LICENSE`). The `/tools` and `/skills` wire shapes are pinned by `console/testdata/*.golden.json`, which the extension's `bun test` also reads for its conformance check, so a change on either side of that contract fails a test.
+Prediction itself is a race, so none of it can be checked by reading the source.
+`test-console-echo.ts` runs the engine against a real terminal through a proxy
+that inserts a real round trip, then asks the page what it believes while it is
+still wrong:
+
+```bash
+bun dev/scripts/test-console-echo.ts                    # every check
+bun dev/scripts/test-console-echo.ts tailmove endreach  # named checks only
+```
+
+It needs a running container with a console password (`bun dev/scripts/start.ts`)
+and a browser (`cd dev && bunx playwright install chromium`). The mimic
+applications in `dev/fixtures/` are copied into the container for it; they exist
+because the real CLIs cannot be driven into some of the states the checks need, a
+controlled background or a self-drawn caret among them.
+
+Every check reports pass, fail or skip, and a skip exits non-zero. That
+distinction carries more weight here than usual: a check that never reached the
+state it guards has proved nothing, and counting it as a pass is how a suite stops
+testing anything while still printing green. It stays out of CI for the same
+reason `measure-tui.ts` does.
+
+CI runs the Go suite and `test-console-ui.ts` on every pull request, and again on
+the release path: `docker.yml` calls the CI workflow and publishes nothing to
+ghcr unless it passes. The Go suite covers both auth modes (platform JWT and web password), the session pump wire protocol, the HTTP API guard and its CORS behavior, the tmux action allowlist, page framing (CSP `frame-ancestors` and `X-Frame-Options`), the skills domain (`console/skills.go` + `skills_test.go`), and pins the vendored xterm assets byte-for-byte (see `console/ui/assets/LICENSE`). The `/tools` and `/skills` wire shapes are pinned by `console/testdata/*.golden.json`, which the extension's `bun test` also reads for its conformance check, so a change on either side of that contract fails a test.
 
 ## Project Structure
 
