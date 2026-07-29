@@ -191,6 +191,59 @@ function isPortOpen(port: number, host = '127.0.0.1'): Promise<boolean> {
   });
 }
 
+// Every media type a tag might resolve to. ghcr filters rather than negotiates: it serves
+// the manifest's actual stored type when that type appears in Accept and 404s when it does
+// not, never converting — so a single-type Accept header stops working the day the publish
+// pipeline changes shape. This one asked only for a Docker v2 manifest, which released tags
+// have never been, so the self-hosted update prompt has never appeared.
+const MANIFEST_ACCEPT = [
+  'application/vnd.oci.image.index.v1+json',
+  'application/vnd.docker.distribution.manifest.list.v2+json',
+  'application/vnd.oci.image.manifest.v1+json',
+  'application/vnd.docker.distribution.manifest.v2+json',
+].join(', ');
+
+interface RegistryManifest {
+  config?: { digest?: string };
+  manifests?: Array<{ digest: string; platform?: { architecture: string; os: string } }>;
+}
+
+/** The `org.opencontainers.image.version` label on ghcr's `latest`, or null if anything
+ *  along the way is unavailable — the caller treats that as "no update to offer". */
+async function fetchGhcrVersionLabel(token: string): Promise<string | null> {
+  const registry = 'https://ghcr.io/v2/envhaven/envhaven';
+  const get = (path: string, accept?: string) =>
+    fetch(`${registry}/${path}`, {
+      headers: { Authorization: `Bearer ${token}`, ...(accept ? { Accept: accept } : {}) },
+      signal: AbortSignal.timeout(3000),
+    });
+
+  const res = await get('manifests/latest', MANIFEST_ACCEPT);
+  if (!res.ok) return null;
+  let manifest = (await res.json()) as RegistryManifest;
+
+  // A `manifests` array means the tag is an index, so the config lives one level down in
+  // the linux/amd64 child. A plain manifest already is that child. Branching on the array
+  // rather than on mediaType covers the OCI and Docker spellings of both shapes at once.
+  if (manifest.manifests) {
+    const amd64 = manifest.manifests.find(
+      (m) => m.platform?.architecture === 'amd64' && m.platform?.os === 'linux'
+    );
+    if (!amd64) return null;
+    const childRes = await get(`manifests/${amd64.digest}`, MANIFEST_ACCEPT);
+    if (!childRes.ok) return null;
+    manifest = (await childRes.json()) as RegistryManifest;
+  }
+
+  const configDigest = manifest.config?.digest;
+  if (!configDigest) return null;
+
+  const configRes = await get(`blobs/${configDigest}`);
+  if (!configRes.ok) return null;
+  const config = (await configRes.json()) as { config?: { Labels?: Record<string, string> } };
+  return config.config?.Labels?.['org.opencontainers.image.version'] || null;
+}
+
 async function getVersionInfo(isManaged: boolean, apiUrl: string | null): Promise<VersionInfo> {
   const current = process.env.ENVHAVEN_VERSION || null;
   
@@ -210,37 +263,7 @@ async function getVersionInfo(isManaged: boolean, apiUrl: string | null): Promis
       );
       if (tokenRes.ok) {
         const { token } = await tokenRes.json() as { token: string };
-        
-        const manifestRes = await fetch(
-          'https://ghcr.io/v2/envhaven/envhaven/manifests/latest',
-          {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              Accept: 'application/vnd.docker.distribution.manifest.v2+json',
-            },
-            signal: AbortSignal.timeout(3000),
-          }
-        );
-        
-        if (manifestRes.ok) {
-          const manifest = await manifestRes.json() as { config?: { digest?: string } };
-          const configDigest = manifest.config?.digest;
-          
-          if (configDigest) {
-            const configRes = await fetch(
-              `https://ghcr.io/v2/envhaven/envhaven/blobs/${configDigest}`,
-              { 
-                headers: { Authorization: `Bearer ${token}` },
-                signal: AbortSignal.timeout(3000),
-              }
-            );
-            
-            if (configRes.ok) {
-              const config = await configRes.json() as { config?: { Labels?: Record<string, string> } };
-              latest = config.config?.Labels?.['org.opencontainers.image.version'] || null;
-            }
-          }
-        }
+        latest = await fetchGhcrVersionLabel(token);
       }
     }
   } catch {
