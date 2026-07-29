@@ -64,15 +64,21 @@ export function loadConfig(): Config {
   const envDevPath = join(DEV_ROOT, '.env.dev');
   const envVars = loadEnvFile(envDevPath);
 
+  // An exported variable wins over dev/.env.dev, which wins over the default. Someone
+  // typing ENVHAVEN_IMAGE=... in front of a script means it, and a file that silently
+  // outranks them is the surprising reading. CI has no .env.dev at all, so this is also
+  // what points the harness at the image the build step just loaded.
+  const get = (key: string) => process.env[key] || envVars[key];
+
   return {
-    containerName: envVars['ENVHAVEN_CONTAINER_NAME'] || DEFAULTS.containerName,
-    image: envVars['ENVHAVEN_IMAGE'] || DEFAULTS.image,
-    webPort: parseInt(envVars['ENVHAVEN_WEB_PORT'] || String(DEFAULTS.webPort), 10),
-    sshPort: parseInt(envVars['ENVHAVEN_SSH_PORT'] || String(DEFAULTS.sshPort), 10),
-    consolePort: parseInt(envVars['ENVHAVEN_CONSOLE_PORT'] || String(DEFAULTS.consolePort), 10),
-    password: envVars['ENVHAVEN_PASSWORD'] || DEFAULTS.password,
-    host: envVars['ENVHAVEN_HOST'] || DEFAULTS.host,
-    hostRepoPath: envVars['ENVHAVEN_HOST_REPO_PATH'] || DEFAULTS.hostRepoPath,
+    containerName: get('ENVHAVEN_CONTAINER_NAME') || DEFAULTS.containerName,
+    image: get('ENVHAVEN_IMAGE') || DEFAULTS.image,
+    webPort: parseInt(get('ENVHAVEN_WEB_PORT') || String(DEFAULTS.webPort), 10),
+    sshPort: parseInt(get('ENVHAVEN_SSH_PORT') || String(DEFAULTS.sshPort), 10),
+    consolePort: parseInt(get('ENVHAVEN_CONSOLE_PORT') || String(DEFAULTS.consolePort), 10),
+    password: get('ENVHAVEN_PASSWORD') || DEFAULTS.password,
+    host: get('ENVHAVEN_HOST') || DEFAULTS.host,
+    hostRepoPath: get('ENVHAVEN_HOST_REPO_PATH') || DEFAULTS.hostRepoPath,
   };
 }
 

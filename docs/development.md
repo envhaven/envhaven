@@ -118,13 +118,14 @@ eh    # Press 't' → 'i'
 bun dev/scripts/test-image.ts
 ```
 
-Validates:
-- code-server health
-- SSH daemon
+Boots two containers, one with a password and one without, and validates:
+- code-server health, SSH daemon
+- The browser terminal page, its login → cookie → token flow, and that the console gate
+  keeps port 7681 shut when no password is set
 - All runtimes (Node.js, Python, Go, Rust)
-- AI CLI tools
+- AI CLI tools, and that the image's tool roster matches this repo's
 - Bundled CLI tools (ripgrep, fd, jq, ...)
-- Configuration files
+- Configuration files, read as `abc` rather than root
 
 ### Haven CLI Integration Tests
 

@@ -53,6 +53,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -73,85 +76,15 @@ jobs:
           cache-from: type=gha,scope=linux/amd64-v2
           cache-to: type=gha,mode=max,scope=linux/amd64-v2
 
-      - name: Test code-server health
-        run: |
-          docker run -d --name test-health -p 8443:8443 envhaven:test
-          sleep 30
-          curl -f http://localhost:8443/healthz || exit 1
-          docker rm -f test-health
-
-      - name: Test SSH
-        run: |
-          docker run -d --name test-ssh -p 2222:22 -e PASSWORD=test envhaven:test
-          sleep 10
-          docker exec test-ssh pgrep sshd || exit 1
-          docker rm -f test-ssh
-
-      - name: Test browser terminal
-        run: |
-          # With a password: the documented login -> cookie -> token flow works
-          # end to end through the real s6-launched binary.
-          docker run -d --name test-console -e PASSWORD=test envhaven:test
-          # Without a password: the gate holds and port 7681 never opens.
-          docker run -d --name test-nopass envhaven:test
-          sleep 15
-          docker exec test-console bash -c '
-            set -e
-            [ "$(curl -s -o /dev/null -w "%{http_code}" -d password=wrong http://localhost:7681/__console/login)" = 401 ]
-            [ "$(curl -s -o /dev/null -w "%{http_code}" -c /tmp/cj -d password=test http://localhost:7681/__console/login)" = 204 ]
-            curl -sf -b /tmp/cj http://localhost:7681/__console/token | grep -qE "^[0-9]+\."
-            curl -sf http://localhost:7681/__console/ui | grep -q "EnvHaven Terminal"
-          '
-          docker exec test-nopass bash -c '! curl -s --max-time 2 http://localhost:7681/'
-          docker rm -f test-console test-nopass
-
-      - name: Test runtimes and AI CLI tools
-        # Runs inside a BOOTED container as the workspace user (abc, HOME=/config) —
-        # the context every tool actually executes in. Root skips init and newer mise
-        # refuses shim configs for root, so a bare `docker run image bash -c` gate
-        # tests an environment no user ever sees. The AI roster is derived from
-        # tool-definitions.json like every other gate; a hand-list here could drift.
-        run: |
-          docker run -d --name test-tools envhaven:test
-          sleep 15
-          docker exec -u abc -e HOME=/config test-tools bash -c '
-            set -e
-            node --version
-            python --version
-            go version
-            rustc --version
-            pnpm --version
-            uv --version
-          '
-          docker exec -u abc -e HOME=/config test-tools bash -c '
-            set -eo pipefail
-            [ "$(jq -r ".tools | length" /opt/envhaven/tool-definitions.json)" -ge 12 ]
-            jq -r ".tools[].command" /opt/envhaven/tool-definitions.json |
-              while read -r cmd; do
-                "$cmd" --version || exit 1
-                # A tool baked under /config passes --version here (that path leads
-                # PATH) and vanishes once a user mounts a volume over /config.
-                # readlink -f follows the claude seed symlink out to /opt/envhaven.
-                case "$(readlink -f "$(command -v "$cmd")")" in
-                  /config/*) echo "$cmd resolves inside /config; a volume mount would hide it" >&2; exit 1;;
-                esac
-              done
-          '
-          docker rm -f test-tools
-
-      - name: Test CLI tools (DOCKER_MODS)
-        run: |
-          docker run -d --name test-mods -e PASSWORD=test envhaven:test
-          echo "Waiting for DOCKER_MODS to install packages..."
-          sleep 60
-          docker exec test-mods bash -c "
-            rg --version &&
-            fd --version &&
-            jq --version &&
-            sqlite3 --version &&
-            zsh --version
-          "
-          docker rm -f test-mods
+      # The same harness `eh` runs locally, so a green CI and a green desk mean the same
+      # thing. This used to be five inline steps booting six containers behind five
+      # guessed sleeps, which had drifted away from the harness in both directions and
+      # failed whenever lscr.io was slow enough to push sshd past `sleep 10`. Needs no
+      # `bun install`: the script imports only runtime builtins and dev/scripts/lib.
+      - name: Test image
+        run: bun dev/scripts/test-image.ts
+        env:
+          ENVHAVEN_IMAGE: envhaven:test
 
   extension:
     name: VS Code Extension
@@ -165,6 +98,13 @@ jobs:
 
       - name: Install dev dependencies
         run: bun install
+        working-directory: dev
+
+      # Three jobs now run dev/scripts directly, so a type error there breaks the pipeline
+      # rather than one developer's terminal. This is the only job that installs dev's
+      # dependencies, which is what tsc needs, and it is far cheaper than the build below.
+      - name: Type check dev scripts
+        run: bun run typecheck
         working-directory: dev
 
       - name: Test extension build

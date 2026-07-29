@@ -2,7 +2,7 @@
 
 Standalone scripts for building, testing, and managing EnvHaven development.
 
-These scripts are the **single source of truth** for local build/test operations. The TUI (`eh`) calls them; CI runs `test-extension.ts` directly, while the image build and its checks run via Buildx and inline steps.
+These scripts are the **single source of truth** for build/test operations. The TUI (`eh`) calls them and so does CI, so a green desk and a green pipeline mean the same thing. Only the image *build* still goes through Buildx, for the layer cache the release job shares.
 
 ## Usage
 
@@ -36,8 +36,8 @@ eh                        # Press 'b' for build, 's' for start, 't' for test, et
 | `start.ts` | Start test container | `--fresh`, `--mount-ext` |
 | `stop.ts` | Stop and remove test container | |
 | `logs.ts` | Stream container logs | `--tail=N` |
-| `test-image.ts` | Run image health checks (runtimes, tools) | |
-| `test-ai-tools.ts` | Verify all AI CLI tools (--version) | |
+| `test-image.ts` | Boot two fresh containers and run every image check | |
+| `test-ai-tools.ts` | Re-check the AI roster in the container already running | |
 | `test-cli.ts` | Haven CLI integration tests | `--ci` (non-interactive) |
 | `test-extension.ts` | Build extension and verify artifacts | |
 | `extension-build.ts` | Build extension host and webview | `--webview-only`, `--host-only` |
@@ -71,6 +71,12 @@ Scripts read from `dev/.env.dev`:
 cp dev/.env.example dev/.env.dev
 ```
 
+An exported variable wins over the file, so a one-off override works without editing it:
+
+```bash
+ENVHAVEN_IMAGE=envhaven:test bun dev/scripts/test-image.ts
+```
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ENVHAVEN_CONTAINER_NAME` | `envhaven-test` | Test container name |
@@ -83,18 +89,22 @@ cp dev/.env.example dev/.env.dev
 
 ## CI Usage
 
-EnvHaven's `ci.yml` runs `test-extension.ts` directly; the image is built and health-checked with `docker/build-push-action` plus inline steps, not `build.ts`/`test-image.ts`. A minimal script-driven pipeline looks like:
+EnvHaven's `ci.yml` runs these scripts directly, so a green CI and a green desk mean the same thing. The image is still built with `docker/build-push-action` (for the layer cache the release job shares), and `test-image.ts` then checks the result:
 
 ```yaml
 - name: Setup Bun
   uses: oven-sh/setup-bun@v2
 
-- name: Install dev dependencies
-  run: cd dev && bun install
-
 - name: Test extension
   run: bun dev/scripts/test-extension.ts
+
+- name: Test image
+  run: bun dev/scripts/test-image.ts
+  env:
+    ENVHAVEN_IMAGE: envhaven:test
 ```
+
+`test-image.ts` needs no `bun install` — it imports only runtime builtins and `scripts/lib`. `test-extension.ts` does need one, since it builds the extension.
 
 ## Script Library
 

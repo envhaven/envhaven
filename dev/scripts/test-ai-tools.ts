@@ -24,13 +24,19 @@ async function runTests() {
   let failed = 0;
 
   for (const tool of AI_TOOLS) {
-    const result = await dockerExec(config.containerName, tool.cmd);
+    // As abc with HOME=/config, the uid and home a workspace user actually gets. A tool
+    // that only resolves for root resolves for nobody who uses the container.
+    const result = await dockerExec(config.containerName, tool.cmd, {
+      user: 'abc',
+      env: { HOME: '/config' },
+    });
     if (result.success) {
       const version = result.output.split('\n')[0]?.trim() || 'OK';
       log.success(`${tool.name}: ${version}`);
       passed++;
     } else {
       log.error(`${tool.name}: MISSING or broken`);
+      if (result.output) log.plain(result.output);
       failed++;
     }
   }

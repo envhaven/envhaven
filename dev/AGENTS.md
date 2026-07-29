@@ -37,8 +37,8 @@ dev/
 
 1. **Scripts as source of truth** - Core operations (build, start, logs, tests) live in `scripts/`; TUI-only actions (watch, release, shell) live in `src/actions/`
 2. **TUI wraps scripts** - `src/actions/` spawn scripts and format output
-3. **CI calls scripts** - GitHub Actions runs `test-extension.ts` directly (image build/test use Buildx + inline checks)
-4. **Config from env** - Scripts read `dev/.env.dev`
+3. **CI calls scripts** - GitHub Actions runs `test-extension.ts`, `test-image.ts` and `test-console-ui.ts` directly; only the image build uses Buildx
+4. **Config from env** - Scripts read `dev/.env.dev`, and an exported variable outranks it
 
 ## Tech Stack
 

@@ -288,9 +288,11 @@ Then, always:
    (invariant 1). Guessing is forbidden. A background updater that swaps files in place forces
    rung 4.
 6. Add the tool to `tool-definitions.json`. The verification gates derive from it: the
-   Dockerfile verification block, `dev/scripts/test-image.ts`, `dev/scripts/test-ai-tools.ts`,
-   CI, and the platform e2e suite all run `command --version` for every catalog entry, so the
-   roster cannot drift.
+   Dockerfile verification block, `dev/scripts/test-image.ts` (which CI runs),
+   `dev/scripts/test-ai-tools.ts`, and the platform e2e suite all run `command --version`
+   for every catalog entry, so the roster cannot drift. `test-image.ts` additionally
+   compares the image's copy of the catalog against this repo's, so an image built from a
+   different tree fails as a mismatch rather than as a missing tool.
 
 7. If it is an interactive TUI that draws its own input box, seed the browser terminal for it.
    The console paints each keystroke before the server echoes it, and it can only predict a

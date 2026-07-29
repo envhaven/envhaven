@@ -47,7 +47,7 @@ const engine = readFileSync(ENGINE, 'utf8');
 // The <title> the image job greps for over HTTP. Pin it here too, so a rename fails in
 // seconds rather than after a full image build.
 if (html.includes('<title>EnvHaven Terminal</title>')) pass('Page title intact');
-else fail('Page title changed; .github/workflows/ci.yml greps for "EnvHaven Terminal"');
+else fail('Page title changed; dev/scripts/test-image.ts greps for "EnvHaven Terminal"');
 
 // Every <script> in the document with its attributes, so the classification below cannot
 // be dodged by an attribute. Matching only a bare `<script>` let `<script type="module">`

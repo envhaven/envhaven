@@ -23,7 +23,7 @@ bun dev/scripts/test-image.ts # Run tests
 - **Persistent TUI** - Menu always visible, logs stream in real-time
 - **Keyboard shortcuts** - Press hotkeys for quick actions
 - **Standalone scripts** - Same scripts work in TUI, CLI, and CI
-- **Zero config** - Reads `.env.dev` automatically
+- **Zero config** - Reads `.env.dev` automatically; an exported variable overrides it
 
 ## Keybindings
 
@@ -71,6 +71,9 @@ See [scripts/README.md](scripts/README.md) for full documentation.
 ```bash
 cp .env.example .env.dev
 ```
+
+Precedence is exported variable, then this file, then the default, so a one-off override
+needs no edit: `ENVHAVEN_IMAGE=envhaven:test bun scripts/test-image.ts`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
