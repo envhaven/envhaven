@@ -23,7 +23,9 @@ export async function isContainerRunning(containerName: string): Promise<boolean
 
 export async function removeContainer(containerName: string): Promise<boolean> {
   try {
-    await $`docker rm -f ${containerName}`.quiet();
+    // -v drops the anonymous volume the image's `VOLUME /config` creates on
+    // every run. Named volumes are untouched, so a hand-mounted /config lives on.
+    await $`docker rm -f -v ${containerName}`.quiet();
     await Bun.sleep(500);
     return true;
   } catch {

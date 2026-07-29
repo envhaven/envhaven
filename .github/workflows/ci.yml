@@ -127,7 +127,15 @@ jobs:
             set -eo pipefail
             [ "$(jq -r ".tools | length" /opt/envhaven/tool-definitions.json)" -ge 12 ]
             jq -r ".tools[].command" /opt/envhaven/tool-definitions.json |
-              while read -r cmd; do "$cmd" --version || exit 1; done
+              while read -r cmd; do
+                "$cmd" --version || exit 1
+                # A tool baked under /config passes --version here (that path leads
+                # PATH) and vanishes once a user mounts a volume over /config.
+                # readlink -f follows the claude seed symlink out to /opt/envhaven.
+                case "$(readlink -f "$(command -v "$cmd")")" in
+                  /config/*) echo "$cmd resolves inside /config; a volume mount would hide it" >&2; exit 1;;
+                esac
+              done
           '
           docker rm -f test-tools
 

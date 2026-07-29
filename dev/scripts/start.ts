@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { $ } from 'bun';
-import { loadConfig, getExtensionMountPath, getTestConfigPath, log, getContainerStatus, removeContainer, waitForContainer } from './lib';
+import { loadConfig, getExtensionMountPath, log, getContainerStatus, removeContainer, waitForContainer } from './lib';
 
 const config = loadConfig();
 const fresh = process.argv.includes('--fresh');
@@ -28,24 +28,18 @@ if (extPath) {
   log.info(`Mounting extension: ${extPath}`);
 }
 
-const testConfigPath = getTestConfigPath(config);
-
 log.command(`docker run -d --name ${config.containerName} ...`);
 
 try {
-  const envArgs = [
+  const runArgs = [
     `-e`, `PASSWORD=${config.password}`,
     `-e`, `SUDO_PASSWORD=${config.password}`,
     `-e`, `ENVHAVEN_SSH_HOST=${config.host}`,
     `-e`, `ENVHAVEN_SSH_PORT=${config.sshPort}`,
+    ...(extPath ? [`-v`, `${extPath}:/extension`] : []),
   ];
-  
-  const volumeArgs = [`-v`, `${testConfigPath}:/config`];
-  if (extPath) {
-    volumeArgs.push(`-v`, `${extPath}:/extension`);
-  }
-  
-  await $`docker run -d --name ${config.containerName} -p ${config.webPort}:8443 -p ${config.sshPort}:22 -p ${config.consolePort}:7681 ${envArgs} ${volumeArgs} ${config.image}`;
+
+  await $`docker run -d --name ${config.containerName} -p ${config.webPort}:8443 -p ${config.sshPort}:22 -p ${config.consolePort}:7681 ${runArgs} ${config.image}`;
 } catch (e: any) {
   const stderr = e.stderr?.toString() || e.message || String(e);
   log.error(`Failed to start container: ${stderr}`);

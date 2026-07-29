@@ -63,11 +63,9 @@ eh                        # Launch TUI from anywhere
 
 ## Docker-in-Docker Development
 
-When running the dev scripts (via `eh`) from inside a container, you must set `ENVHAVEN_HOST_REPO_PATH` to the **host path** of this repository.
+Watch Extension (`w`) is the only action that mounts a host path. To use it from inside a container, set `ENVHAVEN_HOST_REPO_PATH` to the **host path** of this repository, which is where the daemon looks for `${ENVHAVEN_HOST_REPO_PATH}/extension`. Build, start, test, logs and shell all work without it.
 
-This single path enables:
-1. Extension mounting for live development (`${ENVHAVEN_HOST_REPO_PATH}/extension`)
-2. Test config persistence (`${ENVHAVEN_HOST_REPO_PATH}/.test-config` - gitignored)
+Test containers get an ephemeral `/config`, discarded with the container.
 
 ```bash
 # dev/.env.dev

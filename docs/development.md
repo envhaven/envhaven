@@ -77,9 +77,7 @@ ENVHAVEN_HOST_REPO_PATH=/home/user/projects/envhaven
 ENVHAVEN_HOST=192.168.1.100
 ```
 
-This single path is used for:
-- Extension mounting: `${ENVHAVEN_HOST_REPO_PATH}/extension`
-- Test config persistence: `${ENVHAVEN_HOST_REPO_PATH}/.test-config` (gitignored)
+This path is used for extension mounting: `${ENVHAVEN_HOST_REPO_PATH}/extension`. Watch Extension is the only action that needs it; build, start, test, logs and shell work without it. Test containers get an ephemeral `/config`, discarded with the container.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md#developing-from-within-a-container) for detailed diagrams and setup steps.
 

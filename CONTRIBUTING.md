@@ -80,6 +80,22 @@ eh                        # Launch development TUI from anywhere
 | `x` | Shell (SSH into container) |
 | `,` | Settings |
 
+### Container State
+
+Every start gives you a clean workspace, which is what you want when testing image changes. The image declares `VOLUME /config`, and the dev scripts pass no mount for it, so each `docker run` gets a fresh anonymous volume seeded from the image. Recreating the container therefore discards code-server settings, installed extensions, shell history, and any CLI logins.
+
+A plain `docker stop` keeps all of it. What resets the workspace is `docker rm`, which is what `bun dev/scripts/stop.ts` and the TUI's recreate and delete actions all run.
+
+To keep state across recreates, run the container yourself with a named volume, under a name the TUI does not manage:
+
+```bash
+docker run -d --name envhaven-persistent \
+  -p 8443:8443 -p 2222:22 -p 7681:7681 \
+  -e PASSWORD=test -e SUDO_PASSWORD=test \
+  -v envhaven-dev-config:/config \
+  envhaven:dev
+```
+
 ### Configuration
 
 For custom settings (different ports, host IP, etc.):

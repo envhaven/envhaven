@@ -43,8 +43,11 @@ Thumbs.db
 # Test artifacts
 test/*.log
 test/tmp/
-.test-config/
 **/test-results/
+
+# No longer generated. Kept so checkouts that predate its removal never stage
+# a container HOME (SSH keys, agent CLI logins, code-server password).
+.test-config/
 
 # Environment files with secrets
 .env

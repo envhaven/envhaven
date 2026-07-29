@@ -28,8 +28,6 @@ const DEFAULTS: Config = {
   hostRepoPath: '',
 };
 
-const TEST_CONFIG_DIR = '.test-config';
-
 function findDevRoot(): string {
   let dir = import.meta.dir;
   for (let i = 0; i < 10; i++) {
@@ -76,16 +74,6 @@ export function loadConfig(): Config {
     host: envVars['ENVHAVEN_HOST'] || DEFAULTS.host,
     hostRepoPath: envVars['ENVHAVEN_HOST_REPO_PATH'] || DEFAULTS.hostRepoPath,
   };
-}
-
-export function getTestConfigPath(config: Config): string {
-  if (!config.hostRepoPath) {
-    throw new Error(
-      'ENVHAVEN_HOST_REPO_PATH is required in dev/.env.dev\n' +
-      'Set it to the host path where this repo is located.'
-    );
-  }
-  return join(config.hostRepoPath, TEST_CONFIG_DIR);
 }
 
 export function getExtensionMountPath(config: Config): string {

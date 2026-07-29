@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { $ } from 'bun';
-import { loadConfig, getTestConfigPath, log, formatTestSummary, dockerExec } from './lib';
+import { loadConfig, log, formatTestSummary, dockerExec } from './lib';
 import toolDefs from '../../tool-definitions.json';
 
 const config = loadConfig();
@@ -30,6 +30,16 @@ const tests = [
   // AI tools derive from tool-definitions.json — the roster's single source of truth.
   ...toolDefs.tools.map(({ command }) => ({ name: command, cmd: `${command} --version` })),
 
+  // Every tool must resolve to a real binary outside /config, because users mount a
+  // volume there and it hides whatever the build left behind. A `--version` gate can't
+  // catch this: /config/.local/bin leads PATH, so a misplaced tool passes at build time
+  // and goes missing in production. See docs/architecture.md § The Volume Mount Problem.
+  {
+    name: 'tools resolve outside /config',
+    cmd: `for t in ${toolDefs.tools.map(({ command }) => command).join(' ')}; do ` +
+      `case "$(readlink -f "$(command -v "$t")")" in /config/*) exit 1;; esac; done`,
+  },
+
   { name: 'AGENTS.md', cmd: 'test -f /config/workspace/AGENTS.md' },
   { name: 'VS Code settings', cmd: 'test -f /config/data/User/settings.json' },
   { name: 'artifacts drop folder', cmd: 'test -d /config/artifacts' },
@@ -38,15 +48,7 @@ const tests = [
 
 async function cleanup() {
   log.dim('Cleaning up test container...');
-  try { await $`docker rm -f ${containerName}`.quiet(); } catch {}
-}
-
-let testConfigPath: string;
-try {
-  testConfigPath = getTestConfigPath(config);
-} catch (e: any) {
-  log.error(e.message);
-  process.exit(1);
+  try { await $`docker rm -f -v ${containerName}`.quiet(); } catch {}
 }
 
 log.info(`Testing image: ${config.image}`);
@@ -58,7 +60,7 @@ try {
     `-e`, `SUDO_PASSWORD=testpass`,
   ];
   
-  await $`docker run -d --name ${containerName} -p 18443:8443 -p 12222:22 -p 17681:7681 ${envArgs} -v ${testConfigPath}:/config ${config.image}`.quiet();
+  await $`docker run -d --name ${containerName} -p 18443:8443 -p 12222:22 -p 17681:7681 ${envArgs} ${config.image}`.quiet();
 } catch {
   log.error('Failed to start test container');
   process.exit(1);
