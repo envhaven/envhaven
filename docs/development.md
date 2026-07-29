@@ -374,8 +374,8 @@ CI/CD is split across three workflows in `.github/workflows/`:
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `ci.yml` | Pull requests | Test suite: `cli`, `image`, `extension`, and `console` jobs |
-| `docker.yml` | Push to `master`, `v*` tags | Build and push the image to GitHub Container Registry (tags get a multi-arch manifest) |
+| `ci.yml` | Pull requests, plus called by `docker.yml` on every push and tag | Test suite: `cli`, `image`, `extension`, and `console` jobs |
+| `docker.yml` | Push to `master`, `v*` tags | Build and push the image to GitHub Container Registry (`dev` on master; `X.Y.Z`, `X.Y` and `latest` on a tag) |
 | `cli.yml` | `v*` tags (plus a `latest` artifact on `master`) | Build and release Haven CLI binaries |
 
-CI builds `linux/amd64` only; the arm64 matrix entry is disabled pending an arm64 runner ([issue #1](https://github.com/envhaven/envhaven/issues/1)). Build multi-arch locally with `docker buildx build --platform linux/amd64,linux/arm64`.
+CI builds `linux/amd64` only, and each tag points at a single manifest rather than an index. Adding arm64 means restoring the push-by-digest build and the manifest-merge job `docker.yml` used to carry, plus an arch case for the x86_64-pinned docker binary at `Dockerfile:83` ([issue #1](https://github.com/envhaven/envhaven/issues/1)). Until then the multi-arch command below produces an arm64 image that cannot run Docker-in-Docker.

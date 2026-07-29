@@ -28,20 +28,17 @@ jobs:
     permissions:
       contents: read
 
+  # One platform, so this pushes tags directly. It used to build by digest into a
+  # matrix and hand those digests to a `merge` job that fused them into a manifest
+  # list — the right shape for several platforms, and dead weight for one. Worse, the
+  # tags only ever came from `merge`, which was tag-gated, so every master push left an
+  # untagged blob in ghcr that nothing referenced. Adding linux/arm64 means bringing
+  # that machinery back, not editing this job: the image also installs an x86_64-pinned
+  # docker binary (Dockerfile:83) that needs an arch case first.
   build:
-    name: Build (${{ matrix.platform }})
+    name: Build
     needs: checks
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux/amd64
-            runner: ubuntu-latest
-          # ARM64 requires ubuntu-24.04-arm runner, only available for public repos
-          # Tracked in: https://github.com/envhaven/envhaven/issues/1
-          # - platform: linux/arm64
-          #   runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
@@ -60,12 +57,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-
+      # Ahead of metadata-action so the version label can read it. This is the single
+      # place that decides what version the image calls itself; both consumers below take
+      # it from here, the OCI label and the ENVHAVEN_VERSION build-arg.
+      #
+      # Deliberately not steps.meta.outputs.version, and the difference is load-bearing.
+      # That output strips the v (1.7.4), while GitHub releases are v1.7.4 and every
+      # workspace already running reports ENVHAVEN_VERSION=v1.7.4. The VM updater compares
+      # the two by plain string equality, so a v-less label makes every workspace believe
+      # it is permanently out of date. On master that output is literally `dev`, which
+      # would give every commit the same version.
       - name: Determine version
         id: version
         run: |
@@ -75,75 +76,69 @@ jobs:
             echo "version=dev-$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
           fi
 
-      - name: Build and push
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: ${{ matrix.platform }}
-          build-args: |
-            ENVHAVEN_VERSION=${{ steps.version.outputs.version }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.platform }}-v2
-          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}-v2
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-
-      - name: Export digest
-        run: |
-          mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
-
-      - name: Upload digest
-        uses: actions/upload-artifact@v4
-        with:
-          name: digests-${{ matrix.runner }}
-          path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-  merge:
-    name: Merge Manifests
-    runs-on: ubuntu-latest
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Download digests
-        uses: actions/download-artifact@v4
-        with:
-          path: /tmp/digests
-          pattern: digests-*
-          merge-multiple: true
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # semver types only fire on a tag push. `dev` is what stops master pushes going
+          # out untagged, and it is deliberately a single moving tag rather than one per
+          # commit: it always means "current master" and never accumulates.
+          # `latest` needs no entry of its own: flavor defaults to latest=auto, which
+          # emits it for a non-prerelease semver tag and for nothing else. Spelling it out
+          # as a raw tag published it twice, and published it for prereleases and for `v*`
+          # tags that are not semver at all.
           tags: |
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/master' }}
+          # Registry tags stay v-less (1.7.4); the version label keeps the v. A custom
+          # label is merged last and wins on its key, so this replaces the generated value
+          # rather than adding a second one.
+          labels: |
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
 
-      - name: Create manifest
-        working-directory: /tmp/digests
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          build-args: |
+            ENVHAVEN_VERSION=${{ steps.version.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          push: true
+          # build-push-action attests by default (mode=max on public repos), which wraps a
+          # single-platform build in an index whose children are untagged. That makes
+          # "untagged" mean two different things in the registry — superseded junk, and the
+          # live manifest a published tag resolves through — so no simple prune can be
+          # correct. One platform, one manifest, one meaning.
+          provenance: false
+          # Shared with ci.yml's image job, which builds this same tree first. Bumping
+          # the -v2 suffix means bumping it there too, or the two silently stop sharing.
+          cache-from: type=gha,scope=linux/amd64-v2
+          cache-to: type=gha,mode=max,scope=linux/amd64-v2
+
+      # Every tag that was just pushed, so a release which published nothing pullable
+      # fails here rather than at someone's `docker pull`. Via env because the expression
+      # is newline-delimited and would break the `for` if pasted into the script body;
+      # unquoted $TAGS is what splits it back into words.
+      #
+      # The emptiness guard keeps the step self-contained. buildx would already have
+      # failed the build with "tag is needed when pushing to registry", so this is not the
+      # only thing standing between an empty tag list and a green release — but without it
+      # a `for` over an empty $TAGS runs zero times and reports ok, which is the one
+      # outcome a verification step must never produce on its own.
+      - name: Inspect pushed tags
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
         run: |
-          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
-
-      - name: Inspect image
-        run: docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+          if [ -z "$TAGS" ]; then
+            echo "metadata-action generated no tags for ${{ github.ref }}" >&2
+            exit 1
+          fi
+          for tag in $TAGS; do
+            docker buildx imagetools inspect "$tag" > /dev/null
+            echo "ok: $tag"
+          done
