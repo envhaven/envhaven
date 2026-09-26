@@ -17,6 +17,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -35,6 +36,13 @@ const tmuxSession = "envhaven"
 // envhaven-welcome.sh keys off this EXACT value to build the grouped session,
 // so the value is frozen alongside tmuxSession.
 const selfhostGateSession = "console-view"
+
+// sessionTarget names a tmux session exactly. '=' refuses tmux's prefix and
+// pattern fallbacks, and the trailing ':' makes tmux resolve the name as a
+// session. A bare name is first tried as a pane or window of the most recently
+// active session (measured on tmux 3.4: `-t envhaven` read a window named
+// envhaven-dev through the console-view group).
+func sessionTarget(session string) string { return "=" + session + ":" }
 
 // secretReaders is one coherent set: foreground commands whose keystroke echo we
 // cannot vouch for, because the character is either deliberately hidden or handled
@@ -71,36 +79,60 @@ var secretReaders = map[string]bool{
 	"su": true, "sudo": true, "doas": true, "passwd": true, "login": true,
 }
 
+// paneSnapshot is one atomic reading of the pane the console renders. Readable is
+// explicit because an unreadable pane is not an application named "": the pump fails
+// safety closed while carrying the last known App and geometry across that missing sample.
+type paneSnapshot struct {
+	Safe     bool
+	App      string
+	Top      uint16
+	Bottom   uint16
+	Left     uint16
+	Right    uint16
+	Geometry bool
+	Readable bool
+}
+
 // paneState reports whether the active pane of the login tmux session is a safe
-// place to draw predicted keystrokes, plus the name of the application running
-// there (lowercased, e.g. "zsh", "claude"; empty when unreadable) — the pane's
-// foreground command, or what that command was told to run when it is only a
-// language runtime (see runtimeWrappers). Safety fails
+// place to draw predicted keystrokes, the application running there (lowercased,
+// e.g. "zsh", "claude"), its geometry, and whether the reading succeeded. The
+// application is the pane's foreground command, or what that command was told to
+// run when it is only a language runtime (see runtimeWrappers). Safety fails
 // closed: any error (no tmux, no session, a dead pane, copy-mode, an unreadable
 // tty, a secret reader in the foreground, or a canonical-mode prompt) yields
 // false. The command name rides the same gate frame so the browser can scope
 // per-application prediction facts (a line editor's wrap style) to the app that
 // exhibited them — zsh and Claude Code wrap differently, and a style learned in
 // one must never be applied to the other.
-func paneState(ctx context.Context, session string) (bool, string) {
+//
+// The pane's four absolute exclusive bounds ride along too (0 when tmux reports no
+// valid geometry; the pump carries the last known geometry across an unreadable poll). The
+// browser decides whether a composer box is pinned to the bottom of what the user sees, and that is the
+// PANE's bottom, not the terminal's: the self-host console keeps tmux's status bar
+// on, so its pane ends rows above the terminal's last row, and a box that is in fact
+// pinned would otherwise read as having room to grow beneath it.
+func paneState(ctx context.Context, session string) paneSnapshot {
 	c, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
 	// One field string, '|'-separated: pts path, foreground command name,
-	// in-copy-mode flag, dead flag, the pane process's pid. A name may itself
-	// contain '|' (tmux passes argv[0] through), which yields more than five
+	// in-copy-mode flag, dead flag, the pane process's pid, pane top/height,
+	// pane left/width, and window width/height. A name
+	// may itself contain '|' (tmux passes argv[0] through), which yields extra
 	// fields and is refused below: the safe direction, and unspoofable, since the
-	// count is 5 plus the number of pipes. The session is the one
+	// count is fixed plus the number of pipes. The session is the one
 	// THIS console renders: base `envhaven` for the managed console, or the
 	// self-host console's own grouped view (which has its own current window). The
-	// safety logic below is identical regardless of which session we read.
-	out, err := exec.CommandContext(c, "tmux", "display-message", "-p", "-t", session,
-		"#{pane_tty}|#{pane_current_command}|#{pane_in_mode}|#{pane_dead}|#{pane_pid}").Output()
+	// safety logic below is identical regardless of which session we read. A session
+	// tmux cannot find, such as that view before the shell has attached, still exits 0
+	// with every field empty, and the empty command name is refused below.
+	out, err := exec.CommandContext(c, "tmux", "display-message", "-p", "-t", sessionTarget(session),
+		"#{pane_tty}|#{pane_current_command}|#{pane_in_mode}|#{pane_dead}|#{pane_pid}|#{pane_top}|#{pane_height}|#{pane_left}|#{pane_width}|#{window_width}|#{window_height}").Output()
 	if err != nil {
-		return false, ""
+		return paneSnapshot{}
 	}
 	f := strings.Split(strings.TrimSpace(string(out)), "|")
-	if len(f) != 5 {
-		return false, ""
+	if len(f) != 11 {
+		return paneSnapshot{}
 	}
 	tty, cmd, inMode, dead, panePID := f[0], strings.ToLower(f[1]), f[2], f[3], f[4]
 	// A name outside the alphabet is one we decline to reason about, and declining has
@@ -110,7 +142,34 @@ func paneState(ctx context.Context, session string) (bool, string) {
 	// for every invisible-character spelling of a real application's name. Empty is the
 	// sentinel every other error path here already returns.
 	if !plainName(cmd) {
-		return false, ""
+		return paneSnapshot{}
+	}
+	// Geometry is exact only when every coordinate is representable and lies in
+	// the window. V4 uses all four bounds to constrain split-pane prediction.
+	height, heightErr := strconv.ParseUint(f[6], 10, 32)
+	top, topErr := strconv.ParseUint(f[5], 10, 32)
+	left, leftErr := strconv.ParseUint(f[7], 10, 32)
+	width, widthErr := strconv.ParseUint(f[8], 10, 32)
+	windowWidth, windowWidthErr := strconv.ParseUint(f[9], 10, 32)
+	windowHeight, windowHeightErr := strconv.ParseUint(f[10], 10, 32)
+	var bottomValue, rightValue uint64
+	if topErr == nil && heightErr == nil && height > 0 {
+		bottomValue = top + height
+	}
+	if leftErr == nil && widthErr == nil && width > 0 {
+		rightValue = left + width
+	}
+	geometry := topErr == nil && heightErr == nil && leftErr == nil && widthErr == nil &&
+		windowWidthErr == nil && windowHeightErr == nil && height > 0 && width > 0 &&
+		windowWidth > 0 && windowHeight > 0 && top <= uint64(^uint16(0)) && left <= uint64(^uint16(0)) &&
+		bottomValue <= uint64(^uint16(0)) && rightValue <= uint64(^uint16(0)) &&
+		bottomValue <= windowHeight && rightValue <= windowWidth &&
+		windowWidth <= uint64(^uint16(0)) && windowHeight <= uint64(^uint16(0))
+	pane := paneSnapshot{
+		App: clampApp(cmd),
+		Top: uint16(min(top, uint64(^uint16(0)))), Bottom: uint16(min(bottomValue, uint64(^uint16(0)))),
+		Left: uint16(min(left, uint64(^uint16(0)))), Right: uint16(min(rightValue, uint64(^uint16(0)))),
+		Geometry: geometry, Readable: true,
 	}
 	// The name a runtime was told to run, when tmux reported the runtime itself. LABEL
 	// only, and resolved before the verdict below so a codex pane keeps reporting
@@ -123,16 +182,19 @@ func paneState(ctx context.Context, session string) (bool, string) {
 			app = inner
 		}
 	}
+	app = stablePaneApp(app)
 	// One refusal, and secretReaders is asked about BOTH names. The name tmux gave us,
 	// so `sudo cat` keeps blocking on sudo rather than resolving past it to cat. And the
 	// name that resolved to, so an npm-shimmed ssh blocks too. Resolving above can
 	// therefore only ever ADD a disjunct here, which is exactly what makes it safe to
 	// run before the verdict rather than after it: the answer is unchanged on every
 	// input, and you can see that without holding the two branches in your head.
+	pane.App = clampApp(app)
 	if tty == "" || inMode == "1" || dead == "1" || secretReaders[cmd] || secretReaders[app] {
-		return false, clampApp(app)
+		return pane
 	}
-	return isRawPane(tty), clampApp(app)
+	pane.Safe = isRawPane(tty)
+	return pane
 }
 
 // runtimeWrappers are command names that name a language runtime rather than an
@@ -153,6 +215,18 @@ func paneState(ctx context.Context, session string) (bool, string) {
 // when a pane is seen doing it, with the observation in the commit.
 var runtimeWrappers = map[string]bool{
 	"node": true,
+}
+
+// Muse's launcher execs a versioned binary, so tmux reports names such as
+// muse-bin-1.1.1-R2514.1. The browser needs one stable cache key across updates.
+// paneState lowercases the command before this match.
+var musePaneApp = regexp.MustCompile(`^muse-bin-[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+(\.[0-9]+)?$`)
+
+func stablePaneApp(app string) string {
+	if musePaneApp.MatchString(app) {
+		return "muse"
+	}
+	return app
 }
 
 // wrappedApp reports what the tty's foreground runtime was told to run: the

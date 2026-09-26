@@ -1,0 +1,4 @@
+# Existing zsh configuration
+export MANUAL_KEY="keep"
+export ANTHROPIC_API_KEY="legacy'secret"
+export OPENAI_API_KEY="legacy\"quote\\path"

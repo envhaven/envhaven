@@ -162,7 +162,7 @@ func handleSkillAction(w http.ResponseWriter, r *http.Request) {
 		}
 		agents, err := connectedAgents()
 		if err != nil {
-			writeAPIError(w, http.StatusInternalServerError, "tool definitions unavailable")
+			writeAPIError(w, http.StatusInternalServerError, credentialErrorMessage(err, "tool definitions unavailable"))
 			return
 		}
 		if len(agents) == 0 {
@@ -231,13 +231,16 @@ func connectedAgents() ([]string, error) {
 		return nil, err
 	}
 	home := homeDir()
-	rc := parseRcEnvVars(home)
+	sources, err := readCredentialSources(home)
+	if err != nil {
+		return nil, err
+	}
 	var agents []string
 	for _, d := range defs {
 		if d.SkillsAgent == "" || !toolInstalled(d.Command) {
 			continue
 		}
-		if checkAuth(d, home, rc).status == "ready" {
+		if checkAuth(d, home, sources).status == "ready" {
 			agents = append(agents, d.SkillsAgent)
 		}
 	}

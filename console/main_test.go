@@ -19,6 +19,10 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+type allowTestAuth struct{}
+
+func (allowTestAuth) authorize(*http.Request) error { return nil }
+
 func TestExtractToken(t *testing.T) {
 	cases := []struct{ name, header, want string }{
 		{"token after protocol", "envhaven.console, eyJa.bC.dE", "eyJa.bC.dE"},
@@ -37,26 +41,32 @@ func TestExtractToken(t *testing.T) {
 	}
 }
 
-func TestOriginHosts(t *testing.T) {
+func TestConfiguredOrigins(t *testing.T) {
 	cases := []struct {
 		name, in string
 		want     []string
 	}{
-		{"url with scheme", "https://envhaven.com", []string{"envhaven.com"}},
-		{"bare host", "envhaven.com", []string{"envhaven.com"}},
-		{"multiple", "https://envhaven.com, https://app.envhaven.com", []string{"envhaven.com", "app.envhaven.com"}},
-		{"empty entries skipped", "https://envhaven.com,, ", []string{"envhaven.com"}},
-		{"wildcard passthrough", "*.envhaven.com", []string{"*.envhaven.com"}},
+		{"exact origin", "https://envhaven.com", []string{"https://envhaven.com"}},
+		{"bare host rejected", "envhaven.com", nil},
+		{"multiple", "https://envhaven.com, http://localhost:3000", []string{"https://envhaven.com", "http://localhost:3000"}},
+		{"empty and invalid entries skipped", "https://envhaven.com,, javascript:alert(1)", []string{"https://envhaven.com"}},
+		{"scheme-qualified wildcard", "https://*.envhaven.dev", []string{"https://*.envhaven.dev"}},
+		{"wildcard with explicit port", "https://*.envhaven.dev:8443", []string{"https://*.envhaven.dev:8443"}},
+		{"wildcard must be leftmost", "https://app.*.envhaven.dev", nil},
+		{"unsupported scheme", "ftp://envhaven.com", nil},
+		{"userinfo rejected", "https://user@envhaven.com", nil},
+		{"path rejected", "https://envhaven.com/console", nil},
+		{"canonical and deduplicated", "HTTPS://APP.EnvHaven.Dev,https://app.envhaven.dev", []string{"https://app.envhaven.dev"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := originHosts(c.in)
+			got := configuredOrigins(c.in)
 			if len(got) != len(c.want) {
-				t.Fatalf("originHosts(%q) = %v, want %v", c.in, got, c.want)
+				t.Fatalf("configuredOrigins(%q) = %v, want %v", c.in, got, c.want)
 			}
 			for i := range got {
 				if got[i] != c.want[i] {
-					t.Fatalf("originHosts(%q) = %v, want %v", c.in, got, c.want)
+					t.Fatalf("configuredOrigins(%q) = %v, want %v", c.in, got, c.want)
 				}
 			}
 		})
@@ -177,7 +187,7 @@ func TestHandleConsoleAuth(t *testing.T) {
 
 	ctx := context.Background()
 	const wsID = "ws_test"
-	origins := []string{"envhaven.com"}
+	origins := []string{"https://envhaven.com"}
 
 	base := func() *claims { return validClaims(wsID) }
 	algNone := func() string {
@@ -254,26 +264,78 @@ func TestHandleConsoleAuth(t *testing.T) {
 	})
 }
 
-// TestPredictAllowed pins the two-part predicate deciding whether a session may
-// run the predictive-echo gate: the browser must opt in with ?echo=1, and
-// ENVHAVEN_SKIP_WELCOME=1 vetoes it outright (without the tmux auto-attach the
-// gate could vouch for a pane the console does not render — fail closed).
-func TestPredictAllowed(t *testing.T) {
+// TestPredictProtocolFor pins the only shipped protocols, clear rejection, and the safety veto.
+func TestPredictProtocolFor(t *testing.T) {
 	cases := []struct {
-		name, query, skip string
-		want              bool
+		name, query, skip, wantErr string
+		want                       predictProtocol
 	}{
-		{"opted in", "echo=1", "", true},
-		{"no param", "", "", false},
-		{"echo=0", "echo=0", "", false},
-		{"opted in but skip-welcome", "echo=1", "1", false},
+		{"old tab negotiates implicit v1", "echo=1", "", "", predictV1},
+		{"explicit v1 remains compatible", "echo=1&echoProtocol=1", "", "", predictV1},
+		{"current page negotiates v4", "echo=1&echoProtocol=4", "", "", predictV4},
+		{"protocol 2 is rejected", "echo=1&echoProtocol=2", "", `unsupported predictive protocol "2"; supported versions are 1 and 4`, predictOff},
+		{"protocol 3 is rejected", "echo=1&echoProtocol=3", "", `unsupported predictive protocol "3"; supported versions are 1 and 4`, predictOff},
+		{"future protocol is rejected", "echo=1&echoProtocol=5", "", `unsupported predictive protocol "5"; supported versions are 1 and 4`, predictOff},
+		{"malformed protocol is rejected", "echo=1&echoProtocol=wat", "", `unsupported predictive protocol "wat"; supported versions are 1 and 4`, predictOff},
+		{"empty protocol is rejected", "echo=1&echoProtocol=", "", `unsupported predictive protocol ""; supported versions are 1 and 4`, predictOff},
+		{"duplicate protocol is rejected", "echo=1&echoProtocol=1&echoProtocol=4", "", `predictive protocol must be specified once; supported versions are 1 and 4`, predictOff},
+		{"protocol without feature flag", "echoProtocol=2", "", "", predictOff},
+		{"old provisional feature value", "echo=2", "", "", predictOff},
+		{"no param", "", "", "", predictOff},
+		{"echo=0", "echo=0", "", "", predictOff},
+		// Skip-welcome leaves the negotiation alone and vetoes the gate in the pump: a
+		// socket negotiated off would get no gate frame, and the browser admits input on
+		// an echo socket only after one, so every keystroke would be refused.
+		{"v1 still negotiated under skip-welcome", "echo=1", "1", "", predictV1},
+		{"unsupported version rejected under skip-welcome", "echo=1&echoProtocol=2", "1", `unsupported predictive protocol "2"; supported versions are 1 and 4`, predictOff},
+		{"v4 still negotiated under skip-welcome", "echo=1&echoProtocol=4", "1", "", predictV4},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Setenv("ENVHAVEN_SKIP_WELCOME", c.skip)
 			r := httptest.NewRequest(http.MethodGet, "/__console?"+c.query, nil)
-			if got := predictAllowed(r); got != c.want {
-				t.Fatalf("predictAllowed(%q, skip=%q) = %v, want %v", c.query, c.skip, got, c.want)
+			got, err := predictProtocolFor(r)
+			if got != c.want || (err == nil && c.wantErr != "") || (err != nil && err.Error() != c.wantErr) {
+				t.Fatalf("predictProtocolFor(%q, skip=%q) = (%v, %v), want (%v, %q)", c.query, c.skip, got, err, c.want, c.wantErr)
+			}
+		})
+	}
+}
+
+func TestServeConsoleRejectsUnsupportedPredictProtocol(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/__console?echo=1&echoProtocol=2", nil)
+	w := httptest.NewRecorder()
+	serveConsole(context.Background(), w, r, allowTestAuth{}, nil, false)
+	want := "unsupported predictive protocol \"2\"; supported versions are 1 and 4\n"
+	if w.Code != http.StatusBadRequest || w.Body.String() != want {
+		t.Fatalf("unsupported protocol response = (%d, %q), want (400, %q)", w.Code, w.Body.String(), want)
+	}
+}
+
+func TestProbeSessionFor(t *testing.T) {
+	valid := "ehtest-ab-mmmmmmmm-0123456789ab"
+	cases := []struct {
+		name, query string
+		managed, ok bool
+		want        string
+	}{
+		{"absent", "echo=1", true, true, ""},
+		{"managed v4 probe", "echo=1&echoProtocol=4&probe=1&probeSession=" + valid, true, true, valid},
+		{"self-host rejected", "echo=1&echoProtocol=4&probe=1&probeSession=" + valid, false, false, ""},
+		{"probe flag required", "echo=1&echoProtocol=4&probeSession=" + valid, true, false, ""},
+		{"predictive flag required", "echoProtocol=4&probe=1&probeSession=" + valid, true, false, ""},
+		{"v4 required", "echo=1&echoProtocol=1&probe=1&probeSession=" + valid, true, false, ""},
+		{"empty rejected", "echo=1&echoProtocol=4&probe=1&probeSession=", true, false, ""},
+		{"duplicate rejected", "echo=1&echoProtocol=4&probe=1&probeSession=" + valid + "&probeSession=" + valid, true, false, ""},
+		{"base session rejected", "echo=1&echoProtocol=4&probe=1&probeSession=envhaven", true, false, ""},
+		{"punctuation rejected", "echo=1&echoProtocol=4&probe=1&probeSession=ehtest-ab-mmmmmmmm-0123456789ab%3A1", true, false, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/__console?"+c.query, nil)
+			got, err := probeSessionFor(r, c.managed)
+			if (err == nil) != c.ok || got != c.want {
+				t.Fatalf("probeSessionFor(%q, managed=%v) = (%q, %v), want (%q, ok=%v)", c.query, c.managed, got, err, c.want, c.ok)
 			}
 		})
 	}
@@ -294,19 +356,14 @@ func wsUpgradeRequest(proto, origin string) *http.Request {
 	return r
 }
 
-// TestOriginEnforcement pins the cross-site backstop in serveConsole's Accept
-// plumbing: with patterns ["envhaven.com"], a disallowed browser Origin is
-// rejected 403 BEFORE the upgrade even with a valid bearer, and dropping
-// OriginPatterns or adding InsecureSkipVerify turns a case red. The exact
-// allowed host and a non-browser request (no Origin) proceed past the Origin
-// check to the hijack, which fails on a recorder with a non-auth status. Both
-// modes ride the same path; TestManagedOriginDefault pins the production
-// allowlist itself.
+// TestOriginEnforcement pins the full-origin check before websocket.Accept. Exact
+// entries do not widen to subdomains; explicit wildcards retain their scheme and
+// port; and non-browser requests still proceed to the upgrade.
 func TestOriginEnforcement(t *testing.T) {
 	jwks, _, signEdDSA := newJWTFixture(t)
 
 	sh := newTestSelfHost(t)
-	sh.origins = []string{"envhaven.com"}
+	sh.origins = []string{"https://envhaven.com", "https://*.envhaven.dev"}
 
 	auths := []struct {
 		name    string
@@ -315,7 +372,7 @@ func TestOriginEnforcement(t *testing.T) {
 		origins []string
 		managed bool
 	}{
-		{"managed", &jwtAuth{jwks: jwks, workspaceID: "ws_test"}, signEdDSA(validClaims("ws_test")), []string{"envhaven.com"}, true},
+		{"managed", &jwtAuth{jwks: jwks, workspaceID: "ws_test"}, signEdDSA(validClaims("ws_test")), sh.origins, true},
 		{"self-host", sh.wsAuth(), mintToken(sh.secret, ctxWS, time.Now(), wsTokenTTL), sh.origins, false},
 	}
 	cases := []struct {
@@ -325,7 +382,12 @@ func TestOriginEnforcement(t *testing.T) {
 	}{
 		{"workspace subdomain", "https://ws-abc.envhaven.com", true}, // the never-widen invariant
 		{"third party", "https://evil.example", true},
-		{"exact allowed host", "https://envhaven.com", false},
+		{"wrong scheme", "http://envhaven.com", true},
+		{"wildcard apex", "https://envhaven.dev", true},
+		{"wildcard wrong scheme", "http://app-a.envhaven.dev", true},
+		{"exact allowed origin", "https://envhaven.com", false},
+		{"wildcard child", "https://app-a.envhaven.dev", false},
+		{"wildcard nested child", "https://preview.app-a.envhaven.dev", false},
 		{"no origin (non-browser)", "", false},
 	}
 	for _, a := range auths {
@@ -350,8 +412,8 @@ func TestOriginEnforcement(t *testing.T) {
 // TestManagedOriginDefault pins the production Origin allowlist at its source.
 // The SECURITY comment in newManagedAuth forbids widening it into the
 // user-subdomain namespace; this goes red if the default gains a wildcard or
-// extra hosts. _ENVHAVEN_CONSOLE_ORIGINS overrides it for dev, parsed through
-// originHosts.
+// extra hosts. _ENVHAVEN_CONSOLE_ORIGINS overrides it for development through
+// the same parser used by CORS, WebSockets, and frame-ancestors.
 func TestManagedOriginDefault(t *testing.T) {
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -363,14 +425,14 @@ func TestManagedOriginDefault(t *testing.T) {
 	t.Setenv("_ENVHAVEN_API_URL", ts.URL)
 
 	_, origins := newManagedAuth(context.Background())
-	if len(origins) != 1 || origins[0] != "envhaven.com" {
-		t.Fatalf("default origin patterns = %v, want exactly [envhaven.com]", origins)
+	if !slices.Equal(origins, []string{"https://envhaven.com"}) {
+		t.Fatalf("default origins = %v, want exactly [https://envhaven.com]", origins)
 	}
 
 	t.Setenv("_ENVHAVEN_CONSOLE_ORIGINS", "https://dev.envhaven.com, http://localhost:3000")
 	_, origins = newManagedAuth(context.Background())
-	if len(origins) != 2 || origins[0] != "dev.envhaven.com" || origins[1] != "localhost:3000" {
-		t.Fatalf("override origin patterns = %v, want [dev.envhaven.com localhost:3000]", origins)
+	if !slices.Equal(origins, []string{"https://dev.envhaven.com", "http://localhost:3000"}) {
+		t.Fatalf("override origins = %v, want full origins", origins)
 	}
 }
 
@@ -456,13 +518,19 @@ func TestNewHandlerModes(t *testing.T) {
 // TestFrameAncestors pins the origin list derived from the console-origins env:
 // the scheme-qualified origins allowed to embed the managed terminal (and, as
 // the same list, to pass the API CORS check), defaulting to the production
-// dashboard. Distinct from originHosts (bare hosts).
+// dashboard.
 func TestFrameAncestors(t *testing.T) {
 	if got := frameAncestors(""); !slices.Equal(got, []string{"https://envhaven.com"}) {
 		t.Fatalf("empty = %v, want default [https://envhaven.com]", got)
 	}
 	if got := frameAncestors("https://app-x.envhaven.dev, https://envhaven.com"); !slices.Equal(got, []string{"https://app-x.envhaven.dev", "https://envhaven.com"}) {
 		t.Fatalf("list = %v, want both origins in order", got)
+	}
+	if got := frameAncestors("https://*.envhaven.dev"); !slices.Equal(got, []string{"https://*.envhaven.dev"}) {
+		t.Fatalf("wildcard list = %v, want the scheme-qualified wildcard", got)
+	}
+	if got := frameAncestors("not-an-origin"); !slices.Equal(got, []string{"https://envhaven.com"}) {
+		t.Fatalf("invalid list = %v, want fail-closed production default", got)
 	}
 }
 

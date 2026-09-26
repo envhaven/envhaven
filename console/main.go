@@ -19,9 +19,9 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -52,10 +52,40 @@ type claims struct {
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
+	showReadyTools := flag.Bool("ready-tools", false, "print ready tool names and exit")
+	migrateCredentials := flag.Bool("migrate-credentials", false, "migrate legacy managed credentials and exit")
+	actionJSON := flag.String("action-json", "", "execute one typed console action and exit")
 	flag.Parse()
+	actionMode := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "action-json" {
+			actionMode = true
+		}
+	})
+	if actionMode && (*showVersion || *showReadyTools || *migrateCredentials) {
+		fatal("choose only one CLI mode")
+	}
 	if *showVersion {
 		fmt.Println(version)
 		return
+	}
+	if *showReadyTools && *migrateCredentials {
+		fatal("choose only one CLI mode")
+	}
+	if *showReadyTools {
+		if err := writeReadyToolNames(os.Stdout); err != nil {
+			fatal("resolve ready tools: " + err.Error())
+		}
+		return
+	}
+	if *migrateCredentials {
+		if err := migrateLegacyCredentials(homeDir()); err != nil {
+			fatal("migrate credentials: " + err.Error())
+		}
+		return
+	}
+	if actionMode {
+		os.Exit(runActionJSON(context.Background(), *actionJSON, os.Stdout))
 	}
 
 	// Shut down background goroutines (JWKS refresh, the HTTP server) on signal.
@@ -107,14 +137,13 @@ func newHandler(ctx context.Context) (string, *http.ServeMux) {
 		// login/token route here because managed tokens are platform-minted. The WS
 		// Origin allowlist (origins) is untouched: the iframe is served from the
 		// workspace's own tunnel host, so its socket is same-host and auto-authorized.
-		fa := frameAncestors(os.Getenv("_ENVHAVEN_CONSOLE_ORIGINS"))
-		mux.HandleFunc("GET /__console/ui", func(w http.ResponseWriter, _ *http.Request) { serveUI(w, fa) })
-		mux.Handle("GET /__console/assets/", assetsHandler())
+		mux.HandleFunc("GET /__console/ui", func(w http.ResponseWriter, _ *http.Request) { serveUI(w, origins) })
+		mux.HandleFunc("GET "+assetsPrefix, serveAsset)
 		// The Cockpit HUD's out-of-band HTTP API (stats, tools, skills, artifacts,
 		// tmux actions). It rides the SAME EdDSA JWT wall as the socket; CORS echoes
 		// only the dashboard origins (the scheme-qualified frameAncestors list), so a
 		// cross-site page holding no token still cannot read a response.
-		registerAPI(mux, auth.verify, fa)
+		registerAPI(mux, auth.verify, origins)
 		mux.HandleFunc("/__console", func(w http.ResponseWriter, r *http.Request) {
 			serveConsole(r.Context(), w, r, auth, origins, true)
 		})
@@ -124,8 +153,9 @@ func newHandler(ctx context.Context) (string, *http.ServeMux) {
 	mux.HandleFunc("GET /{$}", sh.handleRoot)
 	mux.HandleFunc("POST /__console/login", sh.handleLogin)
 	mux.HandleFunc("GET /__console/token", sh.handleToken)
+	mux.HandleFunc("POST /__console/internal-token", sh.handleInternalToken)
 	mux.HandleFunc("GET /__console/ui", func(w http.ResponseWriter, _ *http.Request) { serveUI(w, nil) })
-	mux.Handle("GET /__console/assets/", assetsHandler())
+	mux.HandleFunc("GET "+assetsPrefix, serveAsset)
 	// The SAME Cockpit HTTP API, guarded by the self-host 60s HMAC bearer. No CORS
 	// allowlist (nil origins) → no Access-Control-Allow-Origin is ever emitted, so
 	// the API is same-origin only, at parity with the socket.
@@ -173,19 +203,10 @@ func newManagedAuth(ctx context.Context) (*jwtAuth, []string) {
 	}
 	jwksURL := strings.TrimRight(apiURL, "/") + "/v1/console/jwks"
 
-	// coder/websocket matches OriginPatterns against the Origin header HOST, so
-	// patterns are bare hosts. Default to the production dashboard host; dev
-	// injects _ENVHAVEN_CONSOLE_ORIGINS.
-	//
-	// SECURITY: keep these EXACT hosts. Workspaces get user-controlled
-	// subdomains, so a wildcard like "*.envhaven.com" would let a workspace page
-	// open a cross-site console socket. The JWT (carried in the subprotocol, not
-	// a cookie) is still required, but this allowlist is the cross-site backstop;
-	// never widen it to overlap the user-subdomain namespace.
-	originPatterns := []string{"envhaven.com"}
-	if v := os.Getenv("_ENVHAVEN_CONSOLE_ORIGINS"); v != "" {
-		originPatterns = originHosts(v)
-	}
+	// The exact production dashboard origin is the default. Development can opt
+	// into a scheme-qualified wildcard for its per-run hosts; the shared parser
+	// keeps scheme and port exact and never widens this bare production origin.
+	origins := frameAncestors(os.Getenv("_ENVHAVEN_CONSOLE_ORIGINS"))
 
 	// Fail closed on the first JWKS fetch: if the platform's keys are
 	// unreachable at boot we refuse every connection rather than accept
@@ -198,7 +219,7 @@ func newManagedAuth(ctx context.Context) (*jwtAuth, []string) {
 	if err != nil {
 		fatal("fetch JWKS from " + jwksURL + ": " + err.Error())
 	}
-	return &jwtAuth{jwks: jwks, workspaceID: workspaceID}, originPatterns
+	return &jwtAuth{jwks: jwks, workspaceID: workspaceID}, origins
 }
 
 // jwtAuth authorizes managed connections by validating the platform's EdDSA JWT.
@@ -242,7 +263,7 @@ func (a *jwtAuth) verify(token string) error {
 // Authorization happens BEFORE Accept: a bad credential never reaches the
 // upgrade, so unauthenticated callers get a plain HTTP rejection. managed is
 // newHandler's once-read mode marker, passed through to pumpSession.
-func serveConsole(ctx context.Context, w http.ResponseWriter, r *http.Request, auth authenticator, originPatterns []string, managed bool) {
+func serveConsole(ctx context.Context, w http.ResponseWriter, r *http.Request, auth authenticator, allowedOrigins []string, managed bool) {
 	if err := auth.authorize(r); err != nil {
 		var ae *authError
 		if errors.As(err, &ae) {
@@ -252,13 +273,28 @@ func serveConsole(ctx context.Context, w http.ResponseWriter, r *http.Request, a
 		}
 		return
 	}
+	if !websocketOriginAllowed(r, allowedOrigins) {
+		http.Error(w, "request Origin not allowed", http.StatusForbidden)
+		return
+	}
+	predict, err := predictProtocolFor(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	probeSession, err := probeSessionFor(r, managed)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	// Offer ONLY our protocol so the negotiated subprotocol never echoes the
-	// bearer back to the client. Origin is enforced by OriginPatterns; we never
-	// set InsecureSkipVerify.
+	// bearer back to the client. Origin was enforced above against the full parsed
+	// origin. coder/websocket's OriginPatterns cannot enforce schemes, so its
+	// host-only verifier is deliberately bypassed only after that stronger check.
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		Subprotocols:   []string{subprotocol},
-		OriginPatterns: originPatterns,
+		Subprotocols:       []string{subprotocol},
+		InsecureSkipVerify: true,
 	})
 	if err != nil {
 		return
@@ -266,23 +302,60 @@ func serveConsole(ctx context.Context, w http.ResponseWriter, r *http.Request, a
 	defer conn.CloseNow()
 	conn.SetReadLimit(1 << 20) // 1 MiB: large pastes, well above the 32 KiB default
 
-	if err := pumpSession(ctx, conn, initialWinsize(r), managed, predictAllowed(r)); err != nil {
+	if err := pumpSession(ctx, conn, initialWinsize(r), managed, predict, probeSession); err != nil {
 		conn.Close(websocket.StatusInternalError, "session ended")
 		return
 	}
 	conn.Close(websocket.StatusNormalClosure, "")
 }
 
-// predictAllowed reports whether this session may run the predictive-echo
-// gate. It is a per-session opt-in the browser forwards on the socket URL
-// (?echo=1, mirroring the page parameter); a default session (or the managed
-// dashboard client, which never predicts) spawns no gate and sees no 0x02
-// frames. ENVHAVEN_SKIP_WELCOME=1 disables it outright: the gate inspects the
-// shared tmux session's active pane (gate.go), and skipping the auto-attach
-// breaks the link between that pane and what the console actually renders, so
-// the gate could vouch for the wrong terminal. Fail closed instead.
-func predictAllowed(r *http.Request) bool {
-	return r.URL.Query().Get("echo") == "1" && os.Getenv("ENVHAVEN_SKIP_WELCOME") != "1"
+// probeSessionPattern is intentionally narrower than tmux's own session-name grammar.
+// Only the browser echo harness emits these names, and accepting punctuation or an
+// arbitrary target would turn a test-only isolation seam into a general tmux selector.
+var probeSessionPattern = regexp.MustCompile(`^ehtest-[0-9a-z]{1,8}-[0-9a-z]{8,12}-[0-9a-f]{12}$`)
+
+// probeSessionFor admits a connection-scoped grouped tmux view only for the managed
+// predictive probe. A malformed or misplaced request fails instead of falling back to
+// the shared base session, because that fallback would send test input to an operator.
+func probeSessionFor(r *http.Request, managed bool) (string, error) {
+	q := r.URL.Query()
+	sessions, present := q["probeSession"]
+	if !present {
+		return "", nil
+	}
+	if len(sessions) != 1 || !managed || q.Get("probe") != "1" || q.Get("echo") != "1" || q.Get("echoProtocol") != "4" || !probeSessionPattern.MatchString(sessions[0]) {
+		return "", errors.New("invalid console probe session")
+	}
+	return sessions[0], nil
+}
+
+// predictProtocolFor negotiates the predictive-gate wire format from the socket URL.
+// echo=1 without a version retains the shipped v1 contract; current pages request v4.
+// Any other active version is rejected before the WebSocket upgrade. A default session
+// (or the managed dashboard client, which never predicts) spawns no gate.
+// ENVHAVEN_SKIP_WELCOME=1 leaves the negotiation alone: the pump answers the socket in
+// the negotiated version and vetoes the gate itself (pumpConfig.gateVetoed), because
+// the browser admits input on an echo socket only after its first gate frame.
+func predictProtocolFor(r *http.Request) (predictProtocol, error) {
+	query := r.URL.Query()
+	if query.Get("echo") != "1" {
+		return predictOff, nil
+	}
+	versions := query["echoProtocol"]
+	var protocol predictProtocol
+	switch {
+	case len(versions) == 0:
+		protocol = predictV1
+	case len(versions) == 1 && versions[0] == "1":
+		protocol = predictV1
+	case len(versions) == 1 && versions[0] == "4":
+		protocol = predictV4
+	case len(versions) != 1:
+		return predictOff, errors.New("predictive protocol must be specified once; supported versions are 1 and 4")
+	default:
+		return predictOff, fmt.Errorf("unsupported predictive protocol %q; supported versions are 1 and 4", versions[0])
+	}
+	return protocol, nil
 }
 
 // initialWinsize reads the browser's ?cols=&rows= query so the pty is born at
@@ -313,39 +386,34 @@ func extractToken(header string) string {
 	return ""
 }
 
-// originHosts parses a comma-separated origin list into the bare host patterns
-// coder/websocket matches the Origin header against. Both "https://envhaven.com"
-// and "envhaven.com" yield "envhaven.com"; wildcard host patterns pass through.
-func originHosts(v string) []string {
-	var out []string
-	for _, o := range strings.Split(v, ",") {
-		o = strings.TrimSpace(o)
-		if o == "" {
-			continue
-		}
-		if u, err := url.Parse(o); err == nil && u.Host != "" {
-			out = append(out, u.Host)
-		} else {
-			out = append(out, o)
-		}
+// websocketOriginAllowed mirrors coder/websocket's same-host allowance, then
+// applies the full scheme-qualified policy to cross-origin browser requests.
+// Requests without Origin are non-browser clients and remain allowed.
+func websocketOriginAllowed(r *http.Request, allowed []string) bool {
+	raw := r.Header.Get("Origin")
+	if raw == "" {
+		return true
 	}
-	return out
+	origin, ok := parseOrigin(raw, false)
+	if !ok {
+		return false
+	}
+	requestHost := strings.ToLower(r.Host)
+	originHost := origin.hostname
+	if strings.Contains(originHost, ":") {
+		originHost = "[" + originHost + "]"
+	}
+	if origin.port != "" {
+		originHost += ":" + origin.port
+	}
+	return strings.EqualFold(originHost, requestHost) || originAllowed(raw, allowed)
 }
 
-// frameAncestors parses the console-origins env into the list of origins
-// allowed to embed the managed terminal page. Unlike originHosts (which strips
-// to bare hosts for the WebSocket Origin check), this keeps the scheme, because
-// CSP host-sources are scheme-qualified. Empty falls back to the production
-// dashboard. Same env var (_ENVHAVEN_CONSOLE_ORIGINS), two parsers. The one
-// parse feeds both consumers: registerAPI takes the list as its CORS allowlist,
-// serveUI joins it into the CSP `frame-ancestors` header value.
+// frameAncestors parses the one console-origin policy shared by CSP, CORS and
+// WebSockets. Empty or wholly invalid configuration falls back to the exact
+// production dashboard origin.
 func frameAncestors(v string) []string {
-	var out []string
-	for _, o := range strings.Split(v, ",") {
-		if o = strings.TrimSpace(o); o != "" {
-			out = append(out, o)
-		}
-	}
+	out := configuredOrigins(v)
 	if len(out) == 0 {
 		return []string{"https://envhaven.com"}
 	}

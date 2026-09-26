@@ -11,7 +11,8 @@
       "setupSteps": [],
       "installed": true,
       "authStatus": "ready",
-      "connectedVia": "ALPHA_KEY"
+      "connectedVia": "ALPHA_KEY",
+      "authSource": "manual-rc"
     },
     {
       "id": "beta",
@@ -24,7 +25,8 @@
       "setupSteps": [{ "instruction": "Run beta init", "command": "beta init" }],
       "installed": false,
       "authStatus": "needs-auth",
-      "connectedVia": null
+      "connectedVia": null,
+      "authSource": null
     }
   ],
   "envVarMeta": {

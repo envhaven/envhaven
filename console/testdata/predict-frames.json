@@ -1,0 +1,53 @@
+[
+  {
+    "name": "v1 conservative shell",
+    "protocol": 1,
+    "paneSafe": true,
+    "safe": false,
+    "top": 0,
+    "bottom": 38,
+    "left": 0,
+    "right": 106,
+    "geometry": true,
+    "decodedTop": 0,
+    "decodedBottom": 0,
+    "decodedLeft": 0,
+    "decodedRight": 0,
+    "app": "zsh",
+    "bytes": [2, 0, 122, 115, 104]
+  },
+  {
+    "name": "v4 lower split composer",
+    "protocol": 4,
+    "paneSafe": true,
+    "safe": true,
+    "top": 18,
+    "bottom": 38,
+    "left": 0,
+    "right": 106,
+    "geometry": true,
+    "decodedTop": 18,
+    "decodedBottom": 38,
+    "decodedLeft": 0,
+    "decodedRight": 106,
+    "app": "claude",
+    "bytes": [5, 1, 0, 18, 0, 38, 0, 0, 0, 106, 99, 108, 97, 117, 100, 101]
+  },
+  {
+    "name": "v4 right split shell",
+    "protocol": 4,
+    "paneSafe": true,
+    "safe": true,
+    "top": 0,
+    "bottom": 30,
+    "left": 54,
+    "right": 106,
+    "geometry": true,
+    "decodedTop": 0,
+    "decodedBottom": 30,
+    "decodedLeft": 54,
+    "decodedRight": 106,
+    "app": "zsh",
+    "bytes": [5, 1, 0, 0, 0, 30, 0, 54, 0, 106, 122, 115, 104]
+  }
+]

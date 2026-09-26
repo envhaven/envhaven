@@ -1,0 +1,140 @@
+{
+  "cases": [
+    {
+      "name": "safe gate seats app and geometry",
+      "events": [
+        { "type": "gate", "safe": true, "app": "zsh", "top": 0, "bottom": 38, "left": 0, "right": 106 }
+      ],
+      "steps": [
+        {
+          "state": { "safe": true, "localDisarm": false, "app": "zsh", "top": 0, "bottom": 38, "left": 0, "right": 106 },
+          "effects": [
+            { "type": "geometry", "top": 0, "bottom": 38, "left": 0, "right": 106 },
+            { "type": "app", "previous": "", "app": "zsh" }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "submit waits for unsafe before rearming",
+      "events": [
+        { "type": "gate", "safe": true, "app": "zsh", "top": 0, "bottom": 38, "left": 0, "right": 106 },
+        { "type": "submit" },
+        { "type": "gate", "safe": true, "app": "zsh", "top": 0, "bottom": 38, "left": 0, "right": 106 },
+        { "type": "gate", "safe": false, "app": "zsh", "top": 0, "bottom": 38, "left": 0, "right": 106 },
+        { "type": "gate", "safe": true, "app": "zsh", "top": 0, "bottom": 38, "left": 0, "right": 106 }
+      ],
+      "steps": [
+        {
+          "state": { "safe": true, "localDisarm": false, "app": "zsh", "top": 0, "bottom": 38, "left": 0, "right": 106 },
+          "effects": [
+            { "type": "geometry", "top": 0, "bottom": 38, "left": 0, "right": 106 },
+            { "type": "app", "previous": "", "app": "zsh" }
+          ]
+        },
+        {
+          "state": { "safe": false, "localDisarm": true, "app": "zsh", "top": 0, "bottom": 38, "left": 0, "right": 106 },
+          "effects": []
+        },
+        {
+          "state": { "safe": false, "localDisarm": true, "app": "zsh", "top": 0, "bottom": 38, "left": 0, "right": 106 },
+          "effects": []
+        },
+        {
+          "state": { "safe": false, "localDisarm": false, "app": "zsh", "top": 0, "bottom": 38, "left": 0, "right": 106 },
+          "effects": [
+            { "type": "reset", "reason": "server-unsafe" }
+          ]
+        },
+        {
+          "state": { "safe": true, "localDisarm": false, "app": "zsh", "top": 0, "bottom": 38, "left": 0, "right": 106 },
+          "effects": []
+        }
+      ]
+    },
+    {
+      "name": "every unsafe frame clears pending paint",
+      "events": [
+        { "type": "gate", "safe": false, "app": "zsh", "top": 0, "bottom": 18, "left": 0, "right": 106 },
+        { "type": "gate", "safe": false, "app": "zsh", "top": 0, "bottom": 18, "left": 0, "right": 106 }
+      ],
+      "steps": [
+        {
+          "state": { "safe": false, "localDisarm": false, "app": "zsh", "top": 0, "bottom": 18, "left": 0, "right": 106 },
+          "effects": [
+            { "type": "geometry", "top": 0, "bottom": 18, "left": 0, "right": 106 },
+            { "type": "reset", "reason": "server-unsafe" },
+            { "type": "app", "previous": "", "app": "zsh" }
+          ]
+        },
+        {
+          "state": { "safe": false, "localDisarm": false, "app": "zsh", "top": 0, "bottom": 18, "left": 0, "right": 106 },
+          "effects": [
+            { "type": "reset", "reason": "server-unsafe" }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "app and split geometry move together",
+      "events": [
+        { "type": "gate", "safe": true, "app": "zsh", "top": 0, "bottom": 18, "left": 0, "right": 106 },
+        { "type": "gate", "safe": true, "app": "claude", "top": 18, "bottom": 38, "left": 54, "right": 106 }
+      ],
+      "steps": [
+        {
+          "state": { "safe": true, "localDisarm": false, "app": "zsh", "top": 0, "bottom": 18, "left": 0, "right": 106 },
+          "effects": [
+            { "type": "geometry", "top": 0, "bottom": 18, "left": 0, "right": 106 },
+            { "type": "app", "previous": "", "app": "zsh" }
+          ]
+        },
+        {
+          "state": { "safe": true, "localDisarm": false, "app": "claude", "top": 18, "bottom": 38, "left": 54, "right": 106 },
+          "effects": [
+            { "type": "geometry", "top": 18, "bottom": 38, "left": 54, "right": 106 },
+            { "type": "app", "previous": "zsh", "app": "claude" }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "disconnect forgets session state",
+      "events": [
+        { "type": "gate", "safe": true, "app": "claude", "top": 18, "bottom": 38, "left": 54, "right": 106 },
+        { "type": "disconnect" },
+        { "type": "resize" },
+        { "type": "reset", "reason": "theme" }
+      ],
+      "steps": [
+        {
+          "state": { "safe": true, "localDisarm": false, "app": "claude", "top": 18, "bottom": 38, "left": 54, "right": 106 },
+          "effects": [
+            { "type": "geometry", "top": 18, "bottom": 38, "left": 54, "right": 106 },
+            { "type": "app", "previous": "", "app": "claude" }
+          ]
+        },
+        {
+          "state": { "safe": false, "localDisarm": false, "app": "", "top": 0, "bottom": 0, "left": 0, "right": 0 },
+          "effects": [
+            { "type": "reset", "reason": "socket-close" },
+            { "type": "disconnect" }
+          ]
+        },
+        {
+          "state": { "safe": false, "localDisarm": false, "app": "", "top": 0, "bottom": 0, "left": 0, "right": 0 },
+          "effects": [
+            { "type": "reset", "reason": "term-resize" },
+            { "type": "resize" }
+          ]
+        },
+        {
+          "state": { "safe": false, "localDisarm": false, "app": "", "top": 0, "bottom": 0, "left": 0, "right": 0 },
+          "effects": [
+            { "type": "reset", "reason": "theme" }
+          ]
+        }
+      ]
+    }
+  ]
+}

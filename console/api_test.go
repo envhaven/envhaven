@@ -2,13 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -28,7 +32,7 @@ func okHandler(reached *bool) http.HandlerFunc {
 // appears ONLY for an allowlisted Origin; a missing or invalid bearer is a 401
 // that never reaches the handler; and a valid bearer passes through.
 func TestWithAPIGuard(t *testing.T) {
-	allowed := []string{"https://envhaven.com"}
+	allowed := []string{"https://envhaven.com", "https://*.envhaven.dev"}
 	pass := func(string) error { return nil }
 	fail := func(string) error { return errUnauthorized }
 
@@ -70,6 +74,16 @@ func TestWithAPIGuard(t *testing.T) {
 		}
 		if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
 			t.Fatalf("Allow-Origin = %q, want empty for a disallowed origin", got)
+		}
+	})
+
+	t.Run("OPTIONS wildcard origin echoes the concrete origin", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodOptions, "/__console/stats", nil)
+		r.Header.Set("Origin", "https://app-a.envhaven.dev")
+		withAPI(pass, allowed, okHandler(new(bool)))(w, r)
+		if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://app-a.envhaven.dev" {
+			t.Fatalf("Allow-Origin = %q, want concrete wildcard child", got)
 		}
 	})
 
@@ -117,6 +131,44 @@ func TestWithAPIGuard(t *testing.T) {
 			t.Fatalf("Allow-Origin = %q on the real response", got)
 		}
 	})
+}
+
+func TestOriginAllowed(t *testing.T) {
+	allowed := []string{
+		"https://envhaven.com",
+		"https://*.envhaven.dev",
+		"http://localhost:3000",
+		"https://*.example.com:8443",
+	}
+	cases := []struct {
+		name, origin string
+		want         bool
+	}{
+		{"exact", "https://envhaven.com", true},
+		{"host case canonicalized", "https://ENVHAVEN.com", true},
+		{"exact wrong scheme", "http://envhaven.com", false},
+		{"explicit default port is distinct", "https://envhaven.com:443", false},
+		{"wildcard child", "https://app-a.envhaven.dev", true},
+		{"wildcard nested child", "https://preview.app-a.envhaven.dev", true},
+		{"wildcard excludes apex", "https://envhaven.dev", false},
+		{"wildcard requires label boundary", "https://evilenvhaven.dev", false},
+		{"wildcard wrong scheme", "http://app-a.envhaven.dev", false},
+		{"wildcard explicit port", "https://app.example.com:8443", true},
+		{"wildcard missing port", "https://app.example.com", false},
+		{"wildcard wrong port", "https://app.example.com:443", false},
+		{"localhost exact port", "http://localhost:3000", true},
+		{"localhost missing port", "http://localhost", false},
+		{"path is not an origin", "https://envhaven.com/path", false},
+		{"opaque origin", "null", false},
+		{"empty", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := originAllowed(c.origin, allowed); got != c.want {
+				t.Fatalf("originAllowed(%q) = %v, want %v", c.origin, got, c.want)
+			}
+		})
+	}
 }
 
 // TestWithAPINilOrigins pins the self-host CORS posture: with a nil (or empty)
@@ -180,58 +232,8 @@ func TestWithAPIManagedToken(t *testing.T) {
 	})
 }
 
-// TestHandleActionValidation pins the action allowlist: only the six known
-// actions are accepted, an unknown or auth-less tool is rejected, the window
-// index must be present and non-negative, and an artifact name that escapes the
-// drop folder is refused — all BEFORE any tmux process is spawned.
-func TestHandleActionValidation(t *testing.T) {
-	dir := t.TempDir()
-	defs := filepath.Join(dir, "tool-definitions.json")
-	if err := os.WriteFile(defs, []byte(`{"tools":[
-		{"id":"claude","name":"Claude Code","command":"claude","authCommand":"claude-auth-helper"},
-		{"id":"aider","name":"Aider","command":"aider","authCommand":null}
-	]}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	prev := toolDefsPath
-	toolDefsPath = defs
-	t.Cleanup(func() { toolDefsPath = prev })
-
-	cases := []struct {
-		name, body string
-		want       int
-	}{
-		{"unknown action", `{"action":"frobnicate"}`, http.StatusBadRequest},
-		{"unknown tool", `{"action":"launch","toolId":"ghost"}`, http.StatusBadRequest},
-		{"connect null authCommand", `{"action":"connect","toolId":"aider"}`, http.StatusBadRequest},
-		{"select negative index", `{"action":"select-window","index":-1}`, http.StatusBadRequest},
-		{"select missing index", `{"action":"select-window"}`, http.StatusBadRequest},
-		{"kill missing index", `{"action":"kill-window"}`, http.StatusBadRequest},
-		{"insert-path traversal", `{"action":"insert-path","name":"../etc/passwd"}`, http.StatusBadRequest},
-		{"insert-path absent file", `{"action":"insert-path","name":"definitely-absent-xyz.bin"}`, http.StatusBadRequest},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
-			r := httptest.NewRequest(http.MethodPost, "/__console/action", strings.NewReader(c.body))
-			handleAction(w, r)
-			if w.Code != c.want {
-				t.Fatalf("status = %d, want %d (body %q)", w.Code, c.want, w.Body.String())
-			}
-		})
-	}
-
-	t.Run("non-POST is 405", func(t *testing.T) {
-		w := httptest.NewRecorder()
-		handleAction(w, httptest.NewRequest(http.MethodGet, "/__console/action", nil))
-		if w.Code != http.StatusMethodNotAllowed {
-			t.Fatalf("status = %d, want 405", w.Code)
-		}
-	})
-}
-
-// TestHandleToolMutation covers POST /__console/tools: the set-key upsert (both rc
-// files, replace-in-place, safe quoting) and sign-out (strip exports + delete auth
+// TestHandleToolMutation covers POST /__console/tools: the set-key upsert (single
+// atomic store, replace-in-place, safe quoting) and sign-out (remove owned credentials + delete auth
 // files), the validation gate, and the round trip back through GET /tools — the tool
 // that starts needs-auth reads ready after set-key and needs-auth again after sign-out,
 // proving the write twin agrees with the checkAuth read ladder. `sh` stands in for every
@@ -241,7 +243,7 @@ func TestHandleToolMutation(t *testing.T) {
 	defs := filepath.Join(dir, "tool-definitions.json")
 	if err := os.WriteFile(defs, []byte(`{"tools":[
 		{"id":"claude","name":"Claude Code","command":"sh","authCommand":"claude-auth-helper","envVars":["ANTHROPIC_API_KEY"],"authFiles":[".claude/.credentials.json"]},
-		{"id":"aider","name":"Aider","command":"sh","authCommand":null,"envVars":["OPENAI_API_KEY"],"authFiles":[]}
+		{"id":"noauth","name":"No Auth","command":"sh","authCommand":null,"envVars":["OPENAI_API_KEY"],"authFiles":[]}
 	]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +258,7 @@ func TestHandleToolMutation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Auth must come from the rc file we write, never an ambient env var.
+	// Auth must come from the managed store we write, never an ambient env var.
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "")
 
@@ -315,14 +317,25 @@ func TestHandleToolMutation(t *testing.T) {
 		}
 	})
 
-	t.Run("set-key writes both rc files and flips the tool ready", func(t *testing.T) {
+	t.Run("set-key writes the managed store and flips the tool ready", func(t *testing.T) {
 		if w := post(`{"action":"set-key","toolId":"claude","envVar":"ANTHROPIC_API_KEY","key":"sk-ant-secret"}`); w.Code != http.StatusOK {
 			t.Fatalf("set-key status = %d, want 200 (%s)", w.Code, w.Body.String())
 		}
-		for _, rc := range []string{".zshrc", ".bashrc"} {
-			data, _ := os.ReadFile(filepath.Join(home, rc))
-			if !strings.Contains(string(data), `export ANTHROPIC_API_KEY='sk-ant-secret'`) {
-				t.Errorf("%s missing the export line, got:\n%s", rc, data)
+		store := credentialStorePath(home)
+		data, err := os.ReadFile(store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), `export ANTHROPIC_API_KEY='sk-ant-secret'`) {
+			t.Errorf("managed store missing the export line, got:\n%s", data)
+		}
+		if info, err := os.Stat(store); err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("managed store mode = %v, %v; want 0600", info, err)
+		}
+		for _, rc := range rcFiles {
+			rcData, _ := os.ReadFile(filepath.Join(home, rc))
+			if strings.Contains(string(rcData), "ANTHROPIC_API_KEY") {
+				t.Errorf("%s was mutated:\n%s", rc, rcData)
 			}
 		}
 		if via := connectedVia("claude"); via == nil || *via != "ANTHROPIC_API_KEY" {
@@ -336,7 +349,7 @@ func TestHandleToolMutation(t *testing.T) {
 		if w := post(`{"action":"set-key","toolId":"claude","envVar":"ANTHROPIC_API_KEY","key":"a'b-rotated"}`); w.Code != http.StatusOK {
 			t.Fatalf("rotate status = %d", w.Code)
 		}
-		data, _ := os.ReadFile(filepath.Join(home, ".zshrc"))
+		data, _ := os.ReadFile(credentialStorePath(home))
 		if n := strings.Count(string(data), "export ANTHROPIC_API_KEY="); n != 1 {
 			t.Fatalf("want exactly one export line after upsert, got %d:\n%s", n, data)
 		}
@@ -357,11 +370,9 @@ func TestHandleToolMutation(t *testing.T) {
 		if w := post(`{"action":"sign-out","toolId":"claude"}`); w.Code != http.StatusOK {
 			t.Fatalf("sign-out status = %d (%s)", w.Code, w.Body.String())
 		}
-		for _, rc := range []string{".zshrc", ".bashrc"} {
-			data, _ := os.ReadFile(filepath.Join(home, rc))
-			if strings.Contains(string(data), "ANTHROPIC_API_KEY") {
-				t.Errorf("%s still carries the export after sign-out:\n%s", rc, data)
-			}
+		data, _ := os.ReadFile(credentialStorePath(home))
+		if strings.Contains(string(data), "ANTHROPIC_API_KEY") {
+			t.Errorf("managed store still carries the export after sign-out:\n%s", data)
 		}
 		if fileExists(cred) {
 			t.Errorf("sign-out did not delete the auth file %s", cred)
@@ -372,154 +383,170 @@ func TestHandleToolMutation(t *testing.T) {
 	})
 }
 
-// TestHandleEnv covers the env-var resource: GET lists exported names annotated with
-// the catalog tools that use each (and NEVER a value), POST upserts an export into both
-// rc files behind the name/value/reserved gates, and DELETE strips one. It shares the
-// toolDefsPath + HOME fixture seams with the other handler tests.
-func TestHandleEnv(t *testing.T) {
+func TestToolSignOutConflicts(t *testing.T) {
 	dir := t.TempDir()
 	defs := filepath.Join(dir, "tool-definitions.json")
 	if err := os.WriteFile(defs, []byte(`{"tools":[
-		{"id":"claude","name":"Claude Code","command":"sh","authCommand":"x","envVars":["ANTHROPIC_API_KEY"],"authFiles":[]},
-		{"id":"opencode","name":"OpenCode","command":"sh","authCommand":"y","envVars":["ANTHROPIC_API_KEY","OPENAI_API_KEY"],"authFiles":[]}
+		{"id":"opencode","name":"OpenCode","command":"sh","authCommand":"login","envVars":["OPENAI_API_KEY"],"authFiles":[]},
+		{"id":"qwen","name":"Qwen Code","command":"sh","authCommand":"qwen","envVars":["OPENAI_API_KEY"],"authFiles":[".qwen/oauth_creds.json"],"authCheck":"qwen"},
+		{"id":"amp","name":"Amp","command":"sh","authCommand":"amp login","envVars":["AMP_API_KEY"],"authFiles":[]},
+		{"id":"codex","name":"Codex","command":"sh","authCommand":"codex login","envVars":[],"authEnvVars":["CODEX_ACCESS_TOKEN"],"authFiles":[]}
 	]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	prev := toolDefsPath
+	previous := toolDefsPath
 	toolDefsPath = defs
-	t.Cleanup(func() { toolDefsPath = prev })
+	t.Cleanup(func() { toolDefsPath = previous })
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	// A framework export (oh-my-zsh's ZSH — must NEVER be listed), plus one vendor and one custom
-	// managed export carrying the marker, with distinctive values so a leak is visible.
-	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte(
-		"export ZSH='/config/.oh-my-zsh'\n"+
-			"export ANTHROPIC_API_KEY='sekret-anthropic' # envhaven\n"+
-			"export MY_APP_TOKEN='sekret-token' # envhaven\n"), 0o644); err != nil {
-		t.Fatal(err)
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("AMP_API_KEY", "")
+	t.Setenv("CODEX_ACCESS_TOKEN", "")
+	t.Setenv("DASHSCOPE_API_KEY", "")
+	for _, rc := range rcFiles {
+		if err := os.WriteFile(filepath.Join(home, rc), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(home, ".bashrc"), []byte(""), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	post := func(body string) *httptest.ResponseRecorder {
+	post := func(toolID string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
-		handleEnv(w, httptest.NewRequest(http.MethodPost, "/__console/env", strings.NewReader(body)))
+		body := fmt.Sprintf(`{"action":"sign-out","toolId":%q}`, toolID)
+		handleTools(w, httptest.NewRequest(http.MethodPost, "/__console/tools", strings.NewReader(body)))
 		return w
 	}
-	del := func(name string) *httptest.ResponseRecorder {
-		w := httptest.NewRecorder()
-		handleEnv(w, httptest.NewRequest(http.MethodDelete, "/__console/env?name="+name, nil))
-		return w
-	}
-	list := func() (*httptest.ResponseRecorder, []envVarView) {
+	decodeConflict := func(t *testing.T, w *httptest.ResponseRecorder) toolMutationConflictResponse {
 		t.Helper()
-		w := httptest.NewRecorder()
-		handleEnv(w, httptest.NewRequest(http.MethodGet, "/__console/env", nil))
-		if w.Code != http.StatusOK {
-			t.Fatalf("GET /env status = %d", w.Code)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want 409 (%s)", w.Code, w.Body.String())
 		}
-		var resp struct {
-			Vars []envVarView `json:"vars"`
+		var response toolMutationConflictResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
 		}
-		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-			t.Fatalf("unmarshal /env: %v", err)
+		if response.Instruction == "" || response.Error != response.Instruction {
+			t.Fatalf("conflict lacks a portable instruction: %+v", response)
 		}
-		return w, resp.Vars
+		return response
 	}
 
-	t.Run("list is names + catalog tools, sorted, never values", func(t *testing.T) {
-		w, vars := list()
-		if strings.Contains(w.Body.String(), "sekret") {
-			t.Fatalf("GET /env leaked a value:\n%s", w.Body.String())
+	t.Run("process credential requires a workspace restart", func(t *testing.T) {
+		t.Setenv("AMP_API_KEY", "process-secret")
+		response := decodeConflict(t, post("amp"))
+		if len(response.Conflicts) != 1 || response.Conflicts[0].Source != authSourceProcessEnv {
+			t.Fatalf("conflicts = %+v, want process-env", response.Conflicts)
 		}
-		if slicesHasName(vars, "ZSH") {
-			t.Error("framework export ZSH must never be listed")
+		if !strings.Contains(response.Instruction, "restart the workspace") {
+			t.Fatalf("instruction = %q, want restart guidance", response.Instruction)
 		}
-		if len(vars) != 2 || vars[0].Name != "ANTHROPIC_API_KEY" || vars[1].Name != "MY_APP_TOKEN" {
-			t.Fatalf("vars = %+v, want [ANTHROPIC_API_KEY MY_APP_TOKEN]", vars)
+		t.Setenv("AMP_API_KEY", "")
+	})
+
+	t.Run("process-only credential requires a workspace restart", func(t *testing.T) {
+		t.Setenv("CODEX_ACCESS_TOKEN", "process-secret")
+		response := decodeConflict(t, post("codex"))
+		if len(response.Conflicts) != 1 || response.Conflicts[0].Source != authSourceProcessEnv || response.Conflicts[0].EnvVar != "CODEX_ACCESS_TOKEN" {
+			t.Fatalf("conflicts = %+v, want CODEX_ACCESS_TOKEN process-env", response.Conflicts)
 		}
-		if len(vars[0].Tools) != 2 || vars[0].Tools[0] != "Claude Code" || vars[0].Tools[1] != "OpenCode" {
-			t.Errorf("ANTHROPIC_API_KEY tools = %v, want [Claude Code OpenCode]", vars[0].Tools)
+		t.Setenv("CODEX_ACCESS_TOKEN", "")
+	})
+
+	t.Run("dynamic Qwen process credential requires a workspace restart", func(t *testing.T) {
+		qwenDir := filepath.Join(home, ".qwen")
+		if err := os.MkdirAll(qwenDir, 0o700); err != nil {
+			t.Fatal(err)
 		}
-		if len(vars[1].Tools) != 0 {
-			t.Errorf("MY_APP_TOKEN tools = %v, want []", vars[1].Tools)
+		settings := `{"security":{"auth":{"selectedType":"openai"}},"model":{"name":"qwen"},"modelProviders":{"openai":[{"id":"qwen","envKey":"DASHSCOPE_API_KEY"}]}}`
+		settingsPath := filepath.Join(qwenDir, "settings.json")
+		if err := os.WriteFile(settingsPath, []byte(settings), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("DASHSCOPE_API_KEY", "process-secret")
+		response := decodeConflict(t, post("qwen"))
+		if len(response.Conflicts) != 1 || response.Conflicts[0].Source != authSourceProcessEnv || response.Conflicts[0].EnvVar != "DASHSCOPE_API_KEY" {
+			t.Fatalf("conflicts = %+v, want DASHSCOPE_API_KEY process-env", response.Conflicts)
+		}
+		if !fileExists(settingsPath) {
+			t.Fatal("sign-out partially removed Qwen settings before reporting the process key")
+		}
+		t.Setenv("DASHSCOPE_API_KEY", "")
+	})
+
+	t.Run("manual rc credential is preserved", func(t *testing.T) {
+		path := filepath.Join(home, ".zshrc")
+		line := "export AMP_API_KEY='manual-secret'\n"
+		if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		response := decodeConflict(t, post("amp"))
+		if len(response.Conflicts) != 1 || response.Conflicts[0].Source != authSourceManualRC {
+			t.Fatalf("conflicts = %+v, want manual-rc", response.Conflicts)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != line {
+			t.Fatalf("manual export changed:\n%s", data)
 		}
 	})
 
-	t.Run("set writes a marked export into both rc files and lists it", func(t *testing.T) {
-		if w := post(`{"name":"NEW_VAR","value":"hello"}`); w.Code != http.StatusOK {
-			t.Fatalf("set status = %d (%s)", w.Code, w.Body.String())
-		}
-		for _, rc := range []string{".zshrc", ".bashrc"} {
-			data, _ := os.ReadFile(filepath.Join(home, rc))
-			if !strings.Contains(string(data), `export NEW_VAR='hello' # envhaven`) {
-				t.Errorf("%s missing marked NEW_VAR:\n%s", rc, data)
+	t.Run("shared managed credential belongs to Environment", func(t *testing.T) {
+		for _, rc := range rcFiles {
+			if err := os.WriteFile(filepath.Join(home, rc), nil, 0o644); err != nil {
+				t.Fatal(err)
 			}
 		}
-		if _, vars := list(); !slicesHasName(vars, "NEW_VAR") {
-			t.Error("NEW_VAR not listed after set")
+		if err := setEnvironmentCredential(home, "OPENAI_API_KEY", "managed-secret"); err != nil {
+			t.Fatalf("seed managed shared credential: %v", err)
 		}
-	})
+		qwenDir := filepath.Join(home, ".qwen")
+		if err := os.MkdirAll(qwenDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(qwenDir, "settings.json"), []byte(`{"security":{"auth":{"selectedType":"openai"}}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		oauth := filepath.Join(qwenDir, "oauth_creds.json")
+		if err := os.WriteFile(oauth, []byte(`{"access_token":"keep"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
 
-	t.Run("validation gate", func(t *testing.T) {
-		cases := []struct {
-			name, body string
-			want       int
-		}{
-			{"invalid body", `nope`, http.StatusBadRequest},
-			{"bad name", `{"name":"1BAD","value":"x"}`, http.StatusBadRequest},
-			{"name with space", `{"name":"A B","value":"x"}`, http.StatusBadRequest},
-			{"reserved shell var", `{"name":"PATH","value":"/x"}`, http.StatusBadRequest},
-			{"reserved managed namespace", `{"name":"ENVHAVEN_FOO","value":"x"}`, http.StatusBadRequest},
-			{"empty value", `{"name":"OK_NAME","value":"   "}`, http.StatusBadRequest},
-			{"newline value", `{"name":"OK_NAME","value":"a\nb"}`, http.StatusBadRequest},
+		response := decodeConflict(t, post("qwen"))
+		if len(response.Conflicts) != 1 || response.Conflicts[0].Source != authSourceManagedRC {
+			t.Fatalf("conflicts = %+v, want envhaven-rc", response.Conflicts)
 		}
-		for _, c := range cases {
-			t.Run(c.name, func(t *testing.T) {
-				if w := post(c.body); w.Code != c.want {
-					t.Fatalf("status = %d, want %d (%s)", w.Code, c.want, w.Body.String())
-				}
-			})
+		if got := response.Conflicts[0].AffectedTools; !reflect.DeepEqual(got, []string{"OpenCode", "Qwen Code"}) {
+			t.Fatalf("affected tools = %v", got)
 		}
-	})
+		if !fileExists(oauth) {
+			t.Fatal("sign-out partially removed native credentials before reporting the shared key")
+		}
 
-	t.Run("delete strips the export and is idempotent", func(t *testing.T) {
-		if w := del("MY_APP_TOKEN"); w.Code != http.StatusOK {
-			t.Fatalf("delete status = %d", w.Code)
-		}
-		data, _ := os.ReadFile(filepath.Join(home, ".zshrc"))
-		if strings.Contains(string(data), "MY_APP_TOKEN") {
-			t.Errorf(".zshrc still has MY_APP_TOKEN:\n%s", data)
-		}
-		if _, vars := list(); slicesHasName(vars, "MY_APP_TOKEN") {
-			t.Error("MY_APP_TOKEN still listed after delete")
-		}
-		if w := del("MY_APP_TOKEN"); w.Code != http.StatusOK {
-			t.Errorf("second delete status = %d, want 200 (idempotent)", w.Code)
-		}
-		if w := del("1BAD"); w.Code != http.StatusBadRequest {
-			t.Errorf("delete of invalid name = %d, want 400", w.Code)
-		}
-	})
-
-	t.Run("non-GET/POST/DELETE is 405", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		handleEnv(w, httptest.NewRequest(http.MethodPut, "/__console/env", nil))
-		if w.Code != http.StatusMethodNotAllowed {
-			t.Fatalf("status = %d, want 405", w.Code)
+		handleEnv(w, httptest.NewRequest(http.MethodDelete, "/__console/env?name=OPENAI_API_KEY", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("Environment delete status = %d (%s)", w.Code, w.Body.String())
+		}
+		data, err := os.ReadFile(credentialStorePath(home))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "OPENAI_API_KEY") {
+			t.Fatalf("Environment did not remove shared managed key:\n%s", data)
 		}
 	})
 }
 
-func slicesHasName(vars []envVarView, name string) bool {
-	for _, v := range vars {
-		if v.Name == name {
-			return true
-		}
+func TestSignOutPropagatesRcCleanupFailure(t *testing.T) {
+	home := t.TempDir()
+	if err := os.Mkdir(filepath.Join(home, ".zshrc"), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	return false
+	tool := &toolDef{EnvVars: []string{"AMP_API_KEY"}}
+	if _, _, err := signOutTool(context.Background(), home, tool, []toolDef{*tool}); err == nil {
+		t.Fatal("signOutTool suppressed an rc read failure")
+	}
 }
 
 // TestSanitizeArtifactName pins the filename gate shared by insert-path, upload,
@@ -529,6 +556,9 @@ func TestSanitizeArtifactName(t *testing.T) {
 	reject := []string{
 		"", ".", "..", "../etc/passwd", "a/b", "x/../y", "foo..bar",
 		"nul\x00byte", "ctrl\x01char", `quote"name`, `back\slash`,
+		// DEL and C1 controls: insert-path types the name into a pane, whose line
+		// editor reads DEL as Backspace.
+		"a\x7fb", "a\u0085b",
 	}
 	for _, n := range reject {
 		if _, ok := sanitizeArtifactName(n); ok {
@@ -589,6 +619,35 @@ func TestParseMemInfo(t *testing.T) {
 			total, avail := parseMemInfo(strings.NewReader(c.data))
 			if total != c.totalKb || avail != c.availKb {
 				t.Fatalf("parseMemInfo = (%d, %d), want (%d, %d)", total, avail, c.totalKb, c.availKb)
+			}
+		})
+	}
+}
+
+// TestDiskFrom pins the statfs arithmetic behind the disk gauge. Used counts the
+// blocks that are genuinely written (Blocks-Bfree); capacity is what an
+// unprivileged user can still reach (used+Bavail), which excludes the per-tier
+// `tune2fs -m` reserve; their ratio is df's Use%. The canonical vector is a hobby
+// filesystem, 15% reserved and 28% written, which the old Blocks-Bavail formula
+// reported as 43%. Counts that cannot come from one filesystem, and a capacity of
+// zero, report the zero value.
+func TestDiskFrom(t *testing.T) {
+	const gb = uint64(1) << 30
+	cases := []struct {
+		name                  string
+		blocks, bfree, bavail uint64
+		want                  diskStats
+	}{
+		{"hobby 15% reserve", 100, 72, 57, diskStats{UsedGb: 28, TotalGb: 85, Pct: 32.94}},
+		{"bfree above blocks", 100, 101, 50, diskStats{}},
+		{"bavail above bfree", 100, 50, 51, diskStats{}},
+		{"nothing written and nothing reachable", 100, 100, 0, diskStats{}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := diskFrom(c.blocks, c.bfree, c.bavail, gb)
+			if got.UsedGb != c.want.UsedGb || got.TotalGb != c.want.TotalGb || math.Abs(got.Pct-c.want.Pct) > 0.01 {
+				t.Fatalf("diskFrom(%d, %d, %d) = %+v, want %+v", c.blocks, c.bfree, c.bavail, got, c.want)
 			}
 		})
 	}

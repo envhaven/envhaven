@@ -70,26 +70,28 @@ func TestIsRawPaneFailsClosed(t *testing.T) {
 // made the error path report safe, or leak a name, would ship green.
 func TestPaneStateFailsClosed(t *testing.T) {
 	session := "envhaven-no-such-session-" + strconv.Itoa(os.Getpid())
-	safe, app := paneState(context.Background(), session)
-	if safe {
+	pane := paneState(context.Background(), session)
+	if pane.Safe {
 		t.Fatal("paneState reported safe for a session that does not exist")
 	}
-	if app != "" {
-		t.Fatalf("paneState returned app %q with no pane to read it from", app)
+	if pane.Readable || pane.App != "" {
+		t.Fatalf("paneState returned readable=%v app=%q with no pane to read it from", pane.Readable, pane.App)
 	}
 }
 
 // fakeTmux puts a `tmux` on PATH that answers with `reply`, so paneState's own decision
 // runs against a pane reading of our choosing. The reply is delivered from a file rather
 // than interpolated into the script because the names worth testing carry tabs and escape
-// bytes, and a shell would eat them on the way through.
-func fakeTmux(t *testing.T, reply string) {
+// bytes, and a shell would eat them on the way through. The returned function reads the
+// argv of the last call, one argument per line, so a test can pin what was asked.
+func fakeTmux(t *testing.T, reply string) func() []string {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.WriteFile(dir+"/reply", []byte(reply), 0o600); err != nil {
 		t.Fatalf("write reply: %v", err)
 	}
-	if err := os.WriteFile(dir+"/tmux", []byte("#!/bin/sh\nexec cat '"+dir+"/reply'\n"), 0o700); err != nil {
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >'" + dir + "/argv'\nexec cat '" + dir + "/reply'\n"
+	if err := os.WriteFile(dir+"/tmux", []byte(script), 0o700); err != nil {
 		t.Fatalf("write fake tmux: %v", err)
 	}
 	// Prepended, not replaced: LookPath takes the first hit so ours still wins, and the
@@ -97,6 +99,41 @@ func fakeTmux(t *testing.T, reply string) {
 	// which lands on paneState's error return — every case then "passes" for the wrong
 	// reason, and only the control case notices.
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return func() []string {
+		t.Helper()
+		b, err := os.ReadFile(dir + "/argv")
+		if err != nil {
+			t.Fatalf("read fake tmux argv: %v", err)
+		}
+		return strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
+	}
+}
+
+// TestPaneStateReadsTheSessionExactly pins the target the gate reads. tmux tries a bare
+// name as a pane or window of the most recently active session before it tries a
+// session, so `-t envhaven` read a window named envhaven-dev through the console-view
+// group (measured, tmux 3.4), and the gate vouched for a pane the console was not showing.
+func TestPaneStateReadsTheSessionExactly(t *testing.T) {
+	for _, tc := range []struct{ session, target string }{
+		{tmuxSession, "=envhaven:"},
+		{selfhostGateSession, "=console-view:"},
+	} {
+		argv := fakeTmux(t, "/dev/null|nvim|0|0|1|0|38|0|106|106|38\n")
+		paneState(context.Background(), tc.session)
+		if got := argv(); len(got) < 4 || got[0] != "display-message" || got[2] != "-t" || got[3] != tc.target {
+			t.Errorf("paneState(%q) ran tmux %q, want display-message -p -t %s", tc.session, got, tc.target)
+		}
+	}
+}
+
+// TestPaneStateMissingSessionFailsClosed: asked about a session it cannot find (the
+// self-host view before the login shell has attached), tmux prints every field empty
+// and exits 0. That is no pane at all, and it must read as one we could not see.
+func TestPaneStateMissingSessionFailsClosed(t *testing.T) {
+	fakeTmux(t, "||||||||||\n") // measured: tmux 3.4, `display-message -p -t =console-view:`
+	if pane := paneState(context.Background(), selfhostGateSession); pane != (paneSnapshot{}) {
+		t.Fatalf("paneState for a missing session = %+v, want the unreadable zero snapshot", pane)
+	}
 }
 
 // TestPaneStateRefuses drives the real decision rather than its helpers. Every other test
@@ -136,28 +173,73 @@ func TestPaneStateRefuses(t *testing.T) {
 		wantApp string
 	}{
 		{"an editor on a raw pane is predictable", "nvim", "0", true, "nvim"},
+		{"Muse's versioned binary has a stable label", "muse-bin-1.1.1-R2514.1", "0", true, "muse"},
 		{"a known secret reader is refused", "ssh", "0", false, "ssh"},
 		{"a secret reader wearing a tab is refused", "\tssh", "0", false, ""},
 		{"a secret reader wearing a zero-width space is refused", "​su", "0", false, ""},
 		{"a name carrying an escape sequence is refused", "\x1b[2Jzsh", "0", false, ""},
-		// A '|' in argv[0] splits into a sixth field. Refusing on an exact count is what
+		// A '|' in argv[0] adds a field. Refusing on an exact count is what
 		// makes the separator unspoofable; accepting "at least five" would read the name's
 		// first half as the command and the rest as the flags.
 		{"a name carrying the field separator is refused", "ss|h", "0", false, ""},
 		{"a pane in copy mode is refused", "nvim", "1", false, "nvim"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fakeTmux(t, tty.Name()+"|"+tc.cmd+"|"+tc.mode+"|0|1\n")
-			safe, app := paneState(context.Background(), "any-session")
-			if app != tc.wantApp {
+			fakeTmux(t, tty.Name()+"|"+tc.cmd+"|"+tc.mode+"|0|1|0|38|0|106|106|38\n")
+			pane := paneState(context.Background(), "any-session")
+			if pane.App != tc.wantApp {
 				t.Errorf("paneState app = %q, want %q: a name the gate refused to reason "+
-					"about must not become a cache key in the browser", app, tc.wantApp)
+					"about must not become a cache key in the browser", pane.App, tc.wantApp)
 			}
-			if safe != tc.safe {
+			// Geometry rides the same frame as the name, and a name the gate would
+			// not label carries none.
+			wantBottom := uint16(0)
+			if tc.wantApp != "" {
+				wantBottom = 38
+			}
+			if pane.Bottom != wantBottom {
+				t.Errorf("paneState bottom = %d, want %d", pane.Bottom, wantBottom)
+			}
+			if tc.wantApp != "" && (pane.Top != 0 || pane.Left != 0 || pane.Right != 106 || !pane.Geometry) {
+				t.Errorf("paneState geometry = top %d bottom %d left %d right %d exact=%v",
+					pane.Top, pane.Bottom, pane.Left, pane.Right, pane.Geometry)
+			}
+			if pane.Readable != (tc.wantApp != "") {
+				t.Errorf("paneState readable=%v, want %v", pane.Readable, tc.wantApp != "")
+			}
+			if pane.Safe != tc.safe {
 				t.Fatalf("paneState safe=%v, want %v for pane_current_command %q in_mode %s",
-					safe, tc.safe, tc.cmd, tc.mode)
+					pane.Safe, tc.safe, tc.cmd, tc.mode)
 			}
 		})
+	}
+}
+
+// TestPaneStateGeometry pins v4's exact four edges.
+// The tty is not a pty, so only geometry is under test.
+func TestPaneStateGeometry(t *testing.T) {
+	for _, tc := range []struct {
+		top, height, left, width, windowWidth, windowHeight string
+		wantTop, wantBottom, wantLeft, wantRight            uint16
+		wantGeometry                                        bool
+	}{
+		{"0", "300", "0", "106", "106", "300", 0, 300, 0, 106, true},
+		{"18", "20", "53", "52", "106", "38", 18, 38, 53, 105, true},
+		{"x", "38", "0", "106", "106", "38", 0, 0, 0, 106, false},
+		{"0", "x", "0", "106", "106", "38", 0, 0, 0, 106, false},
+		{"65530", "20", "0", "106", "106", "65535", 65530, 65535, 0, 106, false},
+		{"0", "38", "x", "53", "106", "38", 0, 38, 0, 0, false},
+		{"20", "20", "0", "106", "106", "30", 20, 40, 0, 106, false},
+	} {
+		fakeTmux(t, "/dev/null|nvim|0|0|1|"+tc.top+"|"+tc.height+"|"+tc.left+"|"+tc.width+"|"+tc.windowWidth+"|"+tc.windowHeight+"\n")
+		pane := paneState(context.Background(), "any-session")
+		if pane.Top != tc.wantTop || pane.Bottom != tc.wantBottom ||
+			pane.Left != tc.wantLeft || pane.Right != tc.wantRight ||
+			pane.Geometry != tc.wantGeometry {
+			t.Errorf("pane geometry = top %d bottom %d left %d right %d exact=%v, want %d/%d/%d/%d/%v",
+				pane.Top, pane.Bottom, pane.Left, pane.Right, pane.Geometry,
+				tc.wantTop, tc.wantBottom, tc.wantLeft, tc.wantRight, tc.wantGeometry)
+		}
 	}
 }
 
@@ -196,14 +278,14 @@ func TestPaneStateCopyModeKeepsResolvedApp(t *testing.T) {
 
 	// in_mode 1: the pane is in copy-mode, so this frame is refused either way. What is
 	// under test is the name that rides the refusal.
-	fakeTmux(t, ptmx.Name()+"|node|1|0|"+strconv.Itoa(child.Process.Pid)+"\n")
-	safe, app := paneState(context.Background(), "any-session")
-	if safe {
+	fakeTmux(t, ptmx.Name()+"|node|1|0|"+strconv.Itoa(child.Process.Pid)+"|0|38|0|106|106|38\n")
+	pane := paneState(context.Background(), "any-session")
+	if pane.Safe {
 		t.Fatal("a pane in copy mode reported safe")
 	}
-	if app != "codex" {
+	if pane.App != "codex" {
 		t.Fatalf("copy-mode app = %q, want \"codex\": the label flips node<->codex on every "+
-			"scroll and the browser pays a full relearn each way", app)
+			"scroll and the browser pays a full relearn each way", pane.App)
 	}
 }
 
@@ -263,7 +345,7 @@ func TestSecretReaderSpoofIsRefused(t *testing.T) {
 // TestClampApp pins the gate frame's name bound. The clamp is a wire concern — a
 // hostile argv[0] must not bloat a frame the browser reads on every poll — so it runs
 // on the way out only, never on the name secretReaders is looked up with. It must also
-// leave valid UTF-8 behind, because the 0x02 frame declares the name UTF-8 and a byte
+// leave valid UTF-8 behind, because predictive frames declare the name UTF-8 and a byte
 // slice happily cuts a rune in half.
 func TestClampApp(t *testing.T) {
 	// 31 ASCII bytes then a two-byte rune: the cut at maxAppName lands inside it.

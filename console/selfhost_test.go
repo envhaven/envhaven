@@ -2,10 +2,13 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -329,6 +332,50 @@ func TestLoginTokenFlow(t *testing.T) {
 	}
 }
 
+func TestHashOnlyInternalTokenFlow(t *testing.T) {
+	cred := &credential{method: methodSHA256, hash: fixtureSHA256}
+	sh := &selfHost{cred: cred, secret: deriveSecret(cred)}
+	issued := strconv.FormatInt(time.Now().Unix(), 10)
+	request := func(remote, proof string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/__console/internal-token", nil)
+		r.RemoteAddr = remote
+		r.Header.Set("X-EnvHaven-Issued", issued)
+		r.Header.Set("X-EnvHaven-Proof", proof)
+		w := httptest.NewRecorder()
+		sh.handleInternalToken(w, r)
+		return w
+	}
+	proof := base64.RawURLEncoding.EncodeToString(sign(sh.secret, ctxInternal, issued))
+
+	w := request("127.0.0.1:48152", proof)
+	if w.Code != http.StatusOK {
+		t.Fatalf("valid loopback proof = %d: %s", w.Code, w.Body.String())
+	}
+	if token := strings.TrimSpace(w.Body.String()); !verifyToken(sh.secret, ctxWS, token, time.Now()) {
+		t.Fatal("hash proof did not mint a valid WebSocket token")
+	}
+	if strings.Contains(w.Body.String(), fixtureSHA256) {
+		t.Fatal("hash material leaked in the token response")
+	}
+	if w := request("127.0.0.1:48152", "wrong"); w.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong proof = %d, want 401", w.Code)
+	}
+	if w := request("192.0.2.10:48152", proof); w.Code != http.StatusForbidden {
+		t.Fatalf("remote proof = %d, want 403", w.Code)
+	}
+
+	plain := newTestSelfHost(t)
+	r := httptest.NewRequest(http.MethodPost, "/__console/internal-token", nil)
+	r.RemoteAddr = "[::1]:48152"
+	r.Header.Set("X-EnvHaven-Issued", issued)
+	r.Header.Set("X-EnvHaven-Proof", base64.RawURLEncoding.EncodeToString(sign(plain.secret, ctxInternal, issued)))
+	w = httptest.NewRecorder()
+	plain.handleInternalToken(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("plaintext internal-token = %d, want 404", w.Code)
+	}
+}
+
 func wsRequest(proto string) *http.Request {
 	r := httptest.NewRequest(http.MethodGet, "/__console", nil)
 	r.Header.Set("Sec-WebSocket-Protocol", proto)
@@ -353,8 +400,8 @@ func TestLoginRateLimit(t *testing.T) {
 	}
 }
 
-// TestUIAndAssets confirms the embedded UI and vendored xterm assets ship and
-// serve, and that a missing asset is a clean 404 (not a panic or a directory
+// TestUIAndAssets confirms the embedded UI and runtime assets ship and serve,
+// and that a missing asset is a clean 404 (not a panic or a directory
 // listing escape).
 func TestUIAndAssets(t *testing.T) {
 	uw := httptest.NewRecorder()
@@ -366,8 +413,15 @@ func TestUIAndAssets(t *testing.T) {
 		t.Fatalf("serveUI content-type = %q, want text/html", ct)
 	}
 
-	h := assetsHandler()
-	for _, name := range []string{"xterm.js", "xterm.css", "addon-fit.js", "jetbrains-mono-regular.woff2", "jetbrains-mono-bold.woff2"} {
+	h := http.HandlerFunc(serveAsset)
+	for _, name := range []string{
+		"xterm.js", "xterm.css", "addon-fit.js",
+		"jetbrains-mono-regular.woff2", "jetbrains-mono-bold.woff2",
+		"eh-model.js", "eh-predict-input.js", "eh-predict-layout.js", "eh-predict-navigation.js",
+		"eh-predict-actions.js", "eh-predict-style.js", "eh-predict-renderer.js",
+		"eh-predict-reconcile.js", "eh-predict-session.js", "eh-status.js", "eh-auth.js",
+		"eh-clipboard.js", "eh-transport.js", "eh-predictor.js", "eh-engine.js",
+	} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/__console/assets/"+name, nil))
 		if w.Code != http.StatusOK || w.Body.Len() == 0 {
@@ -379,12 +433,17 @@ func TestUIAndAssets(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("missing asset = %d, want 404", w.Code)
 	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/__console/assets/", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("bare assets directory = %d, want 404 (not a listing)", w.Code)
+	}
 }
 
 // TestVendoredAssetsPristine pins the vendored assets byte-for-byte to the
 // upstream artifacts recorded in ui/assets/LICENSE (@xterm/xterm@6.0.0,
-// @xterm/addon-fit@0.11.0, JetBrains Mono v2.304). terminal.html reaches
-// into xterm internals for the predictive-echo overlay, so a drifted or locally-
+// @xterm/addon-fit@0.11.0, JetBrains Mono v2.304). The prediction renderer and style
+// sampler reach into xterm internals for the predictive-echo overlay, so a drifted or locally-
 // edited bundle must fail loudly here, never ship silently. When deliberately
 // updating an asset: replace the files, then update these hashes and the
 // versions in ui/assets/LICENSE.
@@ -432,5 +491,123 @@ func TestRootRedirect(t *testing.T) {
 	}
 	if loc := w.Header().Get("Location"); loc != "/__console/ui" {
 		t.Fatalf("root redirect Location = %q, want /__console/ui", loc)
+	}
+}
+
+// The page and its assets are one program split across requests, and the ETag only
+// makes the edge keep them together. Cloudflare rewrites what it passes on (our
+// `no-cache` reaches the browser as `max-age=14400`), so each first-party runtime asset
+// needs a content-hashed URL rather than an old model or engine under a new page.
+func TestTerminalPageStampsRuntimeVersions(t *testing.T) {
+	for _, name := range []string{
+		"eh-model.js",
+		"eh-predict-input.js",
+		"eh-predict-layout.js",
+		"eh-predict-navigation.js",
+		"eh-predict-actions.js",
+		"eh-predict-style.js",
+		"eh-predict-renderer.js",
+		"eh-predict-reconcile.js",
+		"eh-predict-session.js",
+		"eh-status.js",
+		"eh-auth.js",
+		"eh-clipboard.js",
+		"eh-transport.js",
+		"eh-predictor.js",
+		"eh-engine.js",
+	} {
+		t.Run(name, func(t *testing.T) {
+			pattern := regexp.MustCompile(`/__console/assets/` + regexp.QuoteMeta(name) + `\?v=([0-9a-f]+)`)
+			m := pattern.FindSubmatch(terminalPage)
+			if m == nil {
+				t.Fatalf("the served page loads %s without a content version", name)
+			}
+
+			// The stamp and ETag must identify the same embedded bytes.
+			r := httptest.NewRequest(http.MethodGet, "/__console/assets/"+name, nil)
+			w := httptest.NewRecorder()
+			serveAsset(w, r)
+			if want := `"` + string(m[1]) + `"`; w.Header().Get("Etag") != want {
+				t.Errorf("page stamps v=%s, asset ETag is %s; want the content hash",
+					m[1], w.Header().Get("Etag"))
+			}
+			if w.Code != http.StatusOK {
+				t.Errorf("%s status %d, want 200", name, w.Code)
+			}
+
+			// The stamped URL serves only the bytes named by its content hash.
+			r = httptest.NewRequest(http.MethodGet, "/__console/assets/"+name+"?v="+string(m[1]), nil)
+			w = httptest.NewRecorder()
+			serveAsset(w, r)
+			if w.Code != http.StatusOK || w.Header().Get("Etag") != `"`+string(m[1])+`"` {
+				t.Errorf("stamped URL: status %d, ETag %s", w.Code, w.Header().Get("Etag"))
+			}
+
+			for _, query := range []string{"?v=deadbeef", "?v=", "?v=" + string(m[1]) + "&v=" + string(m[1])} {
+				r = httptest.NewRequest(http.MethodGet, "/__console/assets/"+name+query, nil)
+				w = httptest.NewRecorder()
+				serveAsset(w, r)
+				if w.Code != http.StatusNotFound {
+					t.Errorf("invalid version %q: status %d, want 404", query, w.Code)
+				}
+			}
+		})
+	}
+
+	// Every asset the page loads is stamped, not only the engine: the vendored bundles and
+	// fonts are the same program and get the same four-hour skew when they change.
+	refs := strings.Count(string(terminalPage), "/__console/assets/")
+	if stamped := strings.Count(string(terminalPage), "?v="); refs < 2 || stamped != refs {
+		t.Errorf("page has %d asset references and %d stamps, want every reference stamped", refs, stamped)
+	}
+}
+
+// Without a caching rule of our own an intermediary invents one: measured against a
+// managed workspace, Cloudflare applied a four-hour default TTL to the engine and served
+// the previous image's copy alongside the new image's page, and a client hard reload did
+// not clear it. So the handler states the rule and supplies the validator that makes
+// obeying it cheap.
+func TestAssetsCacheHeaders(t *testing.T) {
+	h := http.HandlerFunc(serveAsset)
+
+	get := func(path, ifNoneMatch string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodGet, "/__console/assets/"+path, nil)
+		if ifNoneMatch != "" {
+			r.Header.Set("If-None-Match", ifNoneMatch)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	predictor := get("eh-predictor.js", "")
+	if predictor.Code != http.StatusOK {
+		t.Fatalf("predictor: status %d, want 200", predictor.Code)
+	}
+	if got := predictor.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("predictor Cache-Control = %q, want %q — a cache with no instruction picks its own", got, "no-cache")
+	}
+	tag := predictor.Header().Get("Etag")
+	if tag == "" {
+		t.Fatal("predictor served with no ETag, so every revalidation costs the whole file")
+	}
+
+	// The validator has to actually validate, or `no-cache` means re-downloading
+	// the controller on every page load rather than a 304.
+	if again := get("eh-predictor.js", tag); again.Code != http.StatusNotModified {
+		t.Errorf("If-None-Match %s: status %d, want 304", tag, again.Code)
+	}
+	// Cloudflare weakens a strong tag when it recompresses .js, so the browser behind
+	// the edge revalidates with W/"...": that has to be a 304 too, or every edge
+	// revalidation downloads the file.
+	if weak := get("eh-predictor.js", "W/"+tag); weak.Code != http.StatusNotModified {
+		t.Errorf("If-None-Match W/%s: status %d, want 304", tag, weak.Code)
+	}
+
+	// Derived from the bytes, not a constant: two different files must not share a tag,
+	// or a changed engine would revalidate as unchanged.
+	other := get("xterm.css", "").Header().Get("Etag")
+	if other == "" || other == tag {
+		t.Errorf("xterm.css ETag = %q, predictor = %q — ETags must be per-content", other, tag)
 	}
 }

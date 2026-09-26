@@ -28,15 +28,12 @@ const (
 	hardMaxLife = 12 * time.Hour
 
 	// Wire protocol frame types (first byte of every binary frame).
-	frameData    = 0x00 // terminal bytes, both directions
-	frameResize  = 0x01 // resize request, browser to server only
-	framePredict = 0x02 // predictive-echo safety gate, server to browser only:
-	// [safe byte (1=safe 0=unsafe), pane app name (valid UTF-8, at most
-	// maxAppName bytes, may be empty)]. Sent whenever either part changes, so the
-	// browser always knows both whether it may draw and WHICH application it
-	// would be drawing into.
+	frameData      = 0x00 // terminal bytes, both directions
+	frameResize    = 0x01 // resize request, browser to server only
+	framePredictV1 = 0x02 // [safe byte, pane app name], retained for open old tabs
+	framePredictV4 = 0x05 // [safe byte, top, bottom, left, right uint16 big-endian, pane app name]
 
-	// maxAppName bounds the name in a 0x02 frame so a hostile argv[0] cannot
+	// maxAppName bounds the name in a predict frame so a hostile argv[0] cannot
 	// bloat a frame the browser reads on every poll. The bound is declared with the
 	// frame it protects and enforced where the name is produced (gate.go's clampApp),
 	// so there is one clamp rather than two disagreeing ones. Production has exactly
@@ -48,6 +45,10 @@ const (
 	// room for one network round trip, so a secret prompt is signalled unsafe
 	// before the first key of the secret is typed.
 	predictPoll = 75 * time.Millisecond
+	// predictIdleSkips bounds how many ticks the gate may skip in a row while nothing has
+	// touched the pty: about a second, so a pane whose state flips with no traffic at all
+	// (nothing typed, nothing drawn) is still looked at, at a fraction of the flat cost.
+	predictIdleSkips = 13
 
 	// predictSubmitGrace withholds "safe" for this long after any newline in the
 	// input. A password prompt appears only in response to a submitted command, so
@@ -58,9 +59,49 @@ const (
 	// browser after its own newline-disarm. Note the browser must not treat just any
 	// "safe" frame as that re-arm: the feed also emits one when only the pane's app
 	// name changed, which can land mid-submit. The browser waits for the explicit
-	// "unsafe" this grace guarantees (see localDisarm in terminal.html).
+	// "unsafe" this grace guarantees (see localDisarm in reducePredictorLifecycle,
+	// ui/assets/eh-model.js).
 	predictSubmitGrace = 200 * time.Millisecond
 )
+
+// predictProtocol is negotiated by the socket's echo query. The terminal page's
+// public feature flag remains ?echo=1; current pages add echoProtocol=4 on the socket,
+// while old pages retain v1 across a restart or rollback.
+type predictProtocol uint8
+
+const (
+	predictOff predictProtocol = 0
+	predictV1  predictProtocol = 1
+	predictV4  predictProtocol = 4
+)
+
+func (p predictProtocol) enabled() bool { return p == predictV1 || p == predictV4 }
+
+// encodePredictFrame is the one server-side wire codec for pane snapshots. V1 omits
+// geometry and therefore never grants a safety lease; v4 carries all four pane edges.
+func encodePredictFrame(protocol predictProtocol, pane paneSnapshot) []byte {
+	safe := byte(0)
+	if predictSafe(protocol, pane) {
+		safe = 1
+	}
+	switch protocol {
+	case predictV1:
+		return append([]byte{framePredictV1, safe}, pane.App...)
+	case predictV4:
+		return append([]byte{framePredictV4, safe,
+			byte(pane.Top >> 8), byte(pane.Top), byte(pane.Bottom >> 8), byte(pane.Bottom),
+			byte(pane.Left >> 8), byte(pane.Left), byte(pane.Right >> 8), byte(pane.Right)}, pane.App...)
+	default:
+		return nil
+	}
+}
+
+func predictSafe(protocol predictProtocol, pane paneSnapshot) bool {
+	if protocol != predictV4 || !pane.Safe || !pane.Geometry {
+		return false
+	}
+	return pane.Top < pane.Bottom && pane.Left < pane.Right
+}
 
 // wireConn is the slice of *websocket.Conn the pump uses; tests substitute an
 // in-memory implementation to exercise the wire protocol without a socket.
@@ -72,10 +113,16 @@ type wireConn interface {
 // pumpConfig carries the pump's collaborators and limits. pumpSession wires the
 // production values; tests inject a fake pane gate and short timeouts.
 type pumpConfig struct {
-	predict   bool
-	paneState func(context.Context) (safe bool, app string)
-	idle      time.Duration
-	maxLife   time.Duration
+	predict predictProtocol
+	// gateVetoed answers an opted-in socket with one unsafe frame and never looks at
+	// a pane. ENVHAVEN_SKIP_WELCOME=1 skips the auto-attach, which breaks the link
+	// between the session the gate watches and what this console renders, so the
+	// gate must never vouch for a pane. The socket still needs that one frame: the
+	// browser admits input only after its first authoritative gate frame.
+	gateVetoed bool
+	paneState  func(context.Context) paneSnapshot
+	idle       time.Duration
+	maxLife    time.Duration
 }
 
 // pumpSession starts the login shell on a pty and hands it to pump. managed is
@@ -83,7 +130,7 @@ type pumpConfig struct {
 // the gate session can never fork from the mode switch. On idle timeout or the
 // hard maximum lifetime, the socket closes cleanly and the browser shows its
 // manual reconnect button.
-func pumpSession(parent context.Context, conn *websocket.Conn, size *pty.Winsize, managed, predict bool) error {
+func pumpSession(parent context.Context, conn *websocket.Conn, size *pty.Winsize, managed bool, predict predictProtocol, probeSession string) error {
 	// The shell inherits the abc user from s6-setuidgid; we never set uid/gid
 	// here. `-l` makes it a login shell so it auto-attaches the tmux session,
 	// at parity with SSH and the IDE terminal.
@@ -93,7 +140,7 @@ func pumpSession(parent context.Context, conn *websocket.Conn, size *pty.Winsize
 	cmd := exec.Command("zsh", "-l")
 	// gateSessionFor keeps the predict gate on the exact session the console
 	// renders (base envhaven for managed, the grouped console-view for self-host).
-	gateSession, extraEnv := gateSessionFor(managed)
+	gateSession, extraEnv := gateSessionFor(managed, probeSession)
 	env := append(os.Environ(), "TERM=xterm-256color")
 	env = append(env, extraEnv...)
 	cmd.Env = env
@@ -111,10 +158,11 @@ func pumpSession(parent context.Context, conn *websocket.Conn, size *pty.Winsize
 		_ = cmd.Wait()
 	}()
 	return pump(parent, conn, ptmx, pumpConfig{
-		predict:   predict,
-		paneState: func(c context.Context) (bool, string) { return paneState(c, gateSession) },
-		idle:      idleTimeout,
-		maxLife:   hardMaxLife,
+		predict:    predict,
+		gateVetoed: os.Getenv("ENVHAVEN_SKIP_WELCOME") == "1",
+		paneState:  func(c context.Context) paneSnapshot { return paneState(c, gateSession) },
+		idle:       idleTimeout,
+		maxLife:    hardMaxLife,
 	})
 }
 
@@ -125,7 +173,15 @@ func pumpSession(parent context.Context, conn *websocket.Conn, size *pty.Winsize
 // shows the bar via its OWN grouped session (selfhostGateSession); welcome.sh
 // reads ENVHAVEN_CONSOLE_SESSION to build it. Either way the gate watches the
 // exact session the console renders, so the two can never diverge.
-func gateSessionFor(managed bool) (session string, extraEnv []string) {
+
+func gateSessionFor(managed bool, probeSession string) (session string, extraEnv []string) {
+	if managed && probeSession != "" {
+		return probeSession, []string{
+			"ENVHAVEN_CONSOLE_SESSION=" + probeSession,
+			"_ENVHAVEN_CONSOLE_STATUS=off",
+			"_ENVHAVEN_CONSOLE_DESTROY_UNATTACHED=off",
+		}
+	}
 	if managed {
 		return tmuxSession, nil
 	}
@@ -133,7 +189,7 @@ func gateSessionFor(managed bool) (session string, extraEnv []string) {
 }
 
 // pump bridges the pty and the WebSocket using the 0x00/0x01 wire protocol
-// (plus the 0x02 predict gate when the session opted in). It returns nil on
+// (plus the negotiated predict gate when the session opted in). It returns nil on
 // every ordinary end of session: idle timeout, lifetime cap, pty EOF, or a
 // normal close from the browser.
 func pump(parent context.Context, conn wireConn, ptmx *os.File, cfg pumpConfig) error {
@@ -154,6 +210,7 @@ func pump(parent context.Context, conn wireConn, ptmx *os.File, cfg pumpConfig) 
 	// must report unsafe, set on every newline in the input to enforce the submit
 	// grace. Written by the input pump, read by the gate; atomic keeps them honest.
 	var armAfter atomic.Int64
+	pastGrace := func() bool { return time.Now().UnixNano() >= armAfter.Load() }
 
 	// coder/websocket forbids concurrent Write; the pty read pump and the predict
 	// gate both write frames, so serialize every write behind one mutex.
@@ -202,39 +259,84 @@ func pump(parent context.Context, conn wireConn, ptmx *os.File, cfg pumpConfig) 
 		}()
 		tick := time.NewTicker(predictPoll)
 		defer tick.Stop()
-		lastSafe := int8(-1) // sentinel: force the first frame so the browser learns the initial state
-		lastApp := ""
+		var last paneSnapshot
+		sent := false // force the first frame so the browser learns the initial state
+		// The cadence never changes; what changes is whether a tick does any work.
+		// settledAt is lastActivity as of the last settled poll (read the pane, no grace
+		// left to close out, nothing the browser lacks); -1 means none, so the tick looks.
+		// lastActivity is nanos since pump start and never negative, so the sentinel
+		// cannot collide.
+		settledAt := int64(-1)
+		skipped := 0 // ticks skipped since the last poll, bounded by predictIdleSkips
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-tick.C:
-				safe, app := cfg.paneState(ctx)
-				if app == "" {
+				// One poll costs ~49ms of `tmux display-message` on a Contabo vCPU, so a
+				// flat cadence spends most of a core watching a pane nobody is touching.
+				// Skip the exec rather than slow the cadence, but only while the browser is
+				// already unsafe. A safe lease must keep the full cadence: revoking it before
+				// each idle skip leaves less than one network trip for a client to use it,
+				// while retaining it would miss a silent tty-mode transition. A slower cadence
+				// would instead let a
+				// whole predictSubmitGrace open and lapse between two polls, and the
+				// browser re-arms only on an explicit unsafe frame, so it would stay
+				// disarmed for the rest of the session. The grace is re-read below rather
+				// than carried in the stamp: the input pump stores armAfter just after it
+				// stamps lastActivity, so a poll can land between the two. act is read
+				// before the exec, so traffic during the exec still forces a re-poll.
+				act := lastActivity.Load()
+				if act == settledAt && skipped < predictIdleSkips && pastGrace() && sent && !predictSafe(cfg.predict, last) {
+					skipped++
+					continue
+				}
+				skipped = 0
+				pane := cfg.paneState(ctx)
+				readable := pane.Readable
+				if !readable {
 					// No information (no tmux, malformed output, the read timed
 					// out), not "the app changed to nothing". The browser has no
 					// unknown case: it would take the empty name as a real app
 					// change and pay a heavy handoff out and another back, the
 					// second landing exactly as the user resumes typing. Carry the
-					// last known name so an unreadable pane can only flip SAFETY,
-					// which already fails closed.
-					app = lastApp
+					// last known name and geometry so an unreadable pane can only
+					// flip SAFETY, which already fails closed.
+					pane.App = last.App
+					pane.Top, pane.Bottom, pane.Left, pane.Right = last.Top, last.Bottom, last.Left, last.Right
+					pane.Geometry = last.Geometry
 				}
-				cur := int8(0)
-				if safe && time.Now().UnixNano() >= armAfter.Load() {
-					cur = 1
-				}
-				if cur != lastSafe || app != lastApp {
-					lastSafe, lastApp = cur, app
-					if werr := writeFrame(append([]byte{framePredict, byte(cur)}, app...)); werr != nil {
+				graceOver := pastGrace()
+				pane.Safe = pane.Safe && graceOver
+				changed := !sent || predictSnapshotChanged(cfg.predict, last, pane)
+				if changed {
+					last = pane
+					sent = true
+					if werr := writeFrame(encodePredictFrame(cfg.predict, pane)); werr != nil {
 						errc <- werr
 						return
 					}
 				}
+				// This poll is the last word only if it read the pane, left no grace to
+				// close out, and found nothing the browser does not already have. A false
+				// Readable is paneState's explicit failure signal, and a look that failed is no
+				// evidence that nothing is happening; an open submit grace is the one input
+				// that moves without any traffic; and a poll that saw something change is
+				// answered by the next one.
+				settledAt = -1
+				if readable && graceOver && !changed {
+					settledAt = act
+				}
 			}
 		}
 	}
-	if cfg.predict {
+	switch {
+	case cfg.predict.enabled() && cfg.gateVetoed:
+		// Written before the input pump starts, through the same serialized writer.
+		if werr := writeFrame(encodePredictFrame(cfg.predict, paneSnapshot{})); werr != nil {
+			errc <- werr
+		}
+	case cfg.predict.enabled():
 		go gate()
 	}
 
@@ -259,7 +361,7 @@ func pump(parent context.Context, conn wireConn, ptmx *os.File, cfg pumpConfig) 
 			case frameData:
 				// A newline submits a line; hold the predict gate unsafe for the
 				// grace so a password typed right after its command cannot re-arm.
-				if cfg.predict && (bytes.IndexByte(data[1:], '\r') >= 0 || bytes.IndexByte(data[1:], '\n') >= 0) {
+				if cfg.predict.enabled() && (bytes.IndexByte(data[1:], '\r') >= 0 || bytes.IndexByte(data[1:], '\n') >= 0) {
 					armAfter.Store(time.Now().Add(predictSubmitGrace).UnixNano())
 				}
 				if _, werr := ptmx.Write(data[1:]); werr != nil {
@@ -305,6 +407,16 @@ func pump(parent context.Context, conn wireConn, ptmx *os.File, cfg pumpConfig) 
 			return err
 		}
 	}
+}
+
+func predictSnapshotChanged(protocol predictProtocol, a, b paneSnapshot) bool {
+	if predictSafe(protocol, a) != predictSafe(protocol, b) || a.App != b.App {
+		return true
+	}
+	if protocol == predictV4 {
+		return a.Top != b.Top || a.Bottom != b.Bottom || a.Left != b.Left || a.Right != b.Right
+	}
+	return false
 }
 
 // isCleanEnd reports whether err marks an ordinary end of session (pty EOF,

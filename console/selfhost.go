@@ -23,13 +23,12 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
-	"embed"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -42,15 +41,17 @@ import (
 )
 
 const (
-	selfHostAddr  = ":7681" // all interfaces; the operator maps the port and fronts TLS
-	wsTokenTTL    = 60 * time.Second
-	sessionTTL    = 12 * time.Hour
-	sessionCookie = "envhaven_console_session"
+	selfHostAddr        = ":7681" // all interfaces; the operator maps the port and fronts TLS
+	wsTokenTTL          = 60 * time.Second
+	sessionTTL          = 12 * time.Hour
+	sessionCookie       = "envhaven_console_session"
+	internalProofWindow = 30 * time.Second
 
 	// HMAC domain tags keep a session cookie value from being replayed as a WS
 	// token and vice versa.
-	ctxSession = "session"
-	ctxWS      = "ws"
+	ctxSession  = "session"
+	ctxWS       = "ws"
+	ctxInternal = "extension-token"
 
 	// Login brute-force gate: a token bucket refilling at loginPerMin with this
 	// burst. A legitimate operator logs in about once per sessionTTL, so this is
@@ -67,12 +68,6 @@ const (
 	methodArgon2
 	methodSHA256
 )
-
-//go:embed ui/terminal.html
-var terminalHTML []byte
-
-//go:embed ui/assets
-var assetsFS embed.FS
 
 // credential holds the operator's configured web password in the form code-server
 // uses, so the console verifies against the exact same secret the IDE does.
@@ -249,7 +244,7 @@ func newSelfHost() *selfHost {
 	return &selfHost{
 		cred:    cred,
 		secret:  deriveSecret(cred),
-		origins: originHosts(os.Getenv("_ENVHAVEN_CONSOLE_ORIGINS")), // empty -> same-origin only
+		origins: configuredOrigins(os.Getenv("_ENVHAVEN_CONSOLE_ORIGINS")), // empty -> same-origin only
 		limiter: rate.NewLimiter(rate.Limit(float64(loginPerMin)/60.0), loginBurst),
 	}
 }
@@ -323,37 +318,50 @@ func (s *selfHost) handleToken(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, mintToken(s.secret, ctxWS, time.Now(), wsTokenTTL))
 }
 
+// handleInternalToken gives the extension host a hash-only equivalent of the
+// browser's login-cookie exchange. It accepts only a loopback request carrying
+// a short-lived HMAC proof; HASHED_PASSWORD itself never crosses HTTP or enters
+// the webview. Plaintext deployments continue to use handleLogin.
+func (s *selfHost) handleInternalToken(w http.ResponseWriter, r *http.Request) {
+	if !remoteIsLoopback(r.RemoteAddr) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if s.cred.method == methodPlain {
+		http.NotFound(w, r)
+		return
+	}
+	issued := r.Header.Get("X-EnvHaven-Issued")
+	issuedUnix, err := strconv.ParseInt(issued, 10, 64)
+	if err != nil || !withinProofWindow(time.Now().Unix(), issuedUnix) {
+		http.Error(w, "invalid proof", http.StatusUnauthorized)
+		return
+	}
+	proof, err := base64.RawURLEncoding.DecodeString(r.Header.Get("X-EnvHaven-Proof"))
+	if err != nil || !hmac.Equal(proof, sign(s.secret, ctxInternal, issued)) {
+		http.Error(w, "invalid proof", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	io.WriteString(w, mintToken(s.secret, ctxWS, time.Now(), wsTokenTTL))
+}
+
+func remoteIsLoopback(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = strings.Trim(remoteAddr, "[]")
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func withinProofWindow(now, issued int64) bool {
+	window := int64(internalProofWindow / time.Second)
+	return issued >= now-window && issued <= now+window
+}
+
 // handleRoot redirects the bare host root to the terminal page, so an operator
 // who opens http://host:7681/ lands on the UI without knowing the /__console path.
 func (s *selfHost) handleRoot(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/__console/ui", http.StatusFound)
-}
-
-// serveUI writes the embedded terminal page. The page holds no secret: self-host
-// fetches a token and prompts for the password only if that returns 401; managed
-// receives a platform JWT from the embedding dashboard over postMessage. The SAME
-// page serves both modes — the only difference is who may frame it. frameAncestors
-// is empty for self-host (opened top-level, so framing is denied outright) and the
-// CSP frame-ancestors origin list for managed (only the dashboard may embed the
-// live terminal). This is the whole anti-clickjacking gate for the page.
-func serveUI(w http.ResponseWriter, frameAncestors []string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store") // changes with every build; never serve a stale one
-	if len(frameAncestors) == 0 {
-		w.Header().Set("X-Frame-Options", "DENY")
-	} else {
-		w.Header().Set("Content-Security-Policy", "frame-ancestors "+strings.Join(frameAncestors, " "))
-	}
-	_, _ = w.Write(terminalHTML)
-}
-
-// assetsHandler serves the embedded FS behind /__console/assets: the vendored xterm
-// bundles and fonts, plus eh-engine.js, which is ours and is the terminal itself. With
-// content types inferred from their extensions.
-func assetsHandler() http.Handler {
-	sub, err := fs.Sub(assetsFS, "ui/assets")
-	if err != nil {
-		fatal("embed ui/assets: " + err.Error())
-	}
-	return http.StripPrefix("/__console/assets/", http.FileServer(http.FS(sub)))
 }

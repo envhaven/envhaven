@@ -1,13 +1,12 @@
 package main
 
 // The Cockpit HUD's environment-variable resource: GET/POST/DELETE /__console/env.
-// It is the general view of the rc-file exports that tools.go's auth ladder reads —
+// It is the general view of the managed exports that tool_auth.go's auth ladder reads:
 // the same store the per-tool set-key writes, so a vendor key set from the Launch
 // menu shows up here too. Values are WRITE-ONLY: the list returns names (each
 // annotated with the catalog tools that use it), never a secret's value, matching
 // the password-field posture of the Launch menu's key inputs. Set upserts through
-// setRcExport and delete strips through removeRcExport (both in tools.go), so there
-// is one rc-mutation implementation behind every surface.
+// one atomically replaced credential file, so every surface has one mutation path.
 
 import (
 	"encoding/json"
@@ -25,7 +24,8 @@ var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // envNameReserved blocks the shell-critical and internal names whose rc export would
 // break the console/shell or shadow a managed value. It gates set only: a user can
 // still set these deliberately from the terminal, but not fat-finger them through the
-// UI. Delete is ungated — removing a rc export the user added is always allowed.
+// UI. Delete is ungated by reserved name but still removes only EnvHaven-owned
+// exports; manually authored shell configuration is never this resource's data.
 func envNameReserved(name string) bool {
 	switch name {
 	case "PATH", "HOME", "SHELL", "USER", "LOGNAME", "PWD", "OLDPWD", "IFS",
@@ -60,11 +60,16 @@ func handleEnv(w http.ResponseWriter, r *http.Request) {
 // like ZSH), each tagged with the catalog tools that use it. Only names, never values.
 func listEnv(w http.ResponseWriter) {
 	home := homeDir()
-	exported := listManagedVars(home) // dashboard-managed export names → true
+	exported, err := listManagedCredentialNames(home)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, credentialErrorMessage(err, "could not read managed credentials"))
+		return
+	}
 	usedBy := map[string][]string{}
 	if cat, err := loadCatalog(); err == nil {
 		for _, d := range cat.Tools {
-			for _, v := range d.EnvVars {
+			envVars, _ := toolCredentialEnvVars(home, &d)
+			for _, v := range envVars {
 				usedBy[v] = append(usedBy[v], d.Name)
 			}
 		}
@@ -86,7 +91,7 @@ type envMutationRequest struct {
 	Value string `json:"value"`
 }
 
-// setEnv upserts one `export NAME='value'` into both rc files. The name must be a
+// setEnv upserts one `export NAME='value'` into the managed store. The name must be a
 // shell identifier and not reserved; the value must be present and single-line (one
 // export line holds one value).
 func setEnv(w http.ResponseWriter, r *http.Request) {
@@ -104,26 +109,43 @@ func setEnv(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "name is reserved")
 		return
 	}
-	value, ok := cleanRcValue(req.Value)
+	value, ok := cleanCredentialValue(req.Value)
 	if !ok {
 		writeAPIError(w, http.StatusBadRequest, "invalid value")
 		return
 	}
-	if len(setRcExport(homeDir(), req.Name, value)) == 0 {
-		writeAPIError(w, http.StatusInternalServerError, "could not write rc files")
+	if err := setEnvironmentCredential(homeDir(), req.Name, value); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, credentialErrorMessage(err, "could not write managed credentials"))
 		return
 	}
+	invalidateAuthProbesUsingEnv(req.Name)
 	writeOK(w)
 }
 
-// deleteEnv strips one exported name from both rc files. A missing name is a no-op,
-// so a double-delete is idempotent to the client.
+// deleteEnv strips one EnvHaven-owned export from the managed store. A missing managed
+// name is a no-op, so a double-delete is idempotent to the client.
 func deleteEnv(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	if !envNameRe.MatchString(name) {
 		writeAPIError(w, http.StatusBadRequest, "invalid name")
 		return
 	}
-	removeRcExport(homeDir(), name)
+	if err := deleteEnvironmentCredential(homeDir(), name); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, credentialErrorMessage(err, "could not update managed credentials"))
+		return
+	}
+	invalidateAuthProbesUsingEnv(name)
 	writeOK(w)
+}
+
+func invalidateAuthProbesUsingEnv(name string) {
+	tools, err := loadToolDefs()
+	if err != nil {
+		return
+	}
+	for i := range tools {
+		if toolUsesEnvVar(&tools[i], name) {
+			invalidateAuthProbe(tools[i].ID)
+		}
+	}
 }

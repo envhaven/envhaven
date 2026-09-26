@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -50,9 +53,16 @@ func (c *fakeConn) Write(ctx context.Context, _ websocket.MessageType, p []byte)
 // pane gate, and limits far beyond any test's runtime.
 func testCfg() pumpConfig {
 	return pumpConfig{
-		paneState: func(context.Context) (bool, string) { return false, "" },
+		paneState: func(context.Context) paneSnapshot { return paneSnapshot{} },
 		idle:      time.Minute,
 		maxLife:   time.Minute,
+	}
+}
+
+func testPane(safe bool, app string, bottom uint16) paneSnapshot {
+	return paneSnapshot{
+		Safe: safe, App: app, Top: 0, Bottom: bottom,
+		Left: 0, Right: 106, Geometry: true, Readable: true,
 	}
 }
 
@@ -107,6 +117,123 @@ func readFrame(t *testing.T, conn *fakeConn, want byte) []byte {
 		case <-deadline:
 			t.Fatalf("no 0x%02x frame within 2s", want)
 		}
+	}
+}
+
+func readPredictFrame(t *testing.T, conn *fakeConn, protocol predictProtocol) paneSnapshot {
+	t.Helper()
+	var want byte
+	switch protocol {
+	case predictV1:
+		want = framePredictV1
+	case predictV4:
+		want = framePredictV4
+	default:
+		t.Fatalf("cannot read disabled predict protocol")
+		return paneSnapshot{}
+	}
+	f := readFrame(t, conn, want)
+	switch protocol {
+	case predictV1:
+		if len(f) < 2 {
+			t.Fatalf("short v1 predict frame: %v", f)
+		}
+		return paneSnapshot{Safe: f[1] == 1, App: string(f[2:]), Readable: true}
+	case predictV4:
+		if len(f) < 10 {
+			t.Fatalf("short v4 predict frame: %v", f)
+		}
+		return paneSnapshot{
+			Safe: f[1] == 1,
+			Top:  uint16(f[2])<<8 | uint16(f[3]), Bottom: uint16(f[4])<<8 | uint16(f[5]),
+			Left: uint16(f[6])<<8 | uint16(f[7]), Right: uint16(f[8])<<8 | uint16(f[9]),
+			App: string(f[10:]), Readable: true,
+		}
+	default:
+		t.Fatalf("cannot read disabled predict protocol")
+		return paneSnapshot{}
+	}
+}
+
+type predictFrameFixture struct {
+	Name     string          `json:"name"`
+	Protocol predictProtocol `json:"protocol"`
+	PaneSafe bool            `json:"paneSafe"`
+	Safe     bool            `json:"safe"`
+	Top      uint16          `json:"top"`
+	Bottom   uint16          `json:"bottom"`
+	Left     uint16          `json:"left"`
+	Right    uint16          `json:"right"`
+	Geometry bool            `json:"geometry"`
+	App      string          `json:"app"`
+	Bytes    []byte          `json:"bytes"`
+}
+
+func predictFrameFixtures(t *testing.T) []predictFrameFixture {
+	t.Helper()
+	b, err := os.ReadFile("testdata/predict-frames.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixtures []predictFrameFixture
+	if err := json.Unmarshal(b, &fixtures); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixtures) == 0 {
+		t.Fatal("predict frame fixture is empty")
+	}
+	return fixtures
+}
+
+func TestPredictV1V4FrameCompatibility(t *testing.T) {
+	for _, fixture := range predictFrameFixtures(t) {
+		t.Run(fixture.Name, func(t *testing.T) {
+			pane := paneSnapshot{
+				Safe: fixture.PaneSafe, Top: fixture.Top, Bottom: fixture.Bottom,
+				Left: fixture.Left, Right: fixture.Right, Geometry: fixture.Geometry,
+				App: fixture.App, Readable: true,
+			}
+			if got := encodePredictFrame(fixture.Protocol, pane); !bytes.Equal(got, fixture.Bytes) {
+				t.Fatalf("encodePredictFrame = %v, want %v", got, fixture.Bytes)
+			}
+		})
+	}
+	if got := encodePredictFrame(predictOff, paneSnapshot{Safe: true, App: "zsh"}); got != nil {
+		t.Fatalf("disabled protocol encoded %v, want nil", got)
+	}
+}
+
+func TestPredictSafeRequiresExactV4Geometry(t *testing.T) {
+	full := testPane(true, "zsh", 38)
+	lower := full
+	lower.Top, lower.Bottom = 18, 38
+	narrow := full
+	narrow.Left, narrow.Right = 53, 106
+	reversedRows := lower
+	reversedRows.Bottom = reversedRows.Top
+	reversedColumns := narrow
+	reversedColumns.Right = reversedColumns.Left
+	unreadableGeometry := full
+	unreadableGeometry.Geometry = false
+
+	for _, tc := range []struct {
+		name     string
+		protocol predictProtocol
+		pane     paneSnapshot
+		want     bool
+	}{
+		{"v1 has no geometry", predictV1, full, false},
+		{"v4 represents a lower pane", predictV4, lower, true},
+		{"v4 represents a horizontal split", predictV4, narrow, true},
+		{"v4 refuses reversed rows", predictV4, reversedRows, false},
+		{"v4 refuses reversed columns", predictV4, reversedColumns, false},
+		{"v4 refuses inexact geometry", predictV4, unreadableGeometry, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := predictSafe(tc.protocol, tc.pane); got != tc.want {
+				t.Fatalf("predictSafe(%v, %+v) = %v, want %v", tc.protocol, tc.pane, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -257,7 +384,31 @@ func TestPumpMaxLife(t *testing.T) {
 	}
 }
 
-// TestPumpPredictGate pins the 0x02 leg end to end: the browser learns the
+// TestPumpPredictV1Compatibility keeps the shipped geometry-free frame alive for
+// an already-open page while refusing its historical safe bit.
+func TestPumpPredictV1Compatibility(t *testing.T) {
+	var app atomic.Value
+	app.Store("zsh")
+	cfg := testCfg()
+	cfg.predict = predictV1
+	cfg.paneState = func(context.Context) paneSnapshot {
+		return testPane(true, app.Load().(string), 38)
+	}
+	conn, _, done := startPump(t, cfg)
+
+	if pane := readPredictFrame(t, conn, predictV1); pane.Safe || pane.App != "zsh" || pane.Bottom != 0 {
+		t.Fatalf("initial v1 gate frame = %+v, want conservative zsh without geometry", pane)
+	}
+	app.Store("claude")
+	if pane := readPredictFrame(t, conn, predictV1); pane.Safe || pane.App != "claude" || pane.Bottom != 0 {
+		t.Fatalf("v1 app-change frame = %+v, want conservative claude without geometry", pane)
+	}
+
+	close(conn.in)
+	waitDone(t, done, 2*time.Second)
+}
+
+// TestPumpPredictGate pins the current v4 leg end to end: the browser learns the
 // initial state (safety AND pane app), sees safe/unsafe transitions (only
 // transitions), sees a frame when the pane app changes even while safety does
 // not, and a submitted newline forces unsafe for the full grace before
@@ -267,34 +418,37 @@ func TestPumpPredictGate(t *testing.T) {
 	var app atomic.Value
 	app.Store("zsh")
 	cfg := testCfg()
-	cfg.predict = true
-	cfg.paneState = func(context.Context) (bool, string) { return safe.Load(), app.Load().(string) }
+	cfg.predict = predictV4
+	cfg.paneState = func(context.Context) paneSnapshot {
+		return testPane(safe.Load(), app.Load().(string), 38)
+	}
 	conn, _, done := startPump(t, cfg)
 
-	if f := readFrame(t, conn, framePredict); f[1] != 0 || string(f[2:]) != "zsh" {
-		t.Fatalf("initial gate frame = %d %q, want 0 (fail closed) with app zsh", f[1], f[2:])
+	// Every frame carries the verdict, all pane bounds, and the app.
+	if pane := readPredictFrame(t, conn, predictV4); pane.Safe || pane.Top != 0 || pane.Bottom != 38 || pane.Left != 0 || pane.Right != 106 || pane.App != "zsh" {
+		t.Fatalf("initial gate frame = %+v, want unsafe full-pane zsh", pane)
 	}
 	safe.Store(true)
-	if f := readFrame(t, conn, framePredict); f[1] != 1 || string(f[2:]) != "zsh" {
-		t.Fatalf("gate frame after pane became safe = %d %q, want 1 zsh", f[1], f[2:])
+	if pane := readPredictFrame(t, conn, predictV4); !pane.Safe || pane.Bottom != 38 || pane.Right != 106 || pane.App != "zsh" {
+		t.Fatalf("gate frame after pane became safe = %+v, want safe full-pane zsh", pane)
 	}
 
 	// The foreground app changes while safety does not: still a frame, so the
 	// browser can swap its per-app prediction facts the moment the pane's
 	// application does.
 	app.Store("claude")
-	if f := readFrame(t, conn, framePredict); f[1] != 1 || string(f[2:]) != "claude" {
-		t.Fatalf("gate frame after app change = %d %q, want 1 claude", f[1], f[2:])
+	if pane := readPredictFrame(t, conn, predictV4); !pane.Safe || pane.Bottom != 38 || pane.Right != 106 || pane.App != "claude" {
+		t.Fatalf("gate frame after app change = %+v, want safe full-pane claude", pane)
 	}
 
 	// Enter: unsafe within a poll, re-armed no sooner than the submit grace.
 	before := time.Now()
 	conn.in <- []byte{frameData, '\r'}
-	if f := readFrame(t, conn, framePredict); f[1] != 0 {
-		t.Fatalf("gate frame after newline = %d, want 0", f[1])
+	if pane := readPredictFrame(t, conn, predictV4); pane.Safe {
+		t.Fatalf("gate frame after newline = %+v, want unsafe", pane)
 	}
-	if f := readFrame(t, conn, framePredict); f[1] != 1 {
-		t.Fatalf("gate frame after grace = %d, want 1 (re-arm)", f[1])
+	if pane := readPredictFrame(t, conn, predictV4); !pane.Safe {
+		t.Fatalf("gate frame after grace = %+v, want safe (re-arm)", pane)
 	}
 	if since := time.Since(before); since < predictSubmitGrace {
 		t.Fatalf("gate re-armed %v after newline, before the %v grace", since, predictSubmitGrace)
@@ -304,9 +458,120 @@ func TestPumpPredictGate(t *testing.T) {
 	waitDone(t, done, 2*time.Second)
 }
 
-// TestPumpPredictGateUnreadablePane pins what an empty app name MEANS. paneState
-// reports one on every failure — no tmux, malformed output, the 500ms read timing
-// out — and that is "no information", not "the app changed to nothing". The
+// TestPumpPredictGateNewlineAfterIdle pins sparse polling while the browser is already
+// unsafe. Enter forces a fresh observation, and safe may return only after the submit grace.
+func TestPumpPredictGateNewlineAfterIdle(t *testing.T) {
+	var polls atomic.Int64
+	var safe atomic.Bool
+	cfg := testCfg()
+	cfg.predict = predictV4
+	cfg.paneState = func(context.Context) paneSnapshot {
+		polls.Add(1)
+		return testPane(safe.Load(), "zsh", 38)
+	}
+	start := time.Now()
+	conn, _, done := startPump(t, cfg)
+
+	if pane := readPredictFrame(t, conn, predictV4); pane.Safe {
+		t.Fatalf("initial gate frame = %+v, want unsafe zsh", pane)
+	}
+	time.Sleep(4500*time.Millisecond - time.Since(start))
+	silent := polls.Load()
+
+	before := time.Now()
+	safe.Store(true)
+	conn.in <- []byte{frameData, '\r'}
+	if pane := readPredictFrame(t, conn, predictV4); !pane.Safe {
+		t.Fatalf("gate frame after grace = %+v, want safe (re-arm)", pane)
+	}
+	if since := time.Since(before); since < predictSubmitGrace {
+		t.Fatalf("gate re-armed %v after idle newline, before the %v grace", since, predictSubmitGrace)
+	}
+
+	// And the silence itself cost next to nothing. Neither side wrote a byte, so
+	// the pane cannot have changed: the poll that reported the initial state, the
+	// one that confirmed it settled, and one safety look per second after that. A
+	// flat cadence would have spent sixty.
+	if silent > 10 {
+		t.Fatalf("gate ran paneState %d times across 4.5s of silence, want a handful", silent)
+	}
+
+	close(conn.in)
+	waitDone(t, done, 2*time.Second)
+}
+
+// TestPumpPredictGateSafeLeaseNeverSkips is the strict stale-lease regression. A safe
+// pane is observed on every tick, so a silent safe-to-unsafe transition cannot hide in
+// the sparse cadence reserved for panes the browser already knows are unsafe.
+func TestPumpPredictGateSafeLeaseNeverSkips(t *testing.T) {
+	var safe atomic.Bool
+	safe.Store(true)
+	var polls atomic.Int64
+	polled := make(chan struct{}, 8)
+	cfg := testCfg()
+	cfg.predict = predictV4
+	cfg.paneState = func(context.Context) paneSnapshot {
+		polls.Add(1)
+		isSafe := safe.Load()
+		select {
+		case polled <- struct{}{}:
+		default:
+		}
+		return testPane(isSafe, "zsh", 38)
+	}
+	conn, _, done := startPump(t, cfg)
+
+	if pane := readPredictFrame(t, conn, predictV4); !pane.Safe {
+		t.Fatalf("initial gate frame = %+v, want safe", pane)
+	}
+	<-polled // initial observation
+	<-polled // unchanged observation marks the pane settled
+	before := polls.Load()
+	safe.Store(false) // silent transition, after the settled observation
+	// Leave scheduler slack, but less than two polls, then prove the refusal came from
+	// a fresh pane observation rather than an uncorroborated idle revocation.
+	onePollDeadline := predictPoll + 50*time.Millisecond
+	select {
+	case frame := <-conn.out:
+		if len(frame) < 2 || frame[0] != framePredictV4 || frame[1] != 0 {
+			t.Fatalf("gate frame after a silent flip = %v, want v4 unsafe", frame)
+		}
+	case <-time.After(onePollDeadline):
+		t.Fatalf("safe lease survived one %v poll plus scheduler delivery", predictPoll)
+	}
+	if looked := polls.Load() - before; looked == 0 {
+		t.Fatal("gate revoked safe without observing the pane")
+	}
+
+	close(conn.in)
+	waitDone(t, done, 2*time.Second)
+}
+
+// While idle and unsafe, sparse observations still carry application changes so the
+// browser has the right model ready when activity returns.
+func TestPumpPredictGateIdleStillLooks(t *testing.T) {
+	var app atomic.Value
+	app.Store("zsh")
+	cfg := testCfg()
+	cfg.predict = predictV4
+	cfg.paneState = func(context.Context) paneSnapshot {
+		return testPane(false, app.Load().(string), 38)
+	}
+	conn, _, done := startPump(t, cfg)
+	if pane := readPredictFrame(t, conn, predictV4); pane.Safe {
+		t.Fatalf("initial gate frame = %+v, want unsafe", pane)
+	}
+	app.Store("claude")
+	if pane := readPredictFrame(t, conn, predictV4); pane.Safe || pane.App != "claude" {
+		t.Fatalf("idle app frame = %+v, want unsafe claude", pane)
+	}
+	close(conn.in)
+	waitDone(t, done, 2*time.Second)
+}
+
+// TestPumpPredictGateUnreadablePane pins the explicit Readable contract. paneState
+// reports false on every failure (no tmux, malformed output, the 500ms read timing
+// out), and that is "no information", not "the app changed to nothing". The
 // browser has no unknown case: an empty name reads as a real app change, so it
 // would hand off to nothing and hand back again, and the second handoff lands
 // exactly as the user resumes typing, which is the latency this feature exists to
@@ -315,25 +580,25 @@ func TestPumpPredictGate(t *testing.T) {
 func TestPumpPredictGateUnreadablePane(t *testing.T) {
 	var unreadable atomic.Bool
 	cfg := testCfg()
-	cfg.predict = true
-	cfg.paneState = func(context.Context) (bool, string) {
+	cfg.predict = predictV4
+	cfg.paneState = func(context.Context) paneSnapshot {
 		if unreadable.Load() {
-			return false, "" // every paneState error path, verbatim
+			return paneSnapshot{} // every paneState error path, verbatim
 		}
-		return true, "claude"
+		return testPane(true, "claude", 38)
 	}
 	conn, _, done := startPump(t, cfg)
 
-	if f := readFrame(t, conn, framePredict); f[1] != 1 || string(f[2:]) != "claude" {
-		t.Fatalf("initial gate frame = %d %q, want 1 claude", f[1], f[2:])
+	if pane := readPredictFrame(t, conn, predictV4); !pane.Safe || pane.Bottom != 38 || pane.Right != 106 || pane.App != "claude" {
+		t.Fatalf("initial gate frame = %+v, want safe full-pane claude", pane)
 	}
 
 	// The pane goes unreadable. The safety flip must still be delivered — that is
-	// the half that protects a secret — but it must carry the app the browser is
-	// already set up for, not an empty name.
+	// the half that protects a secret — but it must carry the app and geometry the
+	// browser is already set up for, not an empty name and a zero.
 	unreadable.Store(true)
-	if f := readFrame(t, conn, framePredict); f[1] != 0 || string(f[2:]) != "claude" {
-		t.Fatalf("gate frame for an unreadable pane = %d %q, want 0 claude", f[1], f[2:])
+	if pane := readPredictFrame(t, conn, predictV4); pane.Safe || pane.Bottom != 38 || pane.Right != 106 || pane.App != "claude" {
+		t.Fatalf("gate frame for an unreadable pane = %+v, want unsafe full-pane claude", pane)
 	}
 
 	// It stays unreadable for several more polls. Nothing has changed, so nothing
@@ -342,8 +607,8 @@ func TestPumpPredictGateUnreadablePane(t *testing.T) {
 	for settled := false; !settled; {
 		select {
 		case f := <-conn.out:
-			if len(f) > 0 && f[0] == framePredict {
-				t.Fatalf("gate frame %d %q while the pane stayed unreadable and nothing changed", f[1], f[2:])
+			if len(f) > 0 && (f[0] == framePredictV1 || f[0] == framePredictV4) {
+				t.Fatalf("gate frame %v while the pane stayed unreadable and nothing changed", f)
 			}
 		case <-quiet:
 			settled = true
@@ -353,19 +618,69 @@ func TestPumpPredictGateUnreadablePane(t *testing.T) {
 	// Readable again: one frame back to safe, still the same app throughout, so
 	// the round trip cost the browser no handoff at all.
 	unreadable.Store(false)
-	if f := readFrame(t, conn, framePredict); f[1] != 1 || string(f[2:]) != "claude" {
-		t.Fatalf("gate frame after the pane became readable = %d %q, want 1 claude", f[1], f[2:])
+	if pane := readPredictFrame(t, conn, predictV4); !pane.Safe || pane.Bottom != 38 || pane.Right != 106 || pane.App != "claude" {
+		t.Fatalf("gate frame after the pane became readable = %+v, want safe full-pane claude", pane)
 	}
 
 	close(conn.in)
 	waitDone(t, done, 2*time.Second)
 }
 
-// TestPumpNoPredictFrames: a session that did not opt in must never see a 0x02
+// TestPumpVetoedGateSendsOneUnsafeFrame pins ENVHAVEN_SKIP_WELCOME on an echo socket.
+// The console no longer renders the session the gate watches, so no pane may be read
+// or vouched for, yet the browser admits input only after a gate frame. The socket
+// gets exactly one unsafe frame in its negotiated version, and input flows after it.
+func TestPumpVetoedGateSendsOneUnsafeFrame(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		protocol predictProtocol
+	}{{"v1", predictV1}, {"v4", predictV4}} {
+		t.Run(tc.name, func(t *testing.T) {
+			var polls atomic.Int64
+			cfg := testCfg()
+			cfg.predict = tc.protocol
+			cfg.gateVetoed = true
+			cfg.paneState = func(context.Context) paneSnapshot {
+				polls.Add(1)
+				return testPane(true, "zsh", 38)
+			}
+			conn, tts, done := startPump(t, cfg)
+
+			if pane := readPredictFrame(t, conn, tc.protocol); pane.Safe || pane.App != "" || pane.Bottom != 0 {
+				t.Fatalf("vetoed gate frame = %+v, want unsafe with no pane in it", pane)
+			}
+			conn.in <- append([]byte{frameData}, "ok"...)
+			if got := string(readPts(t, tts, 2)); got != "ok" {
+				t.Fatalf("shell received %q after the vetoed frame, want %q", got, "ok")
+			}
+			quiet := time.After(4 * predictPoll)
+			for settled := false; !settled; {
+				select {
+				case f := <-conn.out:
+					if len(f) > 0 && (f[0] == framePredictV1 || f[0] == framePredictV4) {
+						t.Fatalf("second predict frame %v on a vetoed gate", f)
+					}
+				case <-quiet:
+					settled = true
+				}
+			}
+			if n := polls.Load(); n != 0 {
+				t.Fatalf("vetoed gate read the pane %d times, want never", n)
+			}
+
+			close(conn.in)
+			waitDone(t, done, 2*time.Second)
+		})
+	}
+}
+
+// TestPumpNoPredictFrames: a session that did not opt in must never see a predictive
 // frame, even with a safe pane (the managed dashboard client relies on this).
 func TestPumpNoPredictFrames(t *testing.T) {
 	cfg := testCfg()
-	cfg.paneState = func(context.Context) (bool, string) { return true, "zsh" }
+	cfg.paneState = func(context.Context) paneSnapshot {
+		return testPane(true, "zsh", 38)
+	}
 	conn, tts, done := startPump(t, cfg)
 
 	if _, err := tts.Write([]byte("ok")); err != nil {
@@ -376,7 +691,7 @@ func TestPumpNoPredictFrames(t *testing.T) {
 	for {
 		select {
 		case f := <-conn.out:
-			if len(f) > 0 && f[0] == framePredict {
+			if len(f) > 0 && (f[0] == framePredictV1 || f[0] == framePredictV4) {
 				t.Fatal("predict frame sent on a session that did not opt in")
 			}
 		default:
@@ -387,16 +702,26 @@ func TestPumpNoPredictFrames(t *testing.T) {
 	}
 }
 
-// TestGateSessionFor pins the mode->gate-session mapping (pump.go): managed watches
-// the base envhaven session with no extra env; self-host watches its own grouped
-// console-view and exports ENVHAVEN_CONSOLE_SESSION so envhaven-welcome.sh builds it.
+// TestGateSessionFor pins the mode->gate-session mapping (pump.go): ordinary managed
+// watches the base envhaven session, a managed probe gets its own grouped view, and
+// self-host watches its grouped console-view.
 func TestGateSessionFor(t *testing.T) {
-	if s, env := gateSessionFor(true); s != tmuxSession || len(env) != 0 {
-		t.Errorf("gateSessionFor(true) = (%q, %v), want (%q, [])", s, env, tmuxSession)
+	if s, env := gateSessionFor(true, ""); s != tmuxSession || len(env) != 0 {
+		t.Errorf("gateSessionFor(true, empty) = (%q, %v), want (%q, [])", s, env, tmuxSession)
 	}
-	s, env := gateSessionFor(false)
+	probe := "ehtest-ab-mmmmmmmm-0123456789ab"
+	s, env := gateSessionFor(true, probe)
+	wantProbeEnv := []string{
+		"ENVHAVEN_CONSOLE_SESSION=" + probe,
+		"_ENVHAVEN_CONSOLE_STATUS=off",
+		"_ENVHAVEN_CONSOLE_DESTROY_UNATTACHED=off",
+	}
+	if s != probe || !slices.Equal(env, wantProbeEnv) {
+		t.Errorf("gateSessionFor(true, probe) = (%q, %v), want (%q, %v)", s, env, probe, wantProbeEnv)
+	}
+	s, env = gateSessionFor(false, "")
 	wantEnv := "ENVHAVEN_CONSOLE_SESSION=" + selfhostGateSession
 	if s != selfhostGateSession || len(env) != 1 || env[0] != wantEnv {
-		t.Errorf("gateSessionFor(false) = (%q, %v), want (%q, [%q])", s, env, selfhostGateSession, wantEnv)
+		t.Errorf("gateSessionFor(false, empty) = (%q, %v), want (%q, [%q])", s, env, selfhostGateSession, wantEnv)
 	}
 }
