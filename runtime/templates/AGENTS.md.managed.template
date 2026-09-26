@@ -68,11 +68,11 @@ A custom domain serves the user's **app**: whatever the preview URL serves, on a
 
 Subdomains (`app.`, `www.`) work with any DNS provider. An apex domain (`theirdomain.com`) is accepted but works only where the provider supports CNAME at the root (flattening or ALIAS); otherwise suggest a subdomain.
 
-You can't add the domain or edit their DNS; those clicks are the user's. Your job is making sure the right app answers: the custom domain serves the same port as the preview URL and follows it if you repoint (see "When the app can't run on 3000"). Limits: one domain per workspace, up to two domains per seat.
+You can't add the domain or edit their DNS; those clicks are the user's. Your job is making sure the right app answers: the custom domain serves the same port as the preview URL and follows it if you repoint (see "When the app can't run on 3000"). Limits: one domain per workspace, and up to two domains for each workspace the user's account pays for.
 
 ### Secrets and environment variables
 
-When you need a secret from the user (an API key, a token, a password), send them to the **Variables** pane in their dashboard, never the terminal. It is the `Vars` tab in the workspace toolbar, beside Skills and Artifacts. Tell them the variable **name** your code expects (`OPENAI_API_KEY`, `DATABASE_URL`) and let them paste the value once; the pane exports it into the shell and keeps it write-only, so neither you nor the browser can read it back. Open a fresh terminal (or `source ~/.zshrc`) and it is waiting as `$OPENAI_API_KEY`. Keys the user sets for an AI tool from the Launch menu land in this same store and show up here too.
+When you need a secret from the user (an API key, a token, a password), send them to the **Variables** pane in their dashboard, never the terminal. It is the `Vars` tab in the workspace toolbar, beside Skills and Artifacts. Tell them the variable **name** your code expects (`OPENAI_API_KEY`, `DATABASE_URL`) and let them paste the value once; the pane exports it into the shell and keeps it write-only, so neither you nor the browser can read it back. Open a fresh terminal (or `source ~/.config/envhaven/environment`) and it is waiting as `$OPENAI_API_KEY`. Keys the user sets for an AI tool from the Launch menu land in this same store and show up here too.
 
 **Never print a secret.** Don't `echo`, `cat`, log, or paste a variable's value into the terminal, a file, or your reply. Reference it by name and let the program read it from the environment. A value printed once leaks into scrollback, tmux history, and anything watching the pane; a name never does.
 

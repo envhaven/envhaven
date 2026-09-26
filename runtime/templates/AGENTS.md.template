@@ -68,7 +68,7 @@ The EnvHaven sidebar (Activity Bar icon) is the human's control panel for termin
 | Runtime | Version | Package Manager |
 |---------|---------|-----------------|
 | **Node.js** | 22.x LTS | npm, pnpm, yarn |
-| **Bun** | latest | bun |
+| **Bun** | 1.3.5 | bun |
 | **Python** | 3.12.x | uv, pip |
 | **Go** | 1.22.x | go modules |
 | **Rust** | stable | cargo |
@@ -77,45 +77,53 @@ The EnvHaven sidebar (Activity Bar icon) is the human's control panel for termin
 
 ## AI Coding Tools
 
-15 AI coding tools are pre-installed. Most require API keys.
+<!-- BEGIN GENERATED: TOOL CATALOG -->
+17 AI coding tools are pre-installed. Most require authentication.
 
-### CLI Tools
-
-| Tool | Command | API Key / Auth |
+| Tool | Command | Authentication |
 |------|---------|----------------|
-| **Claude Code** | `claude` | `ANTHROPIC_API_KEY` or `/login` in CLI |
-| **Codex** | `codex` | `OPENAI_API_KEY` or ChatGPT login |
-| **Gemini CLI** | `gemini` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
-| **OpenCode** | `opencode` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` |
-| **Pi** | `pi` | Provider API keys or `/login` in CLI |
-| **OpenClaw** | `openclaw` | Provider API keys or `openclaw onboard` |
-| **Hermes Agent** | `hermes` | Provider API keys or `hermes setup` |
-| **Goose** | `goose` | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` (run `goose configure`) |
-| **Aider** | `aider` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, or `OPENROUTER_API_KEY` |
-| **Qwen Code** | `qwen` | `QWEN_API_KEY` or `OPENAI_API_KEY` (compatible endpoint) |
-| **Mistral Vibe** | `vibe` | `MISTRAL_API_KEY` |
-| **Factory Droid** | `droid` | Browser login or `FACTORY_API_KEY` |
-| **Kiro** | `kiro-cli` | Browser login (GitHub / Google / AWS Builder ID) |
-| **Amp** | `amp` | `AMP_API_KEY` or `amp login` |
-| **Augment** | `auggie` | Browser login via `auggie login` |
+| **[Claude Code](https://code.claude.com/docs)** | `claude` | `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or `/login` in the CLI |
+| **[Codex](https://github.com/openai/codex)** | `codex` | ChatGPT/device login, an API key via `codex login --with-api-key`, or `CODEX_ACCESS_TOKEN` |
+| **[OpenCode](https://opencode.ai/docs)** | `opencode` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, or `GOOGLE_API_KEY` |
+| **[Antigravity CLI](https://antigravity.google/docs/cli)** | `agy` | `GEMINI_API_KEY`, or run `agy` to sign in |
+| **[Grok Build](https://docs.x.ai/build/overview)** | `grok` | `XAI_API_KEY` or `grok login --device-auth` |
+| **[Kimi Code CLI](https://moonshotai.github.io/kimi-code/en/)** | `kimi` | `kimi login --region global` (use `mainland-cn` for kimi.com) |
+| **[Muse Code](https://developer.meta.com/ai/products/muse-code/)** | `muse` | `META_API_KEY` or browser sign-in on first run |
+| **[OpenClaw](https://docs.openclaw.ai)** | `openclaw` | Provider API keys or `openclaw onboard` |
+| **[Hermes Agent](https://hermes-agent.nousresearch.com/docs)** | `hermes` | Provider API keys or `hermes setup` |
+| **[Pi](https://pi.dev/docs/latest)** | `pi` | Provider API keys or `/login` in the CLI |
+| **[Goose](https://goose-docs.ai)** | `goose` | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`; run `goose configure` |
+| **[Qwen Code](https://qwenlm.github.io/qwen-code-docs)** | `qwen` | `OPENAI_API_KEY` with an OpenAI-compatible endpoint |
+| **[Mistral Vibe](https://github.com/mistralai/mistral-vibe)** | `vibe` | `MISTRAL_API_KEY` |
+| **[Factory](https://docs.factory.ai/droid-cli/quickstart)** | `droid` | Browser login or `FACTORY_API_KEY` |
+| **[Kiro](https://kiro.dev/docs/cli)** | `kiro-cli` | Browser or device-flow login |
+| **[Amp](https://ampcode.com/manual)** | `amp` | `AMP_API_KEY` or `amp login` |
+| **[fx](https://fx.sh/docs)** | `fx` | `AI_GATEWAY_API_KEY`, or run `fx` to sign in |
+<!-- END GENERATED: TOOL CATALOG -->
 
 ### API Key Configuration
 
 Set keys via environment variables or the EnvHaven sidebar:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...   # Claude Code, OpenCode, Pi, OpenClaw, Hermes, Aider, Goose
-export OPENAI_API_KEY=sk-...          # Codex, OpenCode, Pi, OpenClaw, Hermes, Aider, Goose, Qwen
-export GEMINI_API_KEY=...             # Gemini CLI, OpenCode, Pi, OpenClaw, Hermes, Aider
-export GOOGLE_API_KEY=...             # Gemini CLI, OpenCode, Pi, OpenClaw, Hermes (alternative)
+export ANTHROPIC_API_KEY=sk-ant-...   # Claude Code, OpenCode, Pi, OpenClaw, Hermes, Goose
+export OPENAI_API_KEY=sk-...          # OpenCode, Pi, OpenClaw, Hermes, Goose, Qwen
+export GEMINI_API_KEY=...             # OpenCode, Pi, OpenClaw, Hermes, Antigravity
+export GOOGLE_API_KEY=...             # OpenCode, OpenClaw, Hermes (alternative)
 export MISTRAL_API_KEY=...            # Mistral Vibe
 export AMP_API_KEY=...                # Amp
-export OPENROUTER_API_KEY=...         # Aider, Hermes (OpenRouter)
-export QWEN_API_KEY=...               # Qwen Code
+export OPENROUTER_API_KEY=...         # Hermes (OpenRouter)
 export FACTORY_API_KEY=...            # Factory/Droid
+export KIRO_API_KEY=...               # Kiro (paid plans)
+export XAI_API_KEY=xai-...            # Grok Build
+export META_API_KEY=...               # Muse Code
+export AI_GATEWAY_API_KEY=vck_...     # fx (Vercel AI Gateway)
 ```
 
-Add to `~/.zshrc` or `~/.bashrc` for persistence across sessions.
+Use the EnvHaven Variables or Launch pane for write-only persistence in
+`~/.config/envhaven/environment`. Fresh bash and zsh sessions source that store. You can still add
+manual exports to `~/.zshrc` or `~/.bashrc`; EnvHaven detects them but never edits or removes them.
+`CODEX_ACCESS_TOKEN` is process-owned: set or remove it in the workspace configuration, then restart the workspace.
 
 ### Auto-Approve Mode
 
@@ -125,9 +133,12 @@ All tools run with maximum permissions by default. The container IS the sandbox;
 |------|-----------|---------------------|
 | Claude Code | `~/.claude/settings.json` | Remove `defaultMode` from settings |
 | OpenCode | `OPENCODE_PERMISSION` env var | `unset OPENCODE_PERMISSION` |
-| Aider | `AIDER_YES_ALWAYS` env var | `unset AIDER_YES_ALWAYS` |
+| fx | `FX_PERMISSION_MODE` env var | `export FX_PERMISSION_MODE=ask` (unsetting gives `auto`, which bills a reviewer call instead of asking) |
 | Codex | `~/.codex/config.toml` | Remove or edit config file |
-| Gemini CLI | Shell alias (`--yolo`) | `unalias gemini` |
+| Antigravity CLI | Executable launcher (`--dangerously-skip-permissions`) | `/opt/envhaven/bin/agy` |
+| Grok Build | Executable launcher (`--always-approve`) | `/opt/envhaven/bin/grok` |
+| Kimi Code CLI | Executable launcher (`--auto`) | `/opt/envhaven/bin/kimi` |
+| Muse Code | Bare executable launch (`--disable-approval`, sandbox retained) | `muse --approval-mode on-request` |
 
 Other tools (Goose, Amp, Kiro, etc.) either have no permission system or auto-approve by default.
 
@@ -250,52 +261,23 @@ User must add their SSH public key via:
 │   └── <projects>/         # User's projects
 ├── .ssh/                   # SSH keys
 │   └── authorized_keys     # For SSH/Haven CLI access
-├── .zshrc                  # Shell config (API keys persisted here)
-└── .config/                # Tool configurations
+├── .zshrc                  # User-owned shell config
+└── .config/                # Tool configs and EnvHaven's managed credential store
 ```
 
 ---
 
-## CRITICAL: SSH/GPG Key Security Protocol
+## SSH and GPG Keys
 
-**You have file access to `~/.ssh/` and `~/.gnupg/`.** So do MCP servers. Unprotected keys let any tool silently push code, sign commits, or SSH into servers. Passphrase-protected keys require human approval for every use.
+**You, every other AI tool here, and every MCP server can read `~/.ssh/` and `~/.gnupg/`.** A key without a passphrase lets any of them push code, sign commits, or SSH into the user's servers without asking; a passphrase-protected key needs the user's approval for each use (once per session with `ssh-agent`).
 
-### MANDATORY: Detect and Warn BEFORE Executing
-
-Scan user messages for these triggers. **STOP and warn before proceeding.**
-
-| Triggers |
-|----------|
-| `ssh-keygen`, `gpg --gen-key`, `gpg --full-generate-key`, `gpg --import` |
-| "generate/create SSH key", "set up SSH", "new SSH key" |
-| "GitHub SSH", "GitLab SSH", "authenticate with GitHub", "push access" |
-| "GPG key", "PGP key", "commit signing", "sign my commits" |
-| Writing to `~/.ssh/`, `~/.gnupg/`, handling `id_rsa`, `id_ed25519`, `.pem`, `.asc` |
-
-**NON-NEGOTIABLE.** Even if user seems experienced. Even if they're in a hurry. ALWAYS warn first.
-
-### Warning To Deliver
-
-Adapt tone, but include ALL points:
-
-> ⚠️ **Security note:** I (and other tools/MCP servers here) can access `~/.ssh/` and `~/.gnupg/`. Without a passphrase, any tool could silently push code, sign commits, or SSH into your servers.
->
-> **Use a passphrase** — when `ssh-keygen` prompts, enter one (don't skip). Use `ssh-agent` so you only type it once per session. This keeps you in control even if a tool misbehaves.
->
-> Proceed with passphrase-protected setup?
-
-### If Unprotected Keys Exist
-
-Proactively warn and offer:
-```bash
-ssh-keygen -p -f ~/.ssh/id_ed25519  # Add passphrase to existing key
-```
+So before you create, import, or copy an SSH or GPG key, or write anything into `~/.ssh/` or `~/.gnupg/`, tell the user this in a sentence or two and recommend a passphrase plus `ssh-agent`, then continue with the setup they choose. Do this even when the user sounds experienced or rushed, because the exposure comes from the other tools in this container. If you find existing keys without a passphrase, say so and offer `ssh-keygen -p -f <key>` to add one.
 
 ### Reference Commands
 
 ```bash
-ssh-keygen -t ed25519 -C "email"    # New SSH key — SET A PASSPHRASE
-gpg --full-generate-key             # New GPG key — passphrase required by default
+ssh-keygen -t ed25519 -C "email"    # New SSH key, SET A PASSPHRASE
+gpg --full-generate-key             # New GPG key, passphrase required by default
 eval "$(ssh-agent -s)" && ssh-add   # Cache passphrase for session
 ```
 
@@ -315,9 +297,9 @@ eval "$(ssh-agent -s)" && ssh-add   # Cache passphrase for session
 
 When the user asks to install or set up a tool, offer two options:
 
-> **Option A: I'll handle it** — I'll research, install, configure, and verify everything. You only step in if a step physically requires you (like a browser login).
+> **Option A: I'll handle it.** I'll research, install, configure, and verify everything. You only step in if a step physically requires you (like a browser login).
 >
-> **Option B: Open a terminal** — I'll open a pane with the installer ready to go, and you drive.
+> **Option B: Open a terminal.** I'll open a pane with the installer ready to go, and you drive.
 
 Skip the choice and proceed directly when:
 - The user explicitly said "do it for me" or "install it" → Option A
@@ -330,18 +312,18 @@ Skip the choice and proceed directly when:
 2. **Decompose wizards into discrete commands.** Interactive onboarding is usually just: install → configure credentials → configure integrations → start service. Find the individual command for each step and run them yourself.
 3. **Write config files directly** when CLI flags aren't enough. Check where the tool stores config (`~/.config/<tool>/`, `~/<tool>.json`, etc.) and write valid JSON/YAML/TOML yourself.
 4. **Set environment variables** instead of running credential prompts. Most tools accept API keys, tokens, and secrets via env vars.
-5. **Start daemons in tmux.** This container has no systemd. Use the tmux pattern from [Running Dev Servers](#running-dev-servers) — named window, detached, logs to `/tmp/`.
-6. **Verify it works.** Run the tool's health/status/doctor command. If something is wrong (blocked senders, token mismatch, missing dependency), **fix it** — don't report it and stop.
+5. **Start daemons in tmux.** This container has no systemd. Use the tmux pattern from [Running Dev Servers](#running-dev-servers): named window, detached, logs to `/tmp/`.
+6. **Verify it works.** Run the tool's health/status/doctor command. If something is wrong (blocked senders, token mismatch, missing dependency), **fix it**; don't report it and stop.
 
 ### When the User Must Act (tmux handoff)
 
-Some steps physically require a human: OAuth browser redirects, QR code scans, device approval prompts. For these — and **only** these — hand off to the user via a tmux split pane.
+Some steps physically require a human: OAuth browser redirects, QR code scans, device approval prompts. For these, and **only** these, hand off to the user via a tmux split pane.
 
 **The workflow:**
 
 1. **Do everything else first.** Install the tool, write config files, set env vars. The user should only need to do the one human-required step.
 
-2. **Split the current window horizontally.** This opens a pane below the user's current context — they don't lose sight of what they were doing:
+2. **Split the current window horizontally.** This opens a pane below the user's current context, so they don't lose sight of what they were doing:
 
 ```bash
 # Opens a shell pane below, then sends the auth command into it
@@ -354,7 +336,7 @@ The pane stays open after the command finishes so the user can see output, troub
 3. **Tell the user exactly what to do:**
 
 > I've installed and configured {tool}. The last step requires browser authentication.
-> A pane opened below — complete the login there. Press `Ctrl+D` to close it when done.
+> A pane opened below; complete the login there. Press `Ctrl+D` to close it when done.
 
 4. **After the user completes it**, verify the auth worked (`{tool} status`, `{tool} whoami`, etc.) and finish any remaining configuration.
 
@@ -363,7 +345,7 @@ The pane stays open after the command finishes so the user can see output, troub
 | Forbidden | Why |
 |-----------|-----|
 | "Run the setup wizard in another terminal" as your first move | You are the installer. Research non-interactive options first. |
-| Leave post-install config for the user to discover | Allowlists, pairing approvals, firewall rules — handle them. |
+| Leave post-install config for the user to discover | Allowlists, pairing approvals, firewall rules: handle them. |
 | Assume interactive-only without checking `--help` and docs | Almost every tool has a non-interactive path. Find it. |
 | Open a tmux pane for steps you could automate | tmux handoff is a last resort for human-only steps. |
 
