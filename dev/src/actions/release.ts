@@ -1,5 +1,6 @@
 import { spawn } from 'bun';
 import { DEV_ROOT } from '../lib/config';
+import { runInteractive } from '../lib/terminal';
 import { join } from 'path';
 
 type AddLog = (type: 'info' | 'success' | 'error' | 'warn' | 'command' | 'dim', text: string) => void;
@@ -17,11 +18,6 @@ async function run(cmd: string[], cwd: string): Promise<{ stdout: string; stderr
   const stderr = await new Response(proc.stderr).text();
   const exitCode = await proc.exited;
   return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
-}
-
-async function runInteractive(cmd: string[], cwd: string): Promise<number> {
-  const proc = spawn(cmd, { cwd, stdin: 'inherit', stdout: 'inherit', stderr: 'inherit' });
-  return proc.exited;
 }
 
 async function validateRelease(version: string, repoRoot: string, addLog: AddLog): Promise<ReleaseResult> {
