@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import type { SidebarProvider } from './sidebar-provider';
+import { runHandledAction } from './action-handler';
 import { getWorkspaceInfo } from './environment';
 import { listInstalledSkills } from './consoleClient';
 import type { InstalledSkill, WorkspaceInfo } from './shared-types';
@@ -51,9 +52,7 @@ function buildItems(workspace: WorkspaceInfo, skills: InstalledSkill[], sidebar:
     })
   );
   items.push(
-    commandItem('New terminal', undefined, 'add', () => {
-      void sidebar.newTmuxWindow();
-    })
+    commandItem('New terminal', undefined, 'add', () => sidebar.newTmuxWindow())
   );
   if (workspace.previewUrl) {
     const url = workspace.previewUrl;
@@ -73,9 +72,7 @@ function buildItems(workspace: WorkspaceInfo, skills: InstalledSkill[], sidebar:
           `Switch to: ${w.name}`,
           w.active ? 'active' : undefined,
           'terminal',
-          () => {
-            void sidebar.switchTmuxWindow(w.index);
-          }
+          () => sidebar.switchTmuxWindow(w.index)
         )
       );
     }
@@ -85,9 +82,9 @@ function buildItems(workspace: WorkspaceInfo, skills: InstalledSkill[], sidebar:
     items.push(sep('Launch AI tool'));
     for (const t of connectedTools) {
       items.push(
-        commandItem(`Launch ${t.name}`, t.description, 'rocket', () => {
-          void sidebar.runAiTool(t.command);
-        })
+        commandItem(`Launch ${t.name}`, t.description, 'rocket', () =>
+          sidebar.runAiTool(t.id, 'launch')
+        )
       );
     }
   }
@@ -98,14 +95,14 @@ function buildItems(workspace: WorkspaceInfo, skills: InstalledSkill[], sidebar:
       const iconId = 'plug';
       if (t.authCommand) {
         items.push(
-          commandItem(`Connect ${t.name}`, 'run auth flow', iconId, () => {
-            void sidebar.runAiTool(t.authCommand!);
-          })
+          commandItem(`Connect ${t.name}`, 'run auth flow', iconId, () =>
+            sidebar.runAiTool(t.id, 'connect')
+          )
         );
       } else if (t.docsUrl) {
         items.push(
-          commandItem(`Connect ${t.name}`, 'open docs', iconId, () => {
-            void vscode.env.openExternal(vscode.Uri.parse(t.docsUrl));
+          commandItem(`Connect ${t.name}`, 'open docs', iconId, async () => {
+            await vscode.env.openExternal(vscode.Uri.parse(t.docsUrl));
           })
         );
       }
@@ -162,16 +159,16 @@ function buildItems(workspace: WorkspaceInfo, skills: InstalledSkill[], sidebar:
 
   items.push(sep('Help'));
   items.push(
-    commandItem('Open docs', undefined, 'book', () => {
-      void vscode.env.openExternal(
+    commandItem('Open docs', undefined, 'book', async () => {
+      await vscode.env.openExternal(
         vscode.Uri.parse('https://github.com/envhaven/envhaven/tree/master/docs')
       );
     })
   );
   if (!workspace.isManaged) {
     items.push(
-      commandItem('Try EnvHaven Managed', 'envhaven.com', 'cloud', () => {
-        void vscode.env.openExternal(vscode.Uri.parse('https://envhaven.com'));
+      commandItem('Try EnvHaven Managed', 'envhaven.com', 'cloud', async () => {
+        await vscode.env.openExternal(vscode.Uri.parse('https://envhaven.com'));
       })
     );
   }
@@ -184,8 +181,9 @@ export async function showCommandPalette(sidebar: SidebarProvider): Promise<void
 
   const [workspace, skills] = await Promise.all([
     getWorkspaceInfo(),
-    // Console unreachable (e.g. a HASHED_PASSWORD-only self-host) → no Skills
-    // entries, the same graceful degradation as environment.ts's getTools.
+    // Console unavailable (for example, a passwordless self-host, where the console
+    // never starts) → no Skills entries, the same graceful degradation as
+    // environment.ts's getTools.
     listInstalledSkills().catch(() => [] as InstalledSkill[]),
   ]);
 
@@ -199,11 +197,7 @@ export async function showCommandPalette(sidebar: SidebarProvider): Promise<void
     const picked = qp.selectedItems[0];
     if (picked?.run) {
       qp.hide();
-      try {
-        await picked.run();
-      } catch (err) {
-        vscode.window.showErrorMessage(`Action failed: ${err}`);
-      }
+      await runHandledAction(picked.run, (error) => sidebar.reportActionError(error));
     } else {
       qp.hide();
     }

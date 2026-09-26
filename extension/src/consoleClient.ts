@@ -1,25 +1,39 @@
 // Thin client for the per-container Go console's out-of-band HTTP API. The
-// console (console/api.go) is the single source of truth for the surfaces the
-// extension used to re-implement in TypeScript: skills (registry search,
-// install/remove via `npx skills`, installed-list enrichment, SKILL.md
-// fetch/frontmatter) and the AI-tool grid (installed + per-tool auth status).
-// The extension host now just calls the loopback console.
+// console is the single source of truth for skills, the AI-tool grid, and tmux
+// mutations. The extension host sends typed actions to the loopback API and
+// observes the resulting process/window state.
 //
 // Auth: every `/__console/*` route sits behind an `Authorization: Bearer <token>`
-// wall, and this client mints that token two ways, chosen by which credentials
+// wall, and this client mints that token three ways, chosen by which credentials
 // the workspace carries:
 //   - managed: the platform mints a ~60s EdDSA token for in-container callers via
 //     an internal route, keyed on the `_ENVHAVEN_*` vars environment.ts reads.
-//   - self-hosted: those vars are absent, so we exchange the operator's own web
-//     password (PASSWORD, the same one code-server uses) for the console's 60s
-//     HMAC token through its EXISTING browser login flow (POST /__console/login →
-//     GET /__console/token). No second minting path is added to the image.
-// A workspace is one or the other for its whole life. With neither credential
-// (e.g. a self-host box configured with only HASHED_PASSWORD, no plaintext) the
-// mint throws and callers degrade to an empty panel — the same graceful failure
-// the old `npx skills` path had when the CLI was missing.
+//   - self-hosted plaintext: exchange PASSWORD through the browser login flow.
+//   - self-hosted hash: prove knowledge of HASHED_PASSWORD to a loopback-only
+//     endpoint without sending the hash itself. HASHED_PASSWORD wins when both
+//     variables are set, matching code-server and console/selfhost.go.
+// code-server deletes PASSWORD and HASHED_PASSWORD before starting the extension
+// host, whose environment then gains whatever the user's login shell exports. Both
+// self-hosted paths therefore read the container's copy in
+// /run/s6/container_environment, the one svc-console receives through with-contenv,
+// and use the environment only when that file is missing.
+// Fixed tmux actions alone have a local binary fallback when token minting or a
+// definite loopback connection fails; every read remains HTTP-only.
 
-import type { AITool, InstalledSkill, SkillsShResult, SkillFrontmatter } from './shared-types';
+import { type ChildProcess, spawn } from 'node:child_process';
+import { createHmac, hkdfSync } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import type {
+  AITool,
+  ConsoleActionRequest,
+  ConsoleActionResponse,
+  EnvVarMeta,
+  InstalledSkill,
+  SkillFrontmatter,
+  SkillsShResult,
+  ToolMutationRequest,
+  ToolSignOutResponse,
+} from './shared-types';
 
 // The console listens on loopback. Managed binds 127.0.0.1:7681, self-host binds
 // :7681 (all interfaces) — 127.0.0.1 reaches both. No env var carries the port.
@@ -32,6 +46,7 @@ const CONSOLE_TOKEN_TTL_MS = 60_000;
 const TOKEN_REFRESH_MARGIN_MS = 10_000;
 const SESSION_TTL_MS = 12 * 60 * 60_000;
 const SESSION_REFRESH_MARGIN_MS = 60_000;
+const HASH_PROOF_CONTEXT = 'extension-token';
 
 // Per-call fetch budgets. Reads that fan out to GitHub/skills.sh server-side get
 // a generous window; install/remove shell out to `npx skills`, which the console
@@ -39,15 +54,44 @@ const SESSION_REFRESH_MARGIN_MS = 60_000;
 const TOKEN_MINT_TIMEOUT_MS = 5_000;
 const CONSOLE_READ_TIMEOUT_MS = 15_000;
 const CONSOLE_ACTION_TIMEOUT_MS = 125_000;
+const LOCAL_ACTION_TIMEOUT_MS = 10_000;
+const LOCAL_ACTION_OUTPUT_LIMIT = 4 << 10;
+const CONSOLE_BINARY = '/opt/envhaven/bin/envhaven-console';
 
 let cachedToken: { token: string; expiresAt: number } | null = null;
 // Self-host only: the login session cookie exchanged for short tokens.
 let cachedSession: { cookie: string; expiresAt: number } | null = null;
+let localActionTimeoutMs = LOCAL_ACTION_TIMEOUT_MS;
+let containerEnvDir = '/run/s6/container_environment';
+
+class ConsoleActionUnavailableError extends Error {}
+
+/** A non-2xx console answer, keeping its status and any next-step instruction. */
+export class ConsoleRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly instruction?: string
+  ) {
+    super(message);
+  }
+}
 
 /** Test-only: clear both auth caches so a test can exercise a fresh strategy. */
 export function __resetAuthCache(): void {
   cachedToken = null;
   cachedSession = null;
+  localActionTimeoutMs = LOCAL_ACTION_TIMEOUT_MS;
+}
+
+/** Test-only: shorten the local process deadline without weakening production. */
+export function __setLocalActionTimeoutForTests(timeoutMs: number): void {
+  localActionTimeoutMs = timeoutMs;
+}
+
+/** Test-only: read web credentials from a fixture instead of the container's copy. */
+export function __setContainerEnvDirForTests(dir: string): void {
+  containerEnvDir = dir;
 }
 
 /**
@@ -70,8 +114,7 @@ async function getConsoleToken(forceRefresh = false): Promise<string> {
 
 /**
  * Pick the minting strategy by the credentials present. Managed wins when its
- * vars are set; else fall back to the self-host web password. Absent both, throw
- * so the caller degrades to an empty panel.
+ * vars are set; self-hosted hash then wins over plaintext, matching code-server.
  */
 async function mintConsoleToken(): Promise<string> {
   const apiUrl = process.env._ENVHAVEN_API_URL;
@@ -80,11 +123,59 @@ async function mintConsoleToken(): Promise<string> {
   if (apiUrl && workspaceId && workspaceToken) {
     return mintManagedToken(apiUrl, workspaceId, workspaceToken);
   }
-  const password = process.env.PASSWORD;
+  const hashedPassword = webCredential('HASHED_PASSWORD');
+  if (hashedPassword) {
+    return mintHashSelfHostToken(hashedPassword);
+  }
+  const password = webCredential('PASSWORD');
   if (password) {
     return mintSelfHostToken(password);
   }
-  throw new Error('console unavailable: no workspace credentials or web password');
+  throw new Error('console unavailable: no workspace credentials or web credential');
+}
+
+/**
+ * A web credential exactly as svc-console sees it: the s6 copy read verbatim (no
+ * trim), where an empty file counts as unset, as it does for with-contenv. A shell
+ * export of the same name must not replace it: a wrong password on every poll
+ * would drain the console's shared login limiter and lock the operator out.
+ */
+function webCredential(name: 'PASSWORD' | 'HASHED_PASSWORD'): string | undefined {
+  try {
+    return readFileSync(`${containerEnvDir}/${name}`, 'utf8') || undefined;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  return process.env[name] || undefined;
+}
+
+async function mintHashSelfHostToken(hashedPassword: string): Promise<string> {
+  const issued = Math.floor(Date.now() / 1000).toString();
+  const material = /^[0-9a-f]{64}$/i.test(hashedPassword)
+    ? hashedPassword.toLowerCase()
+    : hashedPassword;
+  const secret = Buffer.from(
+    hkdfSync('sha256', Buffer.from(material), Buffer.from('envhaven-console'), Buffer.from('token-signing-key/v1'), 32)
+  );
+  const proof = createHmac('sha256', secret)
+    .update(`${HASH_PROOF_CONTEXT}|${issued}`)
+    .digest('base64url');
+  const res = await fetch(`${CONSOLE_BASE}/__console/internal-token`, {
+    method: 'POST',
+    headers: {
+      'X-EnvHaven-Issued': issued,
+      'X-EnvHaven-Proof': proof,
+    },
+    signal: AbortSignal.timeout(TOKEN_MINT_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    throw new Error(`console hash-proof mint failed: HTTP ${res.status}`);
+  }
+  const token = (await res.text()).trim();
+  if (!token) {
+    throw new Error('console hash-proof mint returned no token');
+  }
+  return token;
 }
 
 /**
@@ -202,18 +293,203 @@ function authedFetch(
 }
 
 /**
- * Turn a non-2xx console response into an Error carrying the server's
- * `{ error }` message, matching how the old CLI path signalled failure. Falls
+ * Turn a non-2xx console response into a ConsoleRequestError carrying the server's
+ * explicit instruction when present, otherwise its `{ error }` message. Falls
  * back to the status line when the body isn't the expected shape.
  */
-async function consoleError(res: Response): Promise<Error> {
+async function consoleError(res: Response): Promise<ConsoleRequestError> {
   try {
-    const data = (await res.json()) as { error?: string };
-    if (data.error) return new Error(data.error);
+    const data = (await res.json()) as { error?: string; instruction?: string };
+    if (data.instruction) return new ConsoleRequestError(data.instruction, res.status, data.instruction);
+    if (data.error) return new ConsoleRequestError(data.error, res.status);
   } catch {
     /* non-JSON body — fall through to the status line */
   }
-  return new Error(`console request failed: HTTP ${res.status}`);
+  return new ConsoleRequestError(`console request failed: HTTP ${res.status}`, res.status);
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  let current = error;
+  for (let depth = 0; depth < 4 && current && typeof current === 'object'; depth++) {
+    const candidate = current as { code?: unknown; cause?: unknown };
+    if (candidate.code === code) return true;
+    current = candidate.cause;
+  }
+  return false;
+}
+
+async function actionToken(forceRefresh = false): Promise<string> {
+  try {
+    return await getConsoleToken(forceRefresh);
+  } catch (error) {
+    // The console has run nothing yet (a 401 answer runs nothing either), so the
+    // local binary cannot repeat an action.
+    throw new ConsoleActionUnavailableError('console token unavailable', { cause: error });
+  }
+}
+
+async function actionFetch(request: ConsoleActionRequest, token: string): Promise<Response> {
+  try {
+    return await authedFetch(
+      '/__console/action',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+      token,
+      CONSOLE_ACTION_TIMEOUT_MS
+    );
+  } catch (error) {
+    // A refused loopback connection proves the request never reached tmux. Other
+    // transport failures are ambiguous, so retrying them locally could mutate twice.
+    if (hasErrorCode(error, 'ECONNREFUSED')) {
+      throw new ConsoleActionUnavailableError('console service unavailable', { cause: error });
+    }
+    throw error;
+  }
+}
+
+async function postHTTPAction(request: ConsoleActionRequest): Promise<ConsoleActionResponse> {
+  let token = await actionToken();
+  let res = await actionFetch(request, token);
+  if (res.status === 401) {
+    token = await actionToken(true);
+    res = await actionFetch(request, token);
+  }
+  if (!res.ok) throw await consoleError(res);
+  const response = (await res.json()) as Partial<ConsoleActionResponse>;
+  if (response.ok !== true) throw new Error('console action returned an invalid response');
+  return response as ConsoleActionResponse;
+}
+
+function stopLocalAction(child: ChildProcess): void {
+  if (child.pid !== undefined && process.platform !== 'win32') {
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
+    }
+  }
+  try {
+    child.kill('SIGKILL');
+  } catch {
+    // The process exited between the failed group kill and this direct fallback.
+  }
+}
+
+function localActionError(stdout: string, stderr: string, code: number | null): Error {
+  try {
+    const response = JSON.parse(stdout) as { error?: unknown };
+    if (typeof response.error === 'string' && response.error) return new Error(response.error);
+  } catch {
+    // A startup failure may be plain stderr rather than the CLI JSON envelope.
+  }
+  const detail = stderr.trim();
+  return new Error(detail || `local console action failed: exit ${code ?? 'signal'}`);
+}
+
+function runLocalAction(request: ConsoleActionRequest): Promise<ConsoleActionResponse> {
+  const payload = JSON.stringify(request);
+  if (Buffer.byteLength(payload) > LOCAL_ACTION_OUTPUT_LIMIT) {
+    return Promise.reject(new Error('local console action request is too large'));
+  }
+
+  return new Promise((resolve, reject) => {
+    let child: ChildProcess;
+    try {
+      child = spawn(CONSOLE_BINARY, ['--action-json', payload], {
+        detached: true,
+        shell: false,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      reject(new Error('could not start local console action', { cause: error }));
+      return;
+    }
+
+    let stdout = Buffer.alloc(0);
+    let stderr = Buffer.alloc(0);
+    let outputBytes = 0;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const fail = (error: Error, stop: boolean): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (stop) stopLocalAction(child);
+      reject(error);
+    };
+    const collect = (stream: 'stdout' | 'stderr', data: Buffer | string): void => {
+      if (settled) return;
+      const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      outputBytes += chunk.length;
+      if (outputBytes > LOCAL_ACTION_OUTPUT_LIMIT) {
+        fail(new Error('local console action output exceeded 4096 bytes'), true);
+        return;
+      }
+      if (stream === 'stdout') stdout = Buffer.concat([stdout, chunk]);
+      else stderr = Buffer.concat([stderr, chunk]);
+    };
+
+    child.stdout?.on('data', (data: Buffer | string) => collect('stdout', data));
+    child.stderr?.on('data', (data: Buffer | string) => collect('stderr', data));
+    child.once('error', (error) => {
+      fail(new Error('could not start local console action', { cause: error }), true);
+    });
+    child.once('close', (code) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      const stdoutText = stdout.toString('utf8').trim();
+      const stderrText = stderr.toString('utf8');
+      if (code !== 0) {
+        reject(localActionError(stdoutText, stderrText, code));
+        return;
+      }
+      try {
+        const response = JSON.parse(stdoutText) as Partial<ConsoleActionResponse>;
+        if (response.ok !== true) throw new Error('local console action returned an invalid response');
+        resolve(response as ConsoleActionResponse);
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+    timer = setTimeout(() => {
+      fail(new Error(`local console action timed out after ${localActionTimeoutMs}ms`), true);
+    }, localActionTimeoutMs);
+  });
+}
+
+async function postAction(request: ConsoleActionRequest): Promise<ConsoleActionResponse> {
+  try {
+    return await postHTTPAction(request);
+  } catch (error) {
+    if (error instanceof ConsoleActionUnavailableError) return runLocalAction(request);
+    throw error;
+  }
+}
+
+export function launchTool(toolId: string): Promise<ConsoleActionResponse> {
+  return postAction({ action: 'launch', toolId });
+}
+
+export function connectTool(toolId: string): Promise<ConsoleActionResponse> {
+  return postAction({ action: 'connect', toolId });
+}
+
+export function newWindow(): Promise<ConsoleActionResponse> {
+  return postAction({ action: 'new-window' });
+}
+
+export function selectWindow(index: number): Promise<ConsoleActionResponse> {
+  return postAction({ action: 'select-window', index });
+}
+
+export function killWindow(index: number): Promise<ConsoleActionResponse> {
+  return postAction({ action: 'kill-window', index });
 }
 
 /**
@@ -221,11 +497,48 @@ async function consoleError(res: Response): Promise<Error> {
  * its live installed + auth status, computed by the console reading this
  * container. The single source that replaced environment.ts's local checkAuth.
  */
-export async function getTools(): Promise<AITool[]> {
+export async function getTools(): Promise<{
+  tools: AITool[];
+  envVarMeta: Record<string, EnvVarMeta>;
+}> {
   const res = await consoleFetch('/__console/tools', {}, CONSOLE_READ_TIMEOUT_MS);
   if (!res.ok) throw await consoleError(res);
-  const data = (await res.json()) as { tools?: AITool[] };
-  return data.tools ?? [];
+  const data = (await res.json()) as {
+    tools?: AITool[];
+    envVarMeta?: Record<string, EnvVarMeta>;
+  };
+  return { tools: data.tools ?? [], envVarMeta: data.envVarMeta ?? {} };
+}
+
+/** Persist a declared tool key through the console's one credential path. */
+export async function setToolApiKey(toolId: string, envVar: string, key: string): Promise<void> {
+  const request: ToolMutationRequest = { action: 'set-key', toolId, envVar, key };
+  const res = await consoleFetch(
+    '/__console/tools',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    },
+    CONSOLE_ACTION_TIMEOUT_MS
+  );
+  if (!res.ok) throw await consoleError(res);
+}
+
+/** Remove tool credentials; interactive vendor logouts return the next instruction. */
+export async function signOutTool(toolId: string): Promise<ToolSignOutResponse> {
+  const request: ToolMutationRequest = { action: 'sign-out', toolId };
+  const res = await consoleFetch(
+    '/__console/tools',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    },
+    CONSOLE_ACTION_TIMEOUT_MS
+  );
+  if (!res.ok) throw await consoleError(res);
+  return (await res.json()) as ToolSignOutResponse;
 }
 
 /** GET /__console/skills — the installed-skills list, enriched + sorted server-side. */

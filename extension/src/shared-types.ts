@@ -21,8 +21,8 @@ export interface SetupStep {
 
 /** One row of GET /__console/tools: the static catalog fields (id/name/command/
  *  authCommand/description/docsUrl/envVars/setupSteps) plus the dynamic result of
- *  reading THIS container (installed via PATH, authStatus + connectedVia via the
- *  console's checkAuth). The console is the sole owner of that auth logic; the
+ *  reading THIS container (installed via PATH, authStatus/connectedVia/authSource
+ *  via the console's checkAuth). The console is the sole owner of that auth logic; the
  *  extension and the dashboard both render this shape unchanged. */
 export interface AITool {
   id: string;
@@ -34,6 +34,7 @@ export interface AITool {
   installed: boolean;
   authStatus: 'ready' | 'needs-auth' | 'unknown';
   connectedVia: string | null;
+  authSource: 'process-env' | 'envhaven-rc' | 'manual-rc' | 'native' | null;
   setupSteps?: SetupStep[];
   envVars?: string[];
 }
@@ -82,6 +83,8 @@ export interface TmuxWindow {
 export interface VersionInfo {
   current: string | null;
   latest: string | null;
+  latestDigest: string | null;
+  imageReference: string | null;
   updateAvailable: boolean;
 }
 
@@ -91,6 +94,28 @@ export interface EnvVarMeta {
   placeholder: string;
   hint: string;
   url: string | null;
+}
+
+/** Requests accepted by POST /__console/action. Tool commands never cross the
+ * wire: launch/connect carry only a catalog id, and window mutations carry the
+ * visible index that the console resolves to an immutable tmux id. */
+export type ConsoleToolAction = 'launch' | 'connect';
+export type ConsoleActionRequest =
+  | { action: ConsoleToolAction; toolId: string }
+  | { action: 'new-window' }
+  | { action: 'select-window' | 'kill-window'; index: number }
+  | { action: 'insert-path'; name: string };
+
+export interface ConsoleActionResponse {
+  ok: true;
+}
+
+export type ToolMutationRequest =
+  | { action: 'set-key'; toolId: string; envVar: string; key: string }
+  | { action: 'sign-out'; toolId: string };
+
+export interface ToolSignOutResponse extends ConsoleActionResponse {
+  instruction?: string;
 }
 
 /** The full workspace snapshot the extension host builds and posts to the webview. */
@@ -148,11 +173,11 @@ export interface ResourceSnapshot {
  *  mirror the host's onDidReceiveMessage switch (sidebar-provider.ts) one-to-one. */
 export type WebviewToExtensionMessage =
   | { command: 'ready' }
-  | { command: 'runTool'; toolCommand: string }
+  | { command: 'runTool'; toolId: string; action: ConsoleToolAction }
   | { command: 'openToolDocs'; url: string }
   | { command: 'copySshCommand'; text: string }
   | { command: 'copyToClipboard'; text: string }
-  | { command: 'setApiKey'; envVar: string; apiKey: string }
+  | { command: 'setApiKey'; toolId: string; envVar: string; apiKey: string }
   | { command: 'signOutTool'; toolId: string }
   | { command: 'setSshKey'; sshPublicKey: string }
   | { command: 'importGitHubKeys'; username: string }

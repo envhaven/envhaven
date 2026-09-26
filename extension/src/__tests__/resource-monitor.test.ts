@@ -2,9 +2,25 @@ import { describe, expect, it, beforeEach } from 'bun:test';
 import {
   parseStatLine,
   classify,
+  diskFrom,
   signalProcess,
   __test__,
 } from '../resource-monitor';
+
+// The same vectors as TestDiskFrom in console/api_test.go: the sidebar and the Cockpit must
+// show one figure for one disk. A hobby filesystem, 15% reserved and 28% written, which
+// the old blocks-bavail formula reported as 43%.
+describe('diskFrom', () => {
+  const gb = 1024 * 1024 * 1024;
+  it('excludes the reserved blocks from capacity, like df', () => {
+    expect(diskFrom(100, 72, 57, gb)).toEqual({ usedGb: 28, totalGb: 85, pct: (28 / 85) * 100 });
+  });
+  it('reports zeros for counts that cannot come from one filesystem', () => {
+    expect(diskFrom(100, 101, 50, gb)).toEqual({ usedGb: 0, totalGb: 0, pct: 0 });
+    expect(diskFrom(100, 50, 51, gb)).toEqual({ usedGb: 0, totalGb: 0, pct: 0 });
+    expect(diskFrom(100, 100, 0, gb)).toEqual({ usedGb: 0, totalGb: 0, pct: 0 });
+  });
+});
 
 describe('parseStatLine', () => {
   it('parses a plain stat line', () => {

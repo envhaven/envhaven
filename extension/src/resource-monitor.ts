@@ -125,18 +125,7 @@ export async function snapshot(): Promise<ResourceSnapshot> {
 function readDiskStats(mountPoint: string): ResourceSnapshot['disk'] {
   try {
     const s = statfsSync(mountPoint);
-    const totalBytes = Number(s.blocks) * s.bsize;
-    const freeBytes = Number(s.bavail) * s.bsize;
-    const usedBytes = Math.max(0, totalBytes - freeBytes);
-    const gb = 1024 * 1024 * 1024;
-    const totalGb = totalBytes > 0 ? totalBytes / gb : 0;
-    const usedGb = totalBytes > 0 ? usedBytes / gb : 0;
-    const pct = totalBytes > 0 ? clamp((usedBytes / totalBytes) * 100, 0, 100) : 0;
-    return {
-      usedGb: Math.round(usedGb * 10) / 10,
-      totalGb: Math.round(totalGb * 10) / 10,
-      pct,
-    };
+    return diskFrom(Number(s.blocks), Number(s.bfree), Number(s.bavail), s.bsize);
   } catch (err) {
     // statfs can fail if the mount point disappears mid-syscall or the fs
     // driver returns EIO. Log so it's visible in the extension host output
@@ -144,6 +133,26 @@ function readDiskStats(mountPoint: string): ResourceSnapshot['disk'] {
     console.warn(`envhaven: statfs(${mountPoint}) failed`, err);
     return { usedGb: 0, totalGb: 0, pct: 0 };
   }
+}
+
+/**
+ * The same arithmetic as diskFrom in console/api_stats.go, so the sidebar and the Cockpit
+ * report one figure for one disk. Used is what is written (blocks - bfree); capacity is
+ * what an unprivileged user can reach (used + bavail), which excludes the per-tier
+ * `tune2fs -m` reserve; their ratio is df's Use%. Counting the reserve as used, the old
+ * `blocks - bavail`, showed a hobby workspace at 43% when df said 33%.
+ */
+export function diskFrom(blocks: number, bfree: number, bavail: number, bsize: number): ResourceSnapshot['disk'] {
+  if (blocks < bfree || bfree < bavail) return { usedGb: 0, totalGb: 0, pct: 0 };
+  const used = (blocks - bfree) * bsize;
+  const capacity = used + bavail * bsize;
+  if (capacity <= 0) return { usedGb: 0, totalGb: 0, pct: 0 };
+  const gb = 1024 * 1024 * 1024;
+  return {
+    usedGb: Math.round((used / gb) * 10) / 10,
+    totalGb: Math.round((capacity / gb) * 10) / 10,
+    pct: (used / capacity) * 100,
+  };
 }
 
 export function signalProcess(

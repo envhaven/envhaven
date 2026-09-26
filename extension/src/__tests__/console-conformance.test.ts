@@ -1,7 +1,16 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import type { AITool, EnvVarMeta, InstalledSkill, SkillsShResult } from '../shared-types';
+import type {
+  AITool,
+  ConsoleActionRequest,
+  ConsoleActionResponse,
+  EnvVarMeta,
+  InstalledSkill,
+  SkillsShResult,
+  ToolMutationRequest,
+  ToolSignOutResponse,
+} from '../shared-types';
 
 // Closes the Go↔TS wire loop for /tools and /skills. The Go side
 // (console/api_golden_test.go) asserts the server emits console/testdata/
@@ -35,6 +44,7 @@ type ExpectedAIToolKey =
   | 'installed'
   | 'authStatus'
   | 'connectedVia'
+  | 'authSource'
   | 'setupSteps'
   | 'envVars';
 const _aitoolKeysAreExact: AssertExact<keyof AITool, ExpectedAIToolKey> = true;
@@ -50,6 +60,7 @@ const AITOOL_KEYS: string[] = [
   'installed',
   'authStatus',
   'connectedVia',
+  'authSource',
   'setupSteps',
   'envVars',
 ].sort();
@@ -91,6 +102,10 @@ describe('/tools golden conforms to the TS AITool', () => {
       expect(typeof raw.installed).toBe('boolean');
       expect(['ready', 'needs-auth', 'unknown']).toContain(raw.authStatus as string);
       expect(raw.connectedVia === null || typeof raw.connectedVia === 'string').toBe(true);
+      expect(
+        raw.authSource === null ||
+        ['process-env', 'envhaven-rc', 'manual-rc', 'native'].includes(raw.authSource as string),
+      ).toBe(true);
       expect(Array.isArray(raw.setupSteps)).toBe(true);
       expect(Array.isArray(raw.envVars)).toBe(true);
     }
@@ -193,5 +208,81 @@ describe('/skills golden conforms to the TS InstalledSkill + SkillsShResult', ()
       expect(raw.installs === null || typeof raw.installs === 'number').toBe(true);
       expect(typeof raw.source).toBe('string');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mutations: typed wire contracts + one tmux action owner
+// ---------------------------------------------------------------------------
+
+const _actionRequests = [
+  { action: 'launch', toolId: 'claude' },
+  { action: 'connect', toolId: 'codex' },
+  { action: 'new-window' },
+  { action: 'select-window', index: 1 },
+  { action: 'kill-window', index: 1 },
+  { action: 'insert-path', name: 'report.txt' },
+] satisfies ConsoleActionRequest[];
+const _toolMutationRequests = [
+  { action: 'set-key', toolId: 'amp', envVar: 'AMP_API_KEY', key: 'secret' },
+  { action: 'sign-out', toolId: 'amp' },
+] satisfies ToolMutationRequest[];
+const _actionResponse: ConsoleActionResponse = { ok: true };
+const _signOutResponse: ToolSignOutResponse = { ok: true, instruction: 'Run /logout.' };
+void [_actionRequests, _toolMutationRequests, _actionResponse, _signOutResponse];
+
+describe('console owns every tmux mutation', () => {
+  const sourceRoot = join(__dirname, '..');
+  const mutatingTmux = /\btmux\s+(?:new-session|new-window|send-keys|select-window|kill-window)\b/;
+
+  test('all production TypeScript contains no direct mutating tmux command', () => {
+    for (const root of [sourceRoot, join(__dirname, '../../webview/src')]) {
+      for (const name of new Bun.Glob('**/*.{ts,tsx}').scanSync(root)) {
+        if (name.includes('__tests__/') || name.includes('.test.')) continue;
+        const source = readFileSync(join(root, name), 'utf8');
+        expect(source).not.toMatch(mutatingTmux);
+        if (name !== 'tmux-control.ts') {
+          expect(source).not.toMatch(/(?:spawn|spawnSync|execFile|execFileSync)\(\s*['"]tmux['"]/);
+          expect(source).not.toMatch(/Bun\.spawn\(\s*\[\s*['"]tmux['"]/);
+        }
+      }
+    }
+  });
+
+  test('the control-mode process is attach-only', () => {
+    const source = readFileSync(join(sourceRoot, 'tmux-control.ts'), 'utf8');
+    expect(source.match(/spawn\(\s*['"]tmux['"]/g)).toHaveLength(1);
+    expect(source).toMatch(/spawn\(\s*['"]tmux['"]\s*,\s*\[\s*['"]-N['"]\s*,\s*['"]-C['"]\s*,\s*['"]attach-session['"]/);
+    expect(source).not.toMatch(
+      /spawn\(\s*['"]tmux['"]\s*,\s*\[[\s\S]*?['"](?:new-session|new-window|send-keys|select-window|kill-window)['"]/
+    );
+  });
+
+  test('sidebar delegates every user action to consoleClient', () => {
+    const source = readFileSync(join(sourceRoot, 'sidebar-provider.ts'), 'utf8');
+    for (const removed of ['_newWindow', '_createWindow', '_windowID', '_runTmuxCommand']) {
+      expect(source).not.toContain(removed);
+    }
+    for (const method of ['launchTool', 'connectTool', 'newWindow', 'selectWindow', 'killWindow']) {
+      expect(source).toContain(`consoleClient.${method}`);
+    }
+  });
+
+  test('the local fallback can invoke only the typed Go action mode', () => {
+    const source = readFileSync(join(sourceRoot, 'consoleClient.ts'), 'utf8');
+    expect(source).toContain("const CONSOLE_BINARY = '/opt/envhaven/bin/envhaven-console'");
+    expect(source).toMatch(/spawn\(CONSOLE_BINARY, \['--action-json', payload\]/);
+    expect(source.match(/\bspawn\(/g)).toHaveLength(1);
+    expect(source).toContain('shell: false');
+    expect(source).toContain('detached: true');
+    expect(source).toContain("process.kill(-child.pid, 'SIGKILL')");
+  });
+
+  test('palette and webview actions share the handled rejection boundary', () => {
+    const palette = readFileSync(join(sourceRoot, 'command-palette.ts'), 'utf8');
+    const sidebar = readFileSync(join(sourceRoot, 'sidebar-provider.ts'), 'utf8');
+    expect(palette).not.toMatch(/void sidebar\.(?:newTmuxWindow|switchTmuxWindow|runAiTool)/);
+    expect(palette).toContain('await runHandledAction(picked.run');
+    expect(sidebar).toMatch(/onDidReceiveMessage[\s\S]*?runHandledAction\(async \(\) =>/);
   });
 });

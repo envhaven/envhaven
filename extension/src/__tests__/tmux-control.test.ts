@@ -1,5 +1,34 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, mock } from 'bun:test';
+import * as childProcess from 'child_process';
+import { EventEmitter } from 'events';
 import { TmuxControl } from '../tmux-control';
+
+// Pass-through by default, as in consoleClient.test.ts, so whichever test file
+// loads after this one still spawns real processes.
+const realSpawn = childProcess.spawn;
+const spawnMock = mock(
+  (command: string, args: readonly string[] = [], options: childProcess.SpawnOptions = {}) =>
+    realSpawn(command, args, options)
+);
+mock.module('child_process', () => ({ spawn: spawnMock }));
+
+describe('TmuxControl.start', () => {
+  it('attaches without ever starting a tmux server', async () => {
+    const proc = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), kill: () => true });
+    spawnMock.mockImplementationOnce(() => proc as unknown as childProcess.ChildProcess);
+    const control = new TmuxControl('envhaven');
+    try {
+      await control.start();
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      const [command, args] = spawnMock.mock.calls[0];
+      expect(command).toBe('tmux');
+      // Without -N, every 1 s retry while no server runs would start one.
+      expect(args).toEqual(['-N', '-C', 'attach-session', '-t', '=envhaven']);
+    } finally {
+      control.dispose();
+    }
+  });
+});
 
 describe('TmuxControl.isChangeLine', () => {
   it('detects window-add', () => {

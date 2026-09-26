@@ -3,15 +3,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as net from 'net';
-import toolDefinitionsJson from '../../tool-definitions.json';
 import { getTools } from './consoleClient';
 import {
   TMUX_SESSION,
-  type AITool,
-  type SetupStep,
   type TmuxWindow,
   type VersionInfo,
-  type EnvVarMeta,
   type WorkspaceInfo,
 } from './shared-types';
 
@@ -82,35 +78,6 @@ async function getCachedVersions(): Promise<Versions> {
   return cachedVersions;
 }
 
-export interface ToolDefinition {
-  id: string;
-  name: string;
-  command: string;
-  authCommand: string | null;
-  description: string;
-  docsUrl: string;
-  envVars: string[];
-  authFiles: string[];
-  // Consumed by the Go console's auth ladder (tools.go checkAuth), not the extension;
-  // it still types the shared tool-definitions.json the console reads.
-  authCheck?: 'goose';
-  /**
-   * The kebab-case agent id `npx skills add -a <agent>` accepts. Absent when
-   * skills.sh doesn't support this tool (e.g. aider) — the console's
-   * connectedAgents silently skips agent-less tools when installing skills.
-   */
-  skillsAgent?: string;
-  setupSteps: SetupStep[];
-}
-
-export const TOOL_DEFINITIONS: ToolDefinition[] = toolDefinitionsJson.tools as ToolDefinition[];
-
-// Per-env-var UI metadata (placeholder/hint/signup URL) for the API-key input,
-// keyed by env var name and shared across tools (e.g. ANTHROPIC_API_KEY is used by
-// both opencode and claude). Source of truth is tool-definitions.json's envVarMeta.
-export const ENV_VAR_META: Record<string, EnvVarMeta> =
-  (toolDefinitionsJson as { envVarMeta?: Record<string, EnvVarMeta> }).envVarMeta ?? {};
-
 async function getVersion(cmd: string, versionArg = '--version'): Promise<string | null> {
   try {
     const { stdout } = await execSafe(`${cmd} ${versionArg} 2>/dev/null`);
@@ -119,10 +86,6 @@ async function getVersion(cmd: string, versionArg = '--version'): Promise<string
   } catch {
     return null;
   }
-}
-
-export function getToolDefinitionById(id: string): ToolDefinition | undefined {
-  return TOOL_DEFINITIONS.find((t) => t.id === id);
 }
 
 async function isSshEnabled(): Promise<boolean> {
@@ -244,17 +207,62 @@ async function fetchGhcrVersionLabel(token: string): Promise<string | null> {
   return config.config?.Labels?.['org.opencontainers.image.version'] || null;
 }
 
+const RELEASE_VERSION = /^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
+
+function releaseTuple(version: string | null): number[] | null {
+  const match = version?.match(RELEASE_VERSION);
+  if (!match) return null;
+  const tuple = [Number(match[1]), Number(match[2]), Number(match[3])];
+  return tuple.every(Number.isSafeInteger) ? tuple : null;
+}
+
+/**
+ * Whether `latest` is an update over `current`: only when both are strict release labels
+ * and `current` is the older one, the rule the managed dashboard uses before offering an
+ * update. A dev build, a prerelease or an unknown label fails closed, and a pinned or
+ * rolled-back `latest` is never an update. runtime/scripts/envhaven-version-check applies
+ * the same rule for the tmux status bar.
+ */
+export function updateAvailableFor(current: string | null, latest: string | null): boolean {
+  const from = releaseTuple(current);
+  const to = releaseTuple(latest);
+  if (!from || !to) return false;
+  for (let i = 0; i < from.length; i++) {
+    if (from[i] !== to[i]) return from[i] < to[i];
+  }
+  return false;
+}
+
+export function parseManagedVersionResponse(data: unknown): {
+  latest: string | null;
+  latestDigest: string | null;
+  imageReference: string | null;
+} {
+  if (!data || typeof data !== 'object') return { latest: null, latestDigest: null, imageReference: null };
+  const candidate = data as Record<string, unknown>;
+  const latest = typeof candidate.latest === 'string' ? candidate.latest : null;
+  const latestDigest = typeof candidate.latestDigest === 'string' ? candidate.latestDigest : null;
+  const imageReference = typeof candidate.imageReference === 'string' ? candidate.imageReference : null;
+  if (
+    !latest
+    || !latestDigest?.match(/^sha256:[0-9a-f]{64}$/)
+    || !imageReference?.endsWith(`@${latestDigest}`)
+  ) return { latest: null, latestDigest: null, imageReference: null };
+  return { latest, latestDigest, imageReference };
+}
+
 async function getVersionInfo(isManaged: boolean, apiUrl: string | null): Promise<VersionInfo> {
   const current = process.env.ENVHAVEN_VERSION || null;
-  
+
   let latest: string | null = null;
+  let latestDigest: string | null = null;
+  let imageReference: string | null = null;
   
   try {
     if (isManaged && apiUrl) {
       const response = await fetch(`${apiUrl}/v1/version`, { signal: AbortSignal.timeout(3000) });
       if (response.ok) {
-        const data = await response.json() as { latest?: string };
-        latest = data.latest || null;
+        ({ latest, latestDigest, imageReference } = parseManagedVersionResponse(await response.json()));
       }
     } else {
       const tokenRes = await fetch(
@@ -271,9 +279,9 @@ async function getVersionInfo(isManaged: boolean, apiUrl: string | null): Promis
        an update prompt this poll cycle and we'll retry on the next refresh */
   }
 
-  const updateAvailable = !!(current && latest && current !== latest);
+  const updateAvailable = updateAvailableFor(current, latest);
   
-  return { current, latest, updateAvailable };
+  return { current, latest, latestDigest, imageReference, updateAvailable };
 }
 
 // parseTmuxWindows turns `index|active|name` lines into windows. The free-text name
@@ -296,7 +304,9 @@ export function parseTmuxWindows(stdout: string): TmuxWindow[] {
 
 export async function getTmuxWindows(): Promise<TmuxWindow[]> {
   try {
-    const { stdout } = await execSafe(`tmux list-windows -t ${TMUX_SESSION} -F "#{window_index}|#{window_active}|#{window_name}"`);
+    // `=name:` names the session exactly; a bare name can resolve a window or a prefix-matched
+    // session first, which is what the console's actions target (console/gate.go sessionTarget).
+    const { stdout } = await execSafe(`tmux list-windows -t '=${TMUX_SESSION}:' -F "#{window_index}|#{window_active}|#{window_name}"`);
     return parseTmuxWindows(stdout);
   } catch {
     return [];
@@ -350,13 +360,14 @@ export async function getWorkspaceInfo(): Promise<WorkspaceInfo> {
   const exposedPort = await getExposedPort(isManaged, workspaceId, workspaceToken, apiUrl);
   const createdAt = getWorkspaceCreatedAt();
 
-  const [aiTools, versions, sshEnabled, previewPortOpen, tmuxWindows, versionInfo] = await Promise.all([
-    // The console (console/api.go) is the single source of truth for the tool grid:
-    // installed via PATH + per-tool auth status, computed by reading THIS container's
-    // env, rc files, and auth files. Unreachable (e.g. a self-host box with no web
-    // password) → an empty grid, the same graceful degradation the other
+  const [toolData, versions, sshEnabled, previewPortOpen, tmuxWindows, versionInfo] = await Promise.all([
+    // The console (handleTools in console/tools.go) is the single source of truth for
+    // the tool grid: installed via PATH + per-tool auth status, computed by reading THIS
+    // container's process env, managed/manual exports, auth files, and native login
+    // probes. Unavailable (e.g. a self-host box with no web password, where the console
+    // never starts) → an empty grid, the same graceful degradation the other
     // console-backed panels have.
-    getTools().catch(() => [] as AITool[]),
+    getTools().catch(() => ({ tools: [], envVarMeta: {} })),
     getCachedVersions(),
     isSshEnabled(),
     isPortOpen(exposedPort),
@@ -372,7 +383,7 @@ export async function getWorkspaceInfo(): Promise<WorkspaceInfo> {
     pythonVersion: versions.python,
     goVersion: versions.go,
     rustVersion: versions.rust,
-    aiTools,
+    aiTools: toolData.tools,
     sshEnabled,
     sshPort: ssh.port,
     sshCommand: sshEnabled ? ssh.command : null,
@@ -385,6 +396,6 @@ export async function getWorkspaceInfo(): Promise<WorkspaceInfo> {
     tmuxWindows,
     version: versionInfo,
     createdAt,
-    envVarMeta: ENV_VAR_META,
+    envVarMeta: toolData.envVarMeta,
   };
 }

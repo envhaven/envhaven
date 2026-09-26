@@ -19,7 +19,6 @@ export default defineConfig({
   plugins: [react(), tailwindcss(), removeIndexHtml()],
   build: {
     outDir: 'build',
-    assetsInlineLimit: 150000,
     rollupOptions: {
       output: {
         entryFileNames: 'assets/[name].js',

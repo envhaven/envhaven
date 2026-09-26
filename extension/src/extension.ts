@@ -13,11 +13,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Ctrl+Shift+C: copy last tmux selection to browser clipboard
   context.subscriptions.push(
-    vscode.commands.registerCommand('envhaven.copyTerminalSelection', () => {
+    vscode.commands.registerCommand('envhaven.copyTerminalSelection', async () => {
       try {
         const content = fs.readFileSync(TMUX_CLIPBOARD_FILE, 'utf-8');
         if (content) {
-          vscode.env.clipboard.writeText(content);
+          await vscode.env.clipboard.writeText(content);
         }
       } catch (e: unknown) {
         if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -33,9 +33,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('envhaven.refreshSidebar', () => {
-      sidebarProvider.refresh();
-    })
+    vscode.commands.registerCommand('envhaven.refreshSidebar', () => sidebarProvider.refresh())
   );
 
   context.subscriptions.push(

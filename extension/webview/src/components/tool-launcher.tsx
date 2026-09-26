@@ -18,7 +18,19 @@ import { vscode, type AITool, type EnvVarMeta } from '../lib/vscode';
 // block. Should be rare — adding a new provider means editing that JSON.
 const DEFAULT_META: EnvVarMeta = { placeholder: 'Paste key...', hint: '', url: null };
 
-function ApiKeyInput({ envVar, onSaved }: { envVar: string; onSaved?: () => void }) {
+function authStatusText(tool: AITool): string {
+  if (tool.authStatus === 'unknown') return 'Authentication status unavailable';
+  if (tool.authStatus !== 'ready') return 'Needs setup';
+  if (!tool.connectedVia) return 'Ready';
+  let source = 'unknown source';
+  if (tool.authSource === 'process-env') source = 'workspace environment';
+  if (tool.authSource === 'envhaven-rc') source = 'Environment';
+  if (tool.authSource === 'manual-rc') source = 'shell profile';
+  if (tool.authSource === 'native') source = 'native login';
+  return `${tool.connectedVia} via ${source}`;
+}
+
+function ApiKeyInput({ toolId, envVar, onSaved }: { toolId: string; envVar: string; onSaved?: () => void }) {
   const [value, setValue] = useState('');
   const [saved, setSaved] = useState(false);
   const metaMap = useWorkspaceStore((s) => s.workspace?.envVarMeta);
@@ -26,7 +38,7 @@ function ApiKeyInput({ envVar, onSaved }: { envVar: string; onSaved?: () => void
 
   const handleSave = () => {
     if (!value.trim()) return;
-    vscode.postMessage({ command: 'setApiKey', envVar, apiKey: value.trim() });
+    vscode.postMessage({ command: 'setApiKey', toolId, envVar, apiKey: value.trim() });
     setSaved(true);
     setTimeout(() => {
       setSaved(false);
@@ -95,14 +107,15 @@ function ApiKeyInput({ envVar, onSaved }: { envVar: string; onSaved?: () => void
 export function ToolRow({ tool }: { tool: AITool }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const isReady = tool.authStatus === 'ready';
-  const isApiKeyOnly = !isReady && !tool.authCommand;
+  const isUnknown = tool.authStatus === 'unknown';
+  const isApiKeyOnly = tool.authStatus === 'needs-auth' && !tool.authCommand;
   const hasEnvVars = tool.envVars && tool.envVars.length > 0;
 
   const handleRowClick = () => {
-    if (isReady) {
-      vscode.postMessage({ command: 'runTool', toolCommand: tool.command });
+    if (isReady || isUnknown) {
+      vscode.postMessage({ command: 'runTool', toolId: tool.id, action: 'launch' });
     } else if (tool.authCommand) {
-      vscode.postMessage({ command: 'runTool', toolCommand: tool.authCommand });
+      vscode.postMessage({ command: 'runTool', toolId: tool.id, action: 'connect' });
     } else {
       setMenuOpen(true);
     }
@@ -113,7 +126,7 @@ export function ToolRow({ tool }: { tool: AITool }) {
       <span className="truncate font-medium">{tool.name}</span>
       {!isReady && (
         <span className="hidden shrink-0 text-[10px] text-muted-foreground group-hover:inline">
-          {isApiKeyOnly ? 'Set key' : 'Sign in'}
+          {isUnknown ? 'Status unavailable' : isApiKeyOnly ? 'Set key' : 'Sign in'}
         </span>
       )}
     </div>
@@ -124,10 +137,10 @@ export function ToolRow({ tool }: { tool: AITool }) {
       <TooltipProvider>
         <Tooltip>
           <TooltipTrigger asChild>
-            <StatusDot variant={isReady ? 'success' : 'idle'} />
+            <StatusDot variant={isReady ? 'success' : isUnknown ? 'warn' : 'idle'} />
           </TooltipTrigger>
           <TooltipContent>
-            {isReady ? (tool.connectedVia ? `${tool.connectedVia} is set` : 'Ready') : 'Needs setup'}
+            {authStatusText(tool)}
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>
@@ -164,7 +177,7 @@ export function ToolRow({ tool }: { tool: AITool }) {
             <>
               <Separator className="my-1" />
               {tool.envVars!.map((envVar) => (
-                <ApiKeyInput key={envVar} envVar={envVar} onSaved={() => setMenuOpen(false)} />
+                <ApiKeyInput key={envVar} toolId={tool.id} envVar={envVar} onSaved={() => setMenuOpen(false)} />
               ))}
             </>
           )}

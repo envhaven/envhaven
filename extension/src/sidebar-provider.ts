@@ -2,17 +2,17 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { spawn } from 'child_process';
+import { runHandledAction } from './action-handler';
 import {
   getWorkspaceInfo,
   getTmuxWindows,
-  getToolDefinitionById,
 } from './environment';
 import { snapshot as resourceSnapshot, signalProcess } from './resource-monitor';
 import { TmuxControl } from './tmux-control';
 import * as consoleClient from './consoleClient';
 import {
   TMUX_SESSION,
+  type ConsoleToolAction,
   type ExtensionToWebviewMessage,
   type WebviewToExtensionMessage,
 } from './shared-types';
@@ -74,6 +74,16 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     this._getOrCreateTerminal('Terminal', false).show(false);
   }
 
+  public async reportActionError(error: unknown): Promise<void> {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('envhaven: action failed', error);
+    try {
+      await vscode.window.showErrorMessage(`Action failed: ${message}`);
+    } catch (reportError) {
+      console.error('envhaven: could not show action failure', reportError);
+    }
+  }
+
   private async _refreshTerminalsOnly(): Promise<void> {
     if (this._view) {
       const tmuxWindows = await getTmuxWindows();
@@ -97,9 +107,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       const installedSkills = await consoleClient.listInstalledSkills();
       this._post({ command: 'updateInstalledSkills', installedSkills });
     } catch (err) {
-      // Console unreachable or errored (e.g. a HASHED_PASSWORD-only self-host,
-      // where the token can't be minted) — the sidebar will show an empty Skills
-      // panel. Log so devs can see why in the webview console.
+      // Console unreachable or errored: keep the panel empty and retry next tick.
       console.warn('envhaven: listInstalledSkills failed', err);
     }
   }
@@ -131,13 +139,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       }
     });
 
-    webviewView.webview.onDidReceiveMessage(async (message: WebviewToExtensionMessage) => {
+    webviewView.webview.onDidReceiveMessage((message: WebviewToExtensionMessage) =>
+      runHandledAction(async () => {
       switch (message.command) {
         case 'ready': {
-          this._refreshTerminalsOnly();
-          this.refresh();
-          this._refreshResources();
-          void this._refreshInstalledSkills();
+          // Terminal and polling first: neither may wait on the slowest read
+          // below, and a failed read must not skip them.
           const hasOpenEditors = vscode.window.visibleTextEditors.length > 0;
           const hasOpenTerminals = vscode.window.terminals.length > 0;
           if (!hasOpenEditors && !hasOpenTerminals) {
@@ -146,16 +153,22 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             terminal.show(true);
           }
           this._startPolling();
+          await Promise.all([
+            this._refreshTerminalsOnly(),
+            this.refresh(),
+            this._refreshResources(),
+            this._refreshInstalledSkills(),
+          ]);
           break;
         }
 
         case 'runTool':
-          this.runAiTool(message.toolCommand);
+          await this.runAiTool(message.toolId, message.action);
           break;
 
         case 'openToolDocs':
           if (message.url) {
-            vscode.env.openExternal(vscode.Uri.parse(message.url));
+            await vscode.env.openExternal(vscode.Uri.parse(message.url));
           }
           break;
 
@@ -174,8 +187,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           break;
 
         case 'setApiKey':
-          if (message.envVar && message.apiKey) {
-            await this._setApiKey(message.envVar, message.apiKey);
+          if (message.toolId && message.envVar && message.apiKey) {
+            await this._setApiKey(message.toolId, message.envVar, message.apiKey);
             await this.refresh();
           }
           break;
@@ -223,11 +236,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           break;
 
         case 'openDocs':
-          vscode.env.openExternal(vscode.Uri.parse('https://github.com/envhaven/envhaven/tree/master/docs'));
+          await vscode.env.openExternal(vscode.Uri.parse('https://github.com/envhaven/envhaven/tree/master/docs'));
           break;
 
         case 'openPlatform':
-          vscode.env.openExternal(vscode.Uri.parse('https://envhaven.com'));
+          await vscode.env.openExternal(vscode.Uri.parse('https://envhaven.com'));
           break;
 
         case 'killProcess': {
@@ -343,11 +356,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           break;
         }
       }
-    });
+      }, (error) => this.reportActionError(error))
+    );
   }
 
   private _startPolling(): void {
-    if (this._pollingInterval) return;
+    if (this._pollingInterval || !this._view?.visible) return;
     // Terminal state is pushed via tmux control mode; this poll is only a
     // safety net + the cadence for workspace info and /proc snapshots.
     this._pollingInterval = setInterval(() => {
@@ -377,187 +391,65 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Open a fresh window in the base session, creating the session (detached)
-   *  when it does not exist yet — the same dance as the console's ensureWindow. */
-  private async _newWindow(): Promise<void> {
-    const hasSession = await this._runTmuxCommand(`tmux has-session -t ${TMUX_SESSION}`);
-    if (hasSession) {
-      await this._runTmuxCommand(`tmux new-window -t ${TMUX_SESSION} -c /config/workspace`);
+  public async runAiTool(toolId: string, action: ConsoleToolAction): Promise<void> {
+    if (action === 'launch') {
+      await consoleClient.launchTool(toolId);
+    } else if (action === 'connect') {
+      await consoleClient.connectTool(toolId);
     } else {
-      await this._runTmuxCommand(`tmux new-session -d -s ${TMUX_SESSION} -c /config/workspace`);
+      throw new Error(`Unknown tool action: ${String(action)}`);
     }
-  }
-
-  public async runAiTool(command: string): Promise<void> {
-    await this._newWindow();
-    await this._runTmuxCommand(
-      `tmux send-keys -t ${TMUX_SESSION} '${command.replace(/'/g, "'\\''")}' Enter`
-    );
     await this._refreshTerminalsOnly();
     this.openTerminal();
   }
 
-  private async _runTmuxCommand(command: string): Promise<boolean> {
-    return new Promise((resolve) => {
-      const child = spawn('sh', ['-c', command], { stdio: 'pipe' });
-      child.on('close', (code) => resolve(code === 0));
-      child.on('error', () => resolve(false));
-    });
-  }
-
   public async switchTmuxWindow(index: number): Promise<void> {
-    await this._runTmuxCommand(`tmux select-window -t ${TMUX_SESSION}:${index}`);
+    await consoleClient.selectWindow(index);
     await this._refreshTerminalsOnly();
     this.openTerminal();
   }
 
   public async newTmuxWindow(): Promise<void> {
-    await this._newWindow();
+    await consoleClient.newWindow();
     await this._refreshTerminalsOnly();
     this.openTerminal();
   }
 
   private async _killTmuxWindow(index: number): Promise<void> {
-    await this._runTmuxCommand(`tmux kill-window -t ${TMUX_SESSION}:${index}`);
+    await consoleClient.killWindow(index);
     await this._refreshTerminalsOnly();
   }
 
-  private async _setApiKey(envVar: string, apiKey: string): Promise<void> {
-    const homeDir = os.homedir();
-    const zshrcPath = path.join(homeDir, '.zshrc');
-    const bashrcPath = path.join(homeDir, '.bashrc');
-
-    const exportLine = `export ${envVar}="${apiKey}"`;
-    const marker = `export ${envVar}=`;
-
-    const updateRcFile = async (rcPath: string): Promise<boolean> => {
-      try {
-        let content = '';
-        if (fs.existsSync(rcPath)) {
-          content = fs.readFileSync(rcPath, 'utf-8');
-        }
-
-        const lines = content.split('\n');
-        const existingIdx = lines.findIndex((line) => line.startsWith(marker));
-
-        if (existingIdx >= 0) {
-          lines[existingIdx] = exportLine;
-        } else {
-          if (content.length > 0 && !content.endsWith('\n')) {
-            lines.push('');
-          }
-          lines.push(exportLine);
-        }
-
-        fs.writeFileSync(rcPath, lines.join('\n'));
-        return true;
-      } catch {
-        return false;
-      }
-    };
-
-    const zshUpdated = await updateRcFile(zshrcPath);
-    const bashUpdated = await updateRcFile(bashrcPath);
-
-    if (zshUpdated || bashUpdated) {
-      // No refresh here — the setApiKey handler refreshes after we return, and the
-      // console reflects the now-connected tool by re-reading the rc file we just
-      // wrote (its source of truth, not this host's process.env).
-      const updated = [zshUpdated && '.zshrc', bashUpdated && '.bashrc'].filter(Boolean) as string[];
-      const files = updated.join(' and ');
-      vscode.window.showInformationMessage(
-        `${envVar} saved to ${files}. Reload terminal or run: source ~/${updated[0]}`
-      );
-    } else {
-      vscode.window.showErrorMessage(`Failed to save ${envVar} to rc files`);
+  private async _setApiKey(toolId: string, envVar: string, apiKey: string): Promise<void> {
+    try {
+      await consoleClient.setToolApiKey(toolId, envVar, apiKey);
+      vscode.window.showInformationMessage(`${envVar} saved. New terminals will use it.`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(`Failed to save ${envVar}: ${message}`);
     }
   }
 
-  /**
-   * Disconnect a tool by:
-   *  - removing every `export <envVar>=...` line for that tool from ~/.zshrc and
-   *    ~/.bashrc (the reverse of _setApiKey),
-   *  - deleting every auth file the tool's definition lists (e.g. claude's
-   *    ~/.claude/.credentials.json), matching what an explicit CLI logout would
-   *    remove.
-   * Auth status itself is the console's read of this container (rc files + auth
-   * files + the container env), so we refresh afterwards to reflect it. A key set
-   * in the container's own environment can't be cleared from here — that's a
-   * deployment setting, not a UI sign-out. Installed state is left alone; this is
-   * auth-only.
-   */
   private async _signOutTool(toolId: string): Promise<void> {
-    const def = getToolDefinitionById(toolId);
-    if (!def) {
-      vscode.window.showErrorMessage(`Unknown tool: ${toolId}`);
-      return;
-    }
-
-    const homeDir = os.homedir();
-    const removedEnvVars: string[] = [];
-    const removedFiles: string[] = [];
-
-    // 1. Strip `export VAR=...` lines for this tool from both rc files,
-    //    track which ones we actually removed so the toast tells the truth.
-    for (const envVar of def.envVars) {
-      const marker = `export ${envVar}=`;
-      let strippedFromRc = false;
-      for (const rc of ['.zshrc', '.bashrc']) {
-        const rcPath = path.join(homeDir, rc);
-        try {
-          if (!fs.existsSync(rcPath)) continue;
-          const content = fs.readFileSync(rcPath, 'utf-8');
-          const lines = content.split('\n');
-          const kept = lines.filter((line) => !line.startsWith(marker));
-          if (kept.length !== lines.length) {
-            fs.writeFileSync(rcPath, kept.join('\n'));
-            strippedFromRc = true;
-          }
-        } catch (err) {
-          // Continue so one unreadable/unwritable rc file doesn't prevent
-          // cleaning the other. Log so issues are visible during debugging.
-          console.warn(`envhaven: failed to strip ${envVar} from ${rcPath}`, err);
-        }
+    try {
+      const result = await consoleClient.signOutTool(toolId);
+      if (result.instruction) {
+        this.openTerminal();
+        vscode.window.showInformationMessage(result.instruction);
+      } else {
+        vscode.window.showInformationMessage('Signed out of tool');
       }
-      if (strippedFromRc) removedEnvVars.push(envVar);
-    }
-
-    // 2. Delete the auth files the tool definition lists. Resolve each path
-    //    and assert it stays under $HOME so a malformed tool-def entry with
-    //    `..` segments can't walk out and unlink arbitrary files.
-    const homeBoundary = homeDir.endsWith(path.sep) ? homeDir : homeDir + path.sep;
-    for (const rel of def.authFiles) {
-      const full = path.resolve(homeDir, rel);
-      if (full !== homeDir && !full.startsWith(homeBoundary)) {
-        console.warn(
-          `envhaven: refusing to delete auth file outside $HOME: ${rel} resolved to ${full}`
-        );
-        continue;
+    } catch (err) {
+      // A 500 with an instruction is a sign-out that stopped partway, possibly
+      // after opening the vendor's logout window; a 409 conflict changed nothing.
+      if (err instanceof consoleClient.ConsoleRequestError && err.status === 500 && err.instruction) {
+        this.openTerminal();
       }
-      try {
-        if (fs.existsSync(full)) {
-          fs.unlinkSync(full);
-          removedFiles.push(rel);
-        }
-      } catch (err) {
-        console.warn(`envhaven: failed to delete auth file ${full}`, err);
-      }
+      const message = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(`Failed to sign out: ${message}`);
+    } finally {
+      await this.refresh();
     }
-
-    // 3. Refresh so the console re-reads auth (rc + auth files) and the sidebar
-    //    reflects the new status.
-    await this.refresh();
-
-    const summary = [
-      removedEnvVars.length > 0 ? `cleared ${removedEnvVars.join(', ')}` : null,
-      removedFiles.length > 0 ? `removed ${removedFiles.join(', ')}` : null,
-    ]
-      .filter(Boolean)
-      .join(', ');
-
-    vscode.window.showInformationMessage(
-      summary ? `Signed out of ${def.name} — ${summary}` : `Signed out of ${def.name}`
-    );
   }
 
   /**

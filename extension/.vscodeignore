@@ -20,3 +20,10 @@ esbuild.mjs
 *.md
 .eslintrc*
 pnpm-lock.yaml
+bun.lock
+bunfig.toml
+webview/bun.lock
+webview/bunfig.toml
+e2e/**
+test-results/**
+webview/test-results/**

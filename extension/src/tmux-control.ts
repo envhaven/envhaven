@@ -1,5 +1,4 @@
 import { spawn, type ChildProcess } from 'child_process';
-import { execSafe } from './environment';
 
 export type TmuxEvent = 'change' | 'disconnect';
 
@@ -27,14 +26,12 @@ export class TmuxControl {
 
   async start(): Promise<void> {
     if (this.proc || this.disposed) return;
-    try {
-      await execSafe(
-        `tmux has-session -t ${this.sessionName} 2>/dev/null || tmux new-session -d -s ${this.sessionName} -c /config/workspace`
-      );
-    } catch {
-      /* fall through — attach will fail loudly if the session really isn't there */
-    }
-    const proc = spawn('tmux', ['-C', 'attach-session', '-t', this.sessionName], {
+    // Observation only. The console action API owns session/window creation; if
+    // no session exists yet, attach exits and the reconnect loop waits for one.
+    // -N (tmux 3.2+) stops attach-session from starting a server, and loading
+    // tmux.conf, on every retry while no server runs. `=name` matches the session
+    // exactly, so a missing base session never falls back to a prefix match.
+    const proc = spawn('tmux', ['-N', '-C', 'attach-session', '-t', `=${this.sessionName}`], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     proc.stdout?.on('data', (chunk: Buffer) => this._onData(chunk));

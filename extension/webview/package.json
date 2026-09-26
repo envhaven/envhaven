@@ -2,6 +2,7 @@
   "name": "envhaven-webview",
   "private": true,
   "type": "module",
+  "packageManager": "bun@1.3.5",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -33,6 +34,7 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
+    "@types/bun": "^1.3.14",
     "@types/react": "^18.3.14",
     "@types/react-dom": "^18.3.3",
     "@types/vscode-webview": "^1.57.5",
