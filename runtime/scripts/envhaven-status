@@ -25,47 +25,6 @@ else
   RST="" BLUE="" LBLUE="" LBLUEB="" GREY="" RULE="" BODY="" AMBER=""
 fi
 
-TOOL_DEFS_JSON="/opt/envhaven/tool-definitions.json"
-
-command_exists() { command -v "$1" >/dev/null 2>&1; }
-has_nonempty_json() { [[ -f "$1" ]] && [[ -s "$1" ]] && grep -qE '[^{}\[\][:space:]]' "$1" 2>/dev/null; }
-
-# True if VAR is exported with a non-empty value (export VAR=val) in the user's rc
-# files. Bare VAR=val is shell-local and invisible to launched tools, so it does not
-# count. Mirrors the Go console's parseRcEnvVars (console/tools.go), so the banner
-# agrees with the dashboard's tool grid and the editor sidebar even when this shell
-# hasn't sourced the rc export yet.
-rc_has_var() {
-  local var="$1"
-  grep -qE "^export[[:space:]]+${var}=[\"']?[^\"']" "$HOME/.zshrc" "$HOME/.bashrc" 2>/dev/null
-}
-
-# Auth status for a tool from the shared catalog. Returns 0 if signed in.
-check_tool_auth() {
-  local tool_id="$1" tool_config env_vars auth_check auth_files var file full_path
-  tool_config=$(jq -r ".tools[] | select(.id == \"$tool_id\")" "$TOOL_DEFS_JSON" 2>/dev/null)
-  [[ -z "$tool_config" ]] && return 1
-  env_vars=$(echo "$tool_config" | jq -r '.envVars[]?' 2>/dev/null)
-  for var in $env_vars; do
-    [[ -n "${!var:-}" ]] && return 0
-    rc_has_var "$var" && return 0
-  done
-  auth_check=$(echo "$tool_config" | jq -r '.authCheck // empty' 2>/dev/null)
-  if [[ "$auth_check" == "goose" ]]; then
-    [[ -f "$HOME/.config/goose/config.yaml" ]] && grep -q 'GOOSE_PROVIDER:' "$HOME/.config/goose/config.yaml" 2>/dev/null && return 0
-  fi
-  auth_files=$(echo "$tool_config" | jq -r '.authFiles[]?' 2>/dev/null)
-  for file in $auth_files; do
-    full_path="$HOME/$file"
-    if [[ "$file" == *.json ]]; then
-      has_nonempty_json "$full_path" && return 0
-    elif [[ -f "$full_path" ]]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
 get_ssh_string() {
   local host="${ENVHAVEN_SSH_HOST:-}"
   local port="${ENVHAVEN_SSH_PORT:-$([[ "${ENVHAVEN_MANAGED:-}" == "true" ]] && echo 22 || echo 2222)}"
@@ -98,11 +57,10 @@ if [[ -f /tmp/envhaven-version-status ]]; then
   [[ "$vline" == *⚡* ]] && UPDATE=$(printf '%s' "$vline" | sed -E 's/.*⚡[[:space:]]*([^[:space:]]+)[[:space:]]+available.*/\1/')
 fi
 
-# Tools already signed in, catalog order, names only.
+# The console binary owns catalog, installed, and authentication semantics. This
+# script only formats the returned ready names into the banner.
 CONNECTED=()
-while IFS=$'\t' read -r tid tname; do
-  check_tool_auth "$tid" && CONNECTED+=("$tname")
-done < <(jq -r '.tools[] | [.id, .name] | @tsv' "$TOOL_DEFS_JSON" 2>/dev/null)
+mapfile -t CONNECTED < <(/opt/envhaven/bin/envhaven-console --ready-tools)
 
 # Comma-join the connected names, clamping to a width budget with "and N more".
 NAMES=""

@@ -14,15 +14,24 @@ docs/
 # also covers a root-level node_modules.
 **/node_modules
 
-# Extension build artifacts (source is copied, not artifacts)
+# Extension build artifacts (source is copied, not artifacts), the same set .gitignore
+# excludes. A stale webview/build is not inert: Tailwind scans it for class names, so a
+# checkout that had built the extension baked unused CSS into the image.
 extension/out
+extension/dist
 extension/*.vsix
+extension/tsconfig.tsbuildinfo
+extension/webview/build
+extension/webview/dist
+extension/webview/.vite
+extension/webview/tsconfig.tsbuildinfo
 
 # Console build artifact (rebuilt in Docker; churns via the dev test loop)
 console/console
 
-# Test scripts (not needed in image)
+# Test scripts and Playwright output (not needed in image)
 test/
+**/test-results
 
 # Editor/IDE
 .vscode

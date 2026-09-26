@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tool=${0##*/}
+catalog=${ENVHAVEN_TOOL_DEFS_JSON:-/opt/envhaven/tool-definitions.json}
+bin_dir=${ENVHAVEN_TOOL_BIN_DIR:-/opt/envhaven/bin}
+real="$bin_dir/$tool"
+
+if [[ ! -x "$real" ]]; then
+    printf 'envhaven: real executable for %s is unavailable: %s\n' "$tool" "$real" >&2
+    exit 127
+fi
+
+definition=$(jq -ce --arg command "$tool" \
+    '.tools[] | select(.command == $command and (.launchArgs | length > 0))' \
+    "$catalog") || {
+    printf 'envhaven: launch defaults for %s are missing from %s\n' "$tool" "$catalog" >&2
+    exit 1
+}
+
+# Preparation is advisory, as it is at boot: a failed prepare must not stop the tool
+# itself, whether the call is a session, `--version`, or the console's auth probe.
+mapfile -t prepare < <(jq -r '.prepareCommand[]?' <<<"$definition")
+if (( ${#prepare[@]} )) && ! "${prepare[@]}"; then
+    printf 'envhaven: %s preparation failed; starting without it\n' "$tool" >&2
+fi
+
+mapfile -t defaults < <(jq -r '.launchArgs[]' <<<"$definition")
+when=$(jq -r '.launchArgsWhen // "always"' <<<"$definition")
+if [[ "$when" == "bare" && $# -gt 0 ]]; then
+    exec "$real" "$@"
+fi
+exec "$real" "${defaults[@]}" "$@"

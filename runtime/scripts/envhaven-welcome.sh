@@ -2,6 +2,9 @@
 # Auto-attach to persistent tmux session
 
 [[ $- != *i* ]] && return
+# code-server runs an interactive shell as root to resolve its environment. It is
+# not a terminal and must not create the shared tmux session.
+[[ "${VSCODE_RESOLVING_ENVIRONMENT:-}" == "1" ]] && return
 [[ -n "$TMUX" ]] && return
 [[ "${ENVHAVEN_SKIP_WELCOME:-}" == "1" ]] && return
 command -v tmux &>/dev/null || return
@@ -12,7 +15,9 @@ SESSION="envhaven"
 #   - SSH sessions (sshd sets SSH_CONNECTION)
 #   - the raw self-host console (the console server sets ENVHAVEN_CONSOLE_SESSION)
 # The managed dashboard console (Cockpit) and code-server terminals fall through to
-# the base session, where tmux.conf leaves the status bar off.
+# the base session, where tmux.conf leaves the status bar off. The managed echo harness
+# also sets a unique grouped view, but explicitly keeps its status off so it measures the
+# same terminal geometry as the dashboard.
 if [[ -n "${ENVHAVEN_CONSOLE_SESSION:-}" ]]; then
   VIEW="$ENVHAVEN_CONSOLE_SESSION"
 elif [[ -n "${SSH_CONNECTION:-}" ]]; then
@@ -26,8 +31,9 @@ fi
 # shared session. Fall back to the base (no separate view) instead.
 [[ "$VIEW" == "$SESSION" ]] && VIEW=""
 
-# Base session (status off): the managed console + code-server attach here.
-tmux has-session -t "$SESSION" 2>/dev/null || \
+# Base session (status off): the managed console + code-server attach here. Its targets
+# are exact (`=`): a bare name also matches a session it prefixes, like `envhaven-work`.
+tmux has-session -t "=$SESSION" 2>/dev/null || \
   tmux new-session -d -s "$SESSION" -c /config/workspace "zsh -c 'source ~/.zshrc 2>/dev/null; envhaven; exec zsh'"
 # The base has to actually be there before anything attaches to it or groups onto it, and
 # the create above can fail (a missing /config/workspace, a zsh that dies on a broken
@@ -37,8 +43,8 @@ tmux has-session -t "$SESSION" 2>/dev/null || \
 # user's work with it when the tab closes. Nothing to attach to means we exec nothing:
 # return and let the login land in a plain shell, which is the one outcome that always
 # leaves a way back in.
-tmux has-session -t "$SESSION" 2>/dev/null || return
-[[ -z "$VIEW" ]] && exec tmux attach-session -t "$SESSION"
+tmux has-session -t "=$SESSION" 2>/dev/null || return
+[[ -z "$VIEW" ]] && exec tmux attach-session -t "=$SESSION"
 
 # Bar-showing client: attach a grouped session that SHARES the base windows but keeps
 # its own status line (and its own current window). It self-destroys on disconnect so
@@ -59,5 +65,12 @@ tmux has-session -t "$SESSION" 2>/dev/null || return
 # would leave a view that is never swept — one leaked session per SSH login. The bar
 # costs one SIGWINCH as it claims its rows (measured: 24 -> 21), a single repaint at
 # connect, and the browser sends its own resize on socket open anyway.
+if [[ "${_ENVHAVEN_CONSOLE_STATUS:-on}" == "off" ]]; then
+  if [[ "${_ENVHAVEN_CONSOLE_DESTROY_UNATTACHED:-on}" == "off" ]]; then
+    exec tmux new-session -A -t "$SESSION" -s "$VIEW" \; set-option -t "$VIEW" status off
+  fi
+  exec tmux new-session -A -t "$SESSION" -s "$VIEW" \; \
+    set-option -t "$VIEW" destroy-unattached on \; set-option -t "$VIEW" status off
+fi
 exec tmux new-session -A -t "$SESSION" -s "$VIEW" \; \
   set-option -t "$VIEW" destroy-unattached on \; set-option -t "$VIEW" status 3

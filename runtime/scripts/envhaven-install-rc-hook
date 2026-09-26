@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Keep EnvHaven's one startup line in a shell's rc file.
+#
+# bash: ~/.bashrc sources the bash additions, because bash has no drop-in directory.
+# zsh:  the last line of ~/.zshrc loads the credential store for zsh that never runs the
+#       Oh My Zsh drop-in (a custom ZSH_CUSTOM, no Oh My Zsh). The drop-in loads it too,
+#       right after its welcome, so a .zshrc without this line still gets the keys, and
+#       loading twice is harmless. Both run after the welcome has exec'd tmux, so the
+#       tmux server that the outer shell starts never inherits stored keys (tmux would
+#       copy them into every later window, where removing a key could not reach). The
+#       `if` form ends .zshrc with status 0 when no store exists, so the first prompt
+#       shows no failure.
+#
+# The rc file may be an in-HOME dotfiles symlink: the file it resolves to is replaced
+# through a same-directory temporary file and rename, so the link survives. Paths that
+# resolve outside HOME are refused.
+case ${1:-} in
+    bash)
+        rc=.bashrc
+        hook='[ -f /defaults/bashrc-additions ] && . /defaults/bashrc-additions'
+        ;;
+    zsh)
+        rc=.zshrc
+        hook='if [ -r "$HOME/.config/envhaven/environment" ]; then . "$HOME/.config/envhaven/environment"; fi'
+        ;;
+    *)
+        printf 'usage: envhaven-install-rc-hook bash|zsh\n' >&2
+        exit 2
+        ;;
+esac
+
+home=${HOME:-/config}
+home_real=$(readlink -f -- "$home")
+target=$(readlink -m -- "$home/$rc")
+
+case "$target" in
+    "$home_real"|"$home_real"/*) ;;
+    *) printf 'envhaven: refusing to update %s outside HOME\n' "$rc" >&2; exit 1 ;;
+esac
+
+if grep -qxF "$hook" "$target" 2>/dev/null; then
+    chown --reference="$home_real" "$target"
+    exit 0
+fi
+
+mkdir -p "$(dirname "$target")"
+tmp=$(mktemp "$(dirname "$target")/$rc.envhaven.XXXXXX")
+trap 'rm -f -- "$tmp"' EXIT
+# A signal must end the script: a trap that only cleaned up would let it carry on, write the
+# hook alone into a fresh temporary file, and rename that over the user's rc file.
+trap 'exit 1' HUP INT TERM
+chmod 600 "$tmp"
+
+if [[ -s "$target" ]]; then
+    # Older images appended the bash lines below to ~/.bashrc themselves; the hook
+    # replaces them. They never wrote ~/.zshrc, so it is kept as it is.
+    if [[ $rc == .zshrc ]]; then
+        cat -- "$target" >"$tmp"
+    elif grep -vxF -f - -- "$target" >"$tmp" <<'EOF'
+# EnvHaven additions for bash
+# EnvHaven bash configuration
+# Welcome message on first login
+# Convenience alias
+[ -f /defaults/envhaven-welcome.sh ] && source /defaults/envhaven-welcome.sh
+alias envhaven-help='cat /config/workspace/AGENTS.md'
+alias gemini='gemini --yolo'
+alias agy='agy --dangerously-skip-permissions'
+alias grok='grok --always-approve'
+alias kimi='kimi --auto'
+alias muse='muse --disable-approval'
+EOF
+    then
+        :
+    elif [[ $? -ne 1 ]]; then
+        printf 'envhaven: failed to read %s\n' "$target" >&2
+        exit 1
+    fi
+    if [[ -s "$tmp" && $(tail -c1 "$tmp" | wc -l) -eq 0 ]]; then
+        printf '\n' >>"$tmp"
+    fi
+fi
+printf '%s\n' "$hook" >>"$tmp"
+
+if [[ -e "$target" ]]; then
+    chmod --reference="$target" "$tmp"
+else
+    chmod 644 "$tmp"
+fi
+chown --reference="$home_real" "$tmp"
+mv -fT -- "$tmp" "$target"
+trap - EXIT HUP INT TERM

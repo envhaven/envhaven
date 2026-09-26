@@ -3,15 +3,45 @@
 # Writes to /tmp/envhaven-version-status
 
 CURRENT="${ENVHAVEN_VERSION:-dev}"
+STATUS="$CURRENT"
+STATUS_FILE="${ENVHAVEN_VERSION_STATUS_FILE:-/tmp/envhaven-version-status}"
 
-if [[ "${ENVHAVEN_MANAGED:-}" == "true" ]] && [[ -n "${_ENVHAVEN_API_URL:-}" ]]; then
-  LATEST=$(curl -sf "$_ENVHAVEN_API_URL/v1/version" 2>/dev/null | jq -r '.latest // empty')
-  
-  if [[ -n "$LATEST" ]] && [[ "$CURRENT" != "$LATEST" ]]; then
-    echo "$CURRENT ⚡ $LATEST available" > /tmp/envhaven-version-status
-  else
-    echo "$CURRENT" > /tmp/envhaven-version-status
-  fi
-else
-  echo "$CURRENT" > /tmp/envhaven-version-status
+# Whether release $1 is older than release $2. Only strict releases (vX.Y.Z or X.Y.Z)
+# compare, numerically, so 1.9.9 is older than 1.10.0; a prerelease, a label, or an image
+# newer than the announcement is never an update. This is the rule the platform applies
+# before it updates a workspace (imageVersionNeedsUpdate in the platform repo's
+# packages/shared/src/image-version.ts).
+older_release() {
+  local release='^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+  local -a current latest
+  local i
+  [[ $1 =~ $release ]] || return 1
+  current=("${BASH_REMATCH[@]:1:3}")
+  [[ $2 =~ $release ]] || return 1
+  latest=("${BASH_REMATCH[@]:1:3}")
+  for i in 0 1 2; do
+    if (( current[i] != latest[i] )); then
+      (( current[i] < latest[i] ))
+      return
+    fi
+  done
+  return 1
+}
+
+# A dev build (`dev` / `dev-<sha>`) is off master, at or ahead of any tag, so it never
+# asks the platform (the sidebar agrees; see extension/src/environment.ts).
+if [[ ! "$CURRENT" =~ ^dev(-|$) && "${ENVHAVEN_MANAGED:-}" == "true" && -n "${_ENVHAVEN_API_URL:-}" ]]; then
+  # Managed releases are announced as one immutable object. Ignore partial/legacy responses
+  # rather than showing an update whose digest was never authorized by the platform.
+  LATEST=$(curl -sf --max-time 3 "$_ENVHAVEN_API_URL/v1/version" 2>/dev/null | jq -r '
+    . as $release
+    | if ($release.latest | type) == "string"
+      and ($release.latestDigest | type) == "string"
+      and ($release.latestDigest | test("^sha256:[0-9a-f]{64}$"))
+      and ($release.imageReference | type) == "string"
+      and ($release.imageReference | endswith("@" + $release.latestDigest))
+    then $release.latest else empty end
+  ')
+  older_release "$CURRENT" "$LATEST" && STATUS="$CURRENT ⚡ $LATEST available"
 fi
+echo "$STATUS" > "$STATUS_FILE"

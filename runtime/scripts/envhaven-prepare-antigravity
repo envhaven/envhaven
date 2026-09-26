@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+force=false
+if [[ ${1:-} == "--force" ]]; then
+    force=true
+elif [[ $# -gt 0 ]]; then
+    printf 'usage: envhaven-prepare-antigravity [--force]\n' >&2
+    exit 2
+fi
+
+home=${HOME:-/config}
+settings_dir="$home/.gemini/antigravity-cli"
+settings="$settings_dir/settings.json"
+marker="$settings_dir/.model-provider.envhaven"
+
+# No key means nothing to prepare. This runs before every agy launch, so it exits ahead
+# of the path checks below: a keyless `agy --version` must not trip over odd settings.
+if [[ "$force" != true ]] && [[ -z ${GEMINI_API_KEY:-} ]] && \
+    ! grep -qE "^export[[:space:]]+GEMINI_API_KEY=[\"']?[^\"']" \
+       "$home/.zshrc" "$home/.bashrc" 2>/dev/null; then
+    exit 0
+fi
+
+target=$(readlink -m -- "$settings")
+marker_target=$(readlink -m -- "$marker")
+home_real=$(readlink -f -- "$home")
+case "$target:$marker_target" in
+    "$home_real"/*:"$home_real"/*) ;;
+    *) printf 'envhaven: refusing to update Antigravity settings outside HOME\n' >&2; exit 1 ;;
+esac
+for path in "$settings" "$marker"; do
+    if [[ ( -e "$path" || -L "$path" ) && ! -f "$path" ]]; then
+        printf 'envhaven: refusing non-regular Antigravity state: %s\n' "$path" >&2
+        exit 1
+    fi
+done
+
+if [[ $EUID -eq 0 ]]; then
+    printf 'envhaven: Antigravity preparation must run as the workspace user\n' >&2
+    exit 1
+fi
+
+if [[ -f "$settings" ]]; then
+    current=$(jq -er '.modelProvider // empty' "$settings" 2>/dev/null || true)
+    if [[ "$current" == "gemini" ]]; then
+        exit 0
+    fi
+    if [[ "$force" != true && -n "$current" ]]; then
+        exit 0
+    fi
+fi
+
+mkdir -p "$settings_dir"
+
+tmp=$(mktemp "$settings_dir/.settings.json.envhaven.XXXXXX")
+marker_tmp=""
+cleanup() {
+    if [[ -n "$tmp" ]]; then
+        rm -f -- "$tmp"
+    fi
+    if [[ -n "$marker_tmp" ]]; then
+        rm -f -- "$marker_tmp"
+    fi
+}
+trap cleanup EXIT HUP INT TERM
+chmod 600 "$tmp"
+
+if [[ -f "$target" ]]; then
+    # jq turns an empty file into no output and a zero exit, which would publish empty
+    # settings, so anything but a single JSON object is refused before it is rewritten.
+    if ! jq -se 'length == 1 and (.[0] | type) == "object"' "$target" >/dev/null 2>&1 \
+        || ! jq '.modelProvider = "gemini"' "$target" >"$tmp"; then
+        printf 'envhaven: Antigravity settings are not a JSON object: %s\n' "$target" >&2
+        exit 1
+    fi
+    chmod --reference="$target" "$tmp"
+else
+    printf '{\n  "modelProvider": "gemini"\n}\n' >"$tmp"
+fi
+
+# The marker records ownership of this one setting, without adding private keys
+# to Antigravity's JSON. Publish it first, so interruption cannot leave an
+# EnvHaven-selected provider with no ownership record.
+marker_tmp=$(mktemp "$settings_dir/.model-provider.envhaven.XXXXXX")
+printf 'gemini\n' >"$marker_tmp"
+chmod 600 "$marker_tmp"
+mv -f -- "$marker_tmp" "$marker_target"
+marker_tmp=""
+mv -f -- "$tmp" "$target"
+tmp=""
+trap - EXIT HUP INT TERM
+printf 'Antigravity CLI: modelProvider=gemini\n'

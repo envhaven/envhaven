@@ -1,6 +1,12 @@
 # EnvHaven zsh configuration
 
+# Oh My Zsh loads custom/*.zsh before resolving its theme. Replace only its
+# stock default; a user-selected theme remains authoritative.
+[ "${ZSH_THEME:-}" = "robbyrussell" ] && ZSH_THEME=envhaven
+
+# Welcome first, so the tmux server it starts never inherits the stored keys below. The
+# last line of ~/.zshrc loads them again for zsh that never runs this drop-in.
 [ -f /defaults/envhaven-welcome.sh ] && source /defaults/envhaven-welcome.sh
+[ -r "$HOME/.config/envhaven/environment" ] && . "$HOME/.config/envhaven/environment"
 
 alias envhaven-help='cat /config/workspace/AGENTS.md'
-alias gemini='gemini --yolo'

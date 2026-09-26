@@ -1,0 +1,3 @@
+# EnvHaven zsh environment
+# Disable oh-my-zsh permission check (linuxserver container uses shared volumes)
+ZSH_DISABLE_COMPFIX=true

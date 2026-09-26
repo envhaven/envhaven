@@ -38,6 +38,72 @@ else
     echo "Codex: config.toml exists, skipping"
 fi
 
+# Kimi Code CLI: mise bypasses the regional installer, so give a fresh workspace the
+# global channel's marker. A persisted login in config.toml outranks this marker, and an
+# existing marker is never changed.
+if ! s6-setuidgid abc env HOME=/config bash -c '
+    set -euo pipefail
+    dir="$HOME/.kimi-code"
+    region="$dir/region"
+    owner="$(id -u):$(id -g)"
+
+    if [[ -L "$HOME" || ! -d "$HOME" || $(stat -c "%u:%g" -- "$HOME") != "$owner" ]]; then
+        printf "Kimi Code CLI: refusing unsafe HOME: %s\n" "$HOME" >&2
+        exit 1
+    fi
+    if [[ -L "$dir" ]]; then
+        printf "Kimi Code CLI: refusing symlinked config directory: %s\n" "$dir" >&2
+        exit 1
+    fi
+    if [[ ! -e "$dir" ]]; then
+        mkdir -- "$dir"
+        chmod 700 "$dir"
+    elif [[ ! -d "$dir" || $(stat -c "%u:%g" -- "$dir") != "$owner" ]]; then
+        printf "Kimi Code CLI: refusing config directory not owned by abc: %s\n" "$dir" >&2
+        exit 1
+    fi
+    if [[ -L "$region" ]]; then
+        printf "Kimi Code CLI: refusing symlinked region marker: %s\n" "$region" >&2
+        exit 1
+    fi
+    if [[ -f "$region" ]]; then
+        printf "Kimi Code CLI: region exists, skipping\n"
+        exit 0
+    fi
+    if [[ -e "$region" ]]; then
+        printf "Kimi Code CLI: refusing non-regular region marker: %s\n" "$region" >&2
+        exit 1
+    fi
+
+    tmp=$(mktemp "$dir/.region.envhaven.XXXXXX")
+    trap '\''rm -f -- "$tmp"'\'' EXIT HUP INT TERM
+    printf "global\n" > "$tmp"
+    chmod 600 "$tmp"
+    sync -f "$tmp"
+    if ! ln -- "$tmp" "$region"; then
+        if [[ -f "$region" && ! -L "$region" ]]; then
+            printf "Kimi Code CLI: region appeared concurrently, skipping\n"
+            exit 0
+        fi
+        printf "Kimi Code CLI: refusing region marker created concurrently: %s\n" "$region" >&2
+        exit 1
+    fi
+    rm -f -- "$tmp"
+    tmp=""
+    sync -f "$dir"
+    trap - EXIT HUP INT TERM
+    printf "Kimi Code CLI: global region installed\n"
+'; then
+    echo "WARNING: Kimi Code CLI region was not initialized"
+fi
+
+# Antigravity needs modelProvider=gemini before it reads GEMINI_API_KEY. The
+# same helper also runs immediately after the dashboard saves a key and before
+# every agy launch; boot remains the fallback for container-provided keys.
+if ! s6-setuidgid abc env HOME=/config /usr/local/lib/envhaven/envhaven-prepare-antigravity; then
+    echo "WARNING: Antigravity provider preparation was skipped"
+fi
+
 # Goose: fix log directory ownership (goose crashes if root owns these)
 GOOSE_STATE="/config/.local/state/goose"
 if [ -d "$GOOSE_STATE" ]; then

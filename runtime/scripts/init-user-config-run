@@ -25,9 +25,10 @@ if [ ! -e /config/.local/bin/claude ]; then
     chown -h abc:abc /config/.local/bin/claude
 fi
 
-# Ensure tool directories are writable by abc for runtime updates (npm install -g, mise install, etc.)
-# Runs in background to avoid blocking startup - only changes files not already owned by abc
-find /mise /opt/envhaven ! -user abc -exec chown abc:abc {} + 2>/dev/null &
+# Ensure installed tools are writable by abc for runtime updates (npm install -g, mise install,
+# etc.). Launch-policy wrappers stay image-owned; users override them through /config/.local/bin.
+# Runs in background to avoid blocking startup and changes only files not already owned by abc.
+/usr/local/lib/envhaven/envhaven-repair-tool-ownership &
 
 SSHD_CONFIG="/etc/ssh/sshd_config"
 if ! grep -q "^AllowUsers" "$SSHD_CONFIG"; then
@@ -66,14 +67,11 @@ if [ "$CURRENT_SHELL" = "/bin/false" ] || [ "$CURRENT_SHELL" = "/usr/sbin/nologi
     fi
 fi
 
-BASHRC="/config/.bashrc"
-if [ -f "$BASHRC" ] && ! grep -q "EnvHaven additions" "$BASHRC" 2>/dev/null; then
-    cat /defaults/bashrc-additions >> "$BASHRC"
-    chown abc:abc "$BASHRC"
-elif [ ! -f "$BASHRC" ]; then
-    cp /defaults/bashrc-additions "$BASHRC"
-    chown abc:abc "$BASHRC"
-fi
+# Bash has no drop-in directory (zsh has $ZSH_CUSTOM), so ~/.bashrc carries one
+# stable source line. The helper performs the one-shot legacy cleanup through a
+# same-directory mktemp + rename, preserving in-HOME dotfile symlinks and refusing
+# paths outside HOME.
+HOME=/config /usr/local/lib/envhaven/envhaven-install-rc-hook bash
 
 # Initialize version status for tmux
 if [[ -x /opt/envhaven/bin/envhaven-version-check ]]; then

@@ -1,6 +1,7 @@
 # EnvHaven bash configuration
 
+# Welcome first, so the tmux server it starts never inherits the stored keys below.
 [ -f /defaults/envhaven-welcome.sh ] && source /defaults/envhaven-welcome.sh
+[ -r "$HOME/.config/envhaven/environment" ] && . "$HOME/.config/envhaven/environment"
 
 alias envhaven-help='cat /config/workspace/AGENTS.md'
-alias gemini='gemini --yolo'

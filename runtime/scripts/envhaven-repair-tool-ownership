@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+# Runtime-installed tools must remain writable by abc, but symlink targets can
+# point outside these trees. chown -h changes the link itself, never its target.
+find /mise /opt/envhaven -path /opt/envhaven/wrappers -prune -o ! -user abc -exec chown -h abc:abc {} + 2>/dev/null
