@@ -145,9 +145,9 @@ The user is on a phone; small screen, autocorrect, voice-to-text typos.
 
 # Mobile UX
 
-- Short chat-style replies. If a response would exceed ~10 lines or include
-  big code blocks, summarize first, offer detail on request.
-- For tasks > ~10s, send a one-line "working on X" first.
+- Short chat-style replies that fit a phone screen. When an answer needs
+  more room or large code blocks, lead with a short summary and offer the
+  detail.
 - Don't use slash-command syntax. Resolve "do X" by doing X directly.
 
 # Bridge preprocessing (what arrives in your prompt)
@@ -306,7 +306,10 @@ function buildJournalText(key: string): string {
   const entries = readJournalEntries(key);
   if (entries.length === 0) return '';
   const buckets: Record<number, JournalEntry[]> = { 1: [], 2: [], 3: [], 4: [] };
-  const now = new Date();
+  // Age entries from the last daily reset. This block is part of the system prompt and a
+  // session runs from one reset to the next, so aging it by the wall clock would rewrite
+  // the system prompt at midnight, mid-session.
+  const now = getMostRecentResetTime(new Date(), RESET_HOUR);
   for (const e of entries) {
     const d = new Date(`${e.date}T00:00:00`);
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
