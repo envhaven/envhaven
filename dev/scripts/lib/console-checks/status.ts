@@ -1,5 +1,4 @@
-// Two checks ported out of the ad-hoc harness: the disconnect surface, and the
-// duplicated composer row.
+// Transport checks and the duplicated-composer regression, ported out of the ad-hoc harness.
 //
 // Neither can be read out of the source. The first needs a real socket to die under a
 // live page, because everything interesting happens in the seconds between the close
@@ -7,8 +6,9 @@
 // underneath the model, which only happens when somebody types through a wrap without
 // pausing.
 import type { Page } from '@playwright/test';
+import { consoleModel } from '../engine';
 import {
-  VIEWPORT, assert, inconclusive, launchApp, quiet, teardownApp, type Check,
+  VIEWPORT, assert, inconclusive, launchApp, probe, quiet, teardownApp, type Check,
 } from '../console-rig';
 
 // ---------------------------------------------------------------------------
@@ -104,22 +104,6 @@ async function consoleAnswers(page: Page, timeoutMs: number): Promise<boolean> {
     if (Date.now() > deadline) return false;
     await Bun.sleep(500);
   }
-}
-
-/**
- * A horizontal rule: 20 or more identical box-drawing characters and nothing else.
- *
- * The composer draws its frame out of U+2500 to U+257F. The length floor is what keeps
- * a stray pair of dashes inside the user's own sentence from reading as the frame.
- */
-function isRuleRow(s: string | null): boolean {
-  if (!s) return false;
-  const t = s.replace(/ +$/, '');
-  if (t.length < 20) return false;
-  const c = t.charCodeAt(0);
-  if (c < 0x2500 || c > 0x257f) return false;
-  for (let i = 1; i < t.length; i++) if (t.charCodeAt(i) !== c) return false;
-  return true;
 }
 
 /**
@@ -235,19 +219,41 @@ export const statusCard: Check = {
       // window is still open by the time the click lands, so the three outcomes stay
       // apart: a failure is the guarded behaviour, a success means the window closed
       // before we got there, and neither means the attempt hung.
+      //
+      // Each mode fails in its own words. Self-host's token fetch fails against the down
+      // console: 'reconnect failed'. A managed console mints the retry's token off-box, so
+      // its SOCKET dies instead and the card lands back on 'session disconnected', exactly
+      // where it stood before the click. There a failure counts only once the card has said
+      // 'reconnecting', or a click that started nothing would pass as a retry that failed.
+      // That state is brief, since the token is cached and the proxy refuses at once, and a
+      // poll only samples once a frame after the click returns. An observer armed before
+      // the click sees every change to the message, so it records the state however short.
+      await page.evaluate(() => {
+        const msg = document.getElementById('statusMsg')!;
+        const w = window as unknown as { __ehRetrySeen?: boolean };
+        w.__ehRetrySeen = false;
+        new MutationObserver(() => {
+          if (msg.textContent === 'reconnecting') w.__ehRetrySeen = true;
+        }).observe(msg, { childList: true, characterData: true, subtree: true });
+      });
       await page.click('#statusBtn');
-      const outcome = await page.waitForFunction(() => {
-        if (document.getElementById('statusMsg')!.textContent === 'reconnect failed') return 'failed';
-        if (!document.getElementById('status')!.classList.contains('show')) return 'reconnected';
+      const outcome = await page.waitForFunction((managed) => {
+        const msg = document.getElementById('statusMsg')!.textContent;
+        const shown = document.getElementById('status')!.classList.contains('show');
+        const seen = (window as unknown as { __ehRetrySeen?: boolean }).__ehRetrySeen === true;
+        if (msg === 'reconnect failed') return 'failed';
+        if (managed && seen && shown && msg === 'session disconnected') return 'failed';
+        if (!shown) return 'reconnected';
         return null;
-      }, null, { timeout: 20000 }).then((h) => h.jsonValue(), () => null);
+      }, rig.isManaged(), { timeout: 20000 }).then((h) => h.jsonValue(), () => null);
 
       if (outcome === 'reconnected') {
         inconclusive('the console answered before the retry landed, so a failed attempt was never observable');
       }
       if (outcome !== 'failed') {
         const stuck = await statusState(page);
-        inconclusive(`a retry against a down console neither failed nor connected within 20s (the card says '${stuck.msg}')`);
+        const started = await page.evaluate(() => (window as unknown as { __ehRetrySeen?: boolean }).__ehRetrySeen === true);
+        inconclusive(`a retry against a down console neither failed nor connected within 20s (the card says '${stuck.msg}'${started ? '' : ' and never said reconnecting'})`);
       }
       const failed = await statusState(page);
       assert(failed.shown && failed.buttonVisible,
@@ -298,7 +304,53 @@ export const statusCard: Check = {
       return 'drop surfaced without touching the grid, retry failed honestly, Reconnect restored the session and the focus';
     } finally {
       await page.keyboard.press('Control+u').catch(() => undefined);
-      await page.close();
+      await rig.closePage(page);
+    }
+  },
+};
+
+export const reconnectInput: Check = {
+  name: 'reconnect-input',
+  what: 'detached input is visibly refused and never replayed into a reattached pane',
+  needsFreshPane: true,
+  async run(rig): Promise<string> {
+    const page = await rig.page(VIEWPORT);
+    const refused = `refusedsecret${Date.now().toString(36)}`;
+    const accepted = `acceptedafter${Date.now().toString(36)}`;
+    try {
+      await rig.restartConsole();
+      const dropped = await waited(page, () =>
+        !window.__ehPredict.safe && document.getElementById('status')!.classList.contains('show'), 20000);
+      if (!dropped) inconclusive('the restart never exposed a disconnected page');
+      if (!(await consoleAnswers(page, 45000))) inconclusive('the console did not return for the reconnect');
+
+      await page.locator('.xterm-helper-textarea').focus();
+      await page.keyboard.type(refused, { delay: 0 });
+      const refusal = await statusState(page);
+      assert(refusal.shown && refusal.buttonVisible,
+        `refused input should leave a visible reconnect choice, got shown=${refusal.shown} button=${refusal.buttonVisible}`);
+      assert(refusal.msg === 'input not sent; reconnect to continue',
+        `the refusal should say no input was sent, it said '${refusal.msg}'`);
+      const detached = await page.evaluate(() => ({ safe: window.__ehPredict.safe, burst: window.__ehPredict.burst }));
+      assert(!detached.safe && detached.burst === null, 'detached input armed or changed the predictor');
+      assert(!(await gridText(page)).includes(refused), 'detached input reached the frozen pane before reconnect');
+
+      await page.click('#statusBtn');
+      const opened = await waited(page, () =>
+        window.__ehPredict.safe && !document.getElementById('status')!.classList.contains('show'), 30000);
+      assert(opened, 'the socket never delivered a fresh safe gate after reconnect');
+      assert(!(await gridText(page)).includes(refused), 'refused input replayed after the authoritative gate');
+
+      await page.keyboard.type(accepted, { delay: 0 });
+      if (!(await quiet(page, 600, 12000))) inconclusive('post-gate input echo never settled');
+      const grid = await gridText(page);
+      assert(!grid.includes(refused), 'refused secret appeared after normal input resumed');
+      const count = grid.split(accepted).length - 1;
+      assert(count === 1, `post-gate marker landed ${count} times instead of once`);
+      return `${refused.length} detached keystrokes refused; fresh post-gate input arrived once`;
+    } finally {
+      await page.keyboard.press('Control+u').catch(() => undefined);
+      await rig.closePage(page);
     }
   },
 };
@@ -328,13 +380,21 @@ export const dupeBox: Check = {
   async run(rig): Promise<string> {
     const page = await rig.page(VIEWPORT);
     try {
-      await launchApp(page, 'claude');
+      // An UPWARD-growing composer, the only kind whose frame moves up: grok's box is
+      // bottom-pinned. (claude's used to drive this; its redesign to a floating box
+      // moved it to the down path, where an upward frame never runs.)
+      await launchApp(page, 'grok');
 
-      const cols = await page.evaluate(() => {
-        const p = window.__ehPredict;
-        return p.text(p.row)?.length ?? 0;
+      const cols = (await probe(page)).cols;
+      // The exact model asset's predicate at the live width, so the invariant below is
+      // judged by the rule the engine clones by rather than by a copy that can drift.
+      const { isFrameRow } = consoleModel().createGeometry({
+        cols: () => cols,
+        rows: () => 0,
+        baseY: () => 0,
+        paneBottom: () => 0,
+        row: () => null,
       });
-      assert(cols > 0, 'could not read the terminal width');
       // Past the wrap and then some. Sized from the live width, so the check carries no
       // constant that only holds at one viewport.
       const sentence = DUPE_SENTENCE.slice(0, cols + 40);
@@ -349,7 +409,7 @@ export const dupeBox: Check = {
         // delta -1 is the upward case, where the wrap pulled the composer up a row.
         if (f.box && f.box.delta === -1) {
           frames++;
-          if (!isRuleRow(f.fromText)) {
+          if (!isFrameRow(f.fromText)) {
             violations++;
             if (!first) first = f;
           }
@@ -380,7 +440,7 @@ export const dupeBox: Check = {
       return `${frames} upward wrap frames over ${sentence.length} characters at ${cols} columns, 0 stale clones`;
     } finally {
       await teardownApp(page).catch(() => undefined);
-      await page.close();
+      await rig.closePage(page);
     }
   },
 };

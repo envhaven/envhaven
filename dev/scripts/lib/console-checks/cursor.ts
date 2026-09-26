@@ -7,11 +7,69 @@
 // screen as characters the user never typed.
 import { log } from '../log';
 import {
-  VIEWPORT, assert, type Check, inconclusive, probe, quiet, settle,
+  VIEWPORT, assert, type Check, freshLine, inconclusive, probe, quiet, settle,
 } from '../console-rig';
 
 const TAILMOVE_LINE =
   'echo alpha bravo charlie delta epsilon foxtrot golf hotel india juliet kilo';
+
+export const midline: Check = {
+  name: 'midline',
+  what: 'navigation and deletion preserve and paint the suffix while earlier typing echoes arrive',
+  needsFreshPane: true,
+  async run(rig) {
+    const page = await rig.page(VIEWPORT);
+    try {
+      let trailing = 0;
+      for (const edit of [
+        { name: 'character move', keys: Array(7).fill('ArrowLeft'), text: 'echo alpha bravo charlie' },
+        { name: 'word move', keys: ['Alt+ArrowLeft'], text: 'echo alpha bravo charlie' },
+        { name: 'character delete', keys: [...Array(7).fill('ArrowLeft'), 'Backspace'], text: 'echo alpha bravocharlie' },
+        { name: 'word delete', keys: ['Alt+ArrowLeft', 'Alt+Backspace'], text: 'echo alpha charlie' },
+      ]) {
+        await freshLine(page);
+        await settle(page);
+        const start = await probe(page);
+        await page.keyboard.type('echo alpha bravo charlie', { delay: 0 });
+        for (const key of edit.keys) await page.keyboard.press(key);
+        const instant = await page.evaluate(() => {
+          const p = window.__ehPredict;
+          const tail = document.querySelector('.eh-tail') as HTMLElement | null;
+          return {
+            burst: p.burst, grid: p.text(p.row),
+            paintedTail: tail?.style.display === 'block' ? tail.lastElementChild?.textContent : null,
+          };
+        });
+        assert(!!instant.burst, `${edit.name}: prediction was lost before the echo`);
+        assert((instant.burst!.line + instant.burst!.tail).slice(start.col).trimEnd() === edit.text,
+          `${edit.name}: remaining text is wrong immediately after editing`);
+        if (!instant.grid?.includes('charlie')) {
+          trailing++;
+          assert(instant.paintedTail?.includes('charlie') === true,
+            `${edit.name}: pending suffix was not painted (${JSON.stringify(instant.paintedTail)})`);
+        }
+        const until = Date.now() + 1200;
+        while (Date.now() < until) {
+          const p = await probe(page);
+          if (p.burst) {
+            assert((p.burst.line + p.burst.tail).slice(start.col).trimEnd() === edit.text,
+              `${edit.name}: a delayed echo rewrote the remaining text`);
+          }
+          await Bun.sleep(10);
+        }
+        const done = await settle(page);
+        const actual = await page.evaluate((row) => window.__ehPredict.text(row), done.row);
+        assert(actual?.slice(start.col).trimEnd() === edit.text,
+          `${edit.name}: server text did not converge to ${JSON.stringify(edit.text)}`);
+      }
+      assert(trailing === 4, `only ${trailing}/4 edits outran their typing echoes`);
+      return '4 mixed edit runs preserved and painted their suffix before the echo';
+    } finally {
+      await page.keyboard.press('Control+u').catch(() => undefined);
+      await rig.closePage(page);
+    }
+  },
+};
 
 export const tailmove: Check = {
   name: 'tailmove',
@@ -70,8 +128,14 @@ export const tailmove: Check = {
       })();
 
       // Faster than the downlink, so the model runs several columns ahead of the echo.
-      for (let i = 0; i < 60; i++) await page.keyboard.press('ArrowRight', { delay: 8 });
-      walking = false;
+      // The poller stops on every path: after a key throws it would keep reading a page
+      // that is being closed, and its rejection would go unhandled.
+      try {
+        for (let i = 0; i < 60; i++) await page.keyboard.press('ArrowRight', { delay: 8 });
+      } finally {
+        walking = false;
+        watch.catch(() => undefined);
+      }
       await watch;
 
       const worst = disagreed[0];
@@ -92,7 +156,7 @@ export const tailmove: Check = {
       return `${samples} samples, ${trailing} with the echo trailing, 0 disagreements`;
     } finally {
       await page.keyboard.press('Control+u').catch(() => undefined);
-      await page.close();
+      await rig.closePage(page);
     }
   },
 };
@@ -111,8 +175,7 @@ export const endreach: Check = {
   async run(rig) {
     const page = await rig.page(VIEWPORT);
     try {
-      const cols = await page.evaluate(() => window.__ehPredict.text(0)?.length ?? 0);
-      assert(cols > 0, 'could not read the terminal width');
+      const cols = (await probe(page)).cols;
       // Leading # so zsh reads the whole thing as a comment and never runs it.
       const length = cols * 4 + 200;
       const text = '#' + 'abcdefghij'.repeat(Math.ceil(length / 10)).slice(0, length - 1);
@@ -153,7 +216,7 @@ export const endreach: Check = {
     } finally {
       await page.keyboard.press('Control+c').catch(() => undefined);
       await Bun.sleep(600);
-      await page.close();
+      await rig.closePage(page);
     }
   },
 };

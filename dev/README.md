@@ -29,22 +29,27 @@ bun dev/scripts/test-image.ts # Run tests
 
 | Key | Action |
 |-----|--------|
-| `s` | Start Container |
+| `s` | Start Container (submenu: `s` start, `r` recreate, `d` delete) |
 | `b` | Build Image |
 | `w` | Watch Extension |
 | `r` | Release (tag → Image + CLI) |
-| `t` | Test (submenu) |
+| `t` | Test (submenu: `i` validate image, `a` AI tools, `c` Haven CLI, `e` extension) |
 | `l` | View Logs |
 | `x` | Open Shell (SSH) |
 | `,` | Settings |
 | `?` | Help (keyboard shortcuts) |
 | `↑/↓` | Navigate menu |
+| `Enter` | Activate the highlighted item |
 | `Esc` | Cancel / Back |
 | `q` | Quit |
 
 ## Standalone Scripts
 
-Most TUI actions are backed by standalone scripts in `scripts/`; a few (watch, release, shell) are implemented directly in `src/actions/`:
+Most TUI actions are backed by standalone scripts in `scripts/`; a few (watch, release, shell, and
+delete container) are implemented directly in `src/actions/`. The TUI's recreate is a delete
+followed by `start.ts`; the script equivalent is `start.ts --fresh`. The table below is the
+subset wired to a key; `scripts/README.md` lists all of them, including `extension-build.ts`,
+`extension-install.ts`, `measure-tui.ts`, `test-console-echo.ts` and `test-console-ui.ts`:
 
 | Script | TUI Key | Description |
 |--------|---------|-------------|

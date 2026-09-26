@@ -1,6 +1,6 @@
 // Keyboard checks for the console's predictive echo.
 //
-// console/ui/terminal.html paints a keystroke before the server has echoed it, so
+// console/ui/assets/eh-predictor.js paints a keystroke before the server has echoed it, so
 // every assertion below is an INSTANT read: the probe runs a few milliseconds after
 // the key, the link carries about 150ms of round trip, and what the engine reports
 // therefore cannot have come back from the server yet. Remove the latency and every
@@ -12,65 +12,14 @@
 // it down with it.
 import type { Page } from '@playwright/test';
 import {
-  VIEWPORT, assert, type Burst, type Check, gridRow, inconclusive, launchApp, probe,
-  quiet, settle, teardownApp,
+  VIEWPORT, assert, type Burst, type Check, burstOf, freshLine, gridRow, inconclusive,
+  launchApp, pressAndRead, probe, quietOrSkip, settle, teardownApp, typeAndRead, waitFor,
+  waitSafe,
 } from '../console-rig';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Wait for a page-side condition, and treat a timeout as "never seen".
- *
- * The harness these checks came from swallowed six of these waits and then asserted
- * on whatever state it fell through to. That reports a stalled wire as an engine
- * fault, and it reports it with the message of whichever assertion happened to run
- * next. A timeout means the check never reached the state it guards, which is a
- * different answer from the engine being wrong.
- */
-// The argument is typed loosely on purpose. Playwright declares the callback as
-// taking `Unboxed<Arg>`, which it cannot prove equal to a caller's own type
-// parameter, so a generic wrapper never typechecks. Every argument passed here is a
-// plain serialisable value, which is the case where the two coincide.
-async function waitFor(
-  page: Page,
-  fn: (arg: any) => boolean,
-  arg: unknown,
-  ms: number,
-  reason: string,
-) {
-  try {
-    await page.waitForFunction(fn, arg, { timeout: ms });
-  } catch {
-    inconclusive(reason);
-  }
-}
-
-/** Wait for the gate to re-arm. Nothing is predicted while it is down. */
-function waitSafe(page: Page, ms: number, reason: string) {
-  return waitFor(page, () => window.__ehPredict.safe === true, null, ms, reason);
-}
-
-/** Wait for the wire to fall silent, and skip the check if it never does. */
-async function quietOrSkip(page: Page, what: string, ms = 8000) {
-  if (!(await quiet(page, 600, ms))) inconclusive(`the wire never settled after ${what}`);
-}
-
-/**
- * Clear the line and start a fresh, proven one.
- *
- * The engine only claims a prompt the server has drawn, so a check that starts
- * mid-line exercises the recovery path instead of the one it is named after. Enter
- * re-proves the floor.
- */
-async function freshLine(page: Page) {
-  await page.keyboard.press('Control+C');
-  await Bun.sleep(700);
-  await page.keyboard.press('Enter');
-  await waitSafe(page, 15000, 'the gate never re-armed on a fresh prompt');
-  await Bun.sleep(900);
-}
 
 /**
  * Put the prompt at the top of the screen.
@@ -94,37 +43,11 @@ async function clearDraft(page: Page) {
   await Bun.sleep(800);
 }
 
-/** Type, then read the engine back before the echo can have arrived. */
-async function typeAndRead(page: Page, text: string, delay = 15) {
-  await page.keyboard.type(text, { delay });
-  return probe(page);
-}
-
-/** Press, then read the engine back before the echo can have arrived. */
-async function pressAndRead(page: Page, key: string) {
-  await page.keyboard.press(key);
-  return probe(page);
-}
-
-/** The engine's burst, or a failed check naming what it declined to predict. */
-function burstOf(p: { burst: Burst | null }, what: string): Burst {
-  const b = p.burst;
-  assert(b !== null, `${what}: the engine predicted nothing`);
-  return b;
-}
-
 /** A grid row that exists, or a failed check. */
 async function rowText(page: Page, r: number): Promise<string> {
   const text = await gridRow(page, r);
   assert(text !== null, `the grid has no row ${r}`);
   return text;
-}
-
-/** The terminal width, read off a row the pane has actually drawn. */
-async function columns(page: Page): Promise<number> {
-  const cols = await page.evaluate(() => window.__ehPredict.text(window.__ehPredict.row)?.length ?? 0);
-  assert(cols > 0, 'could not read the terminal width');
-  return cols;
 }
 
 /** How wide the prompt is: on a fresh line the cursor sits just past it. */
@@ -158,7 +81,7 @@ async function screenRows(page: Page, p: { baseY: number; rows: number }): Promi
 // Checks
 // ---------------------------------------------------------------------------
 
-// Twenty characters, five of them outside ASCII. The engine paints by code point, so
+// Twenty characters, eight of them outside ASCII. The engine paints by code point, so
 // an accent that costs one keystroke has to cost one column and one inputLen.
 const ACCENTED = 'echo café ñoño áéíóú';
 
@@ -197,7 +120,7 @@ export const keysTyping: Check = {
       return '7 assertions, all painted before the echo';
     } finally {
       await page.keyboard.press('Control+u').catch(() => undefined);
-      await page.close();
+      await rig.closePage(page);
     }
   },
 };
@@ -230,7 +153,7 @@ export const keysChords: Check = {
       return '4 assertions, all painted before the echo';
     } finally {
       await page.keyboard.press('Control+u').catch(() => undefined);
-      await page.close();
+      await rig.closePage(page);
     }
   },
 };
@@ -300,7 +223,7 @@ export const keysMacChords: Check = {
       return '11 assertions, all painted before the echo';
     } finally {
       await page.keyboard.press('Control+u').catch(() => undefined);
-      await page.close();
+      await rig.closePage(page);
     }
   },
 };
@@ -337,7 +260,7 @@ export const keysNav: Check = {
 
       await freshLine(page);
       await clearScreen(page);
-      const cols = await columns(page);
+      const cols = (await probe(page)).cols;
       const promptLen = await promptWidth(page);
       const top = (await probe(page)).row;
 
@@ -412,13 +335,13 @@ export const keysNav: Check = {
       await quietOrSkip(page, 'typing the line before the ride');
 
       const ride = await pressAndRead(page, 'ArrowUp');
-      assert(!ride.burst && !!ride.hold && ride.hold.nav === true,
-        `Up should ride behind a nav hold (burst ${!!ride.burst}, hold ${JSON.stringify(ride.hold)})`);
+      assert((!ride.burst || ride.burst.draining) && !!ride.hold && ride.hold.nav === false,
+        `Up should ride behind a heavy hold: it rewrites the line wholesale (burst ${!!ride.burst}, hold ${JSON.stringify(ride.hold)})`);
 
-      // One round trip. The hold releases on the first cursor evidence, and the very
-      // next keystroke has to be optimistic again: a hold that outlives its cause is a
-      // sluggish terminal for as long as it lasts.
-      await Bun.sleep(500);
+      // The proxy's round trip is configurable. Wait for the handoff to finish,
+      // then require the very next keystroke to be optimistic again.
+      await waitFor(page, () => !window.__ehPredict.hold && !window.__ehPredict.burst,
+        null, 3000, 'the history handoff never released its hold and draining prediction');
       const resumed = burstOf(await typeAndRead(page, 'X'), 'typing after the ride');
       assert(resumed.line.endsWith('X'), `the first key after the ride painted "${resumed.line.slice(-6)}"`);
       await settle(page);
@@ -426,7 +349,7 @@ export const keysNav: Check = {
       return '17 assertions across the seam and the handoffs, all read before the echo';
     } finally {
       await page.keyboard.press('Control+u').catch(() => undefined);
-      await page.close();
+      await rig.closePage(page);
     }
   },
 };
@@ -439,7 +362,7 @@ export const keysEditing: Check = {
     const page = await rig.page(VIEWPORT);
     try {
       await freshLine(page);
-      const cols = await columns(page);
+      const cols = (await probe(page)).cols;
       const promptLen = await promptWidth(page);
 
       // First crossing in this pane: the engine holds no style for the shell yet, so it
@@ -513,7 +436,7 @@ export const keysEditing: Check = {
       return '9 assertions, wrap learned then predicted';
     } finally {
       await page.keyboard.press('Control+u').catch(() => undefined);
-      await page.close();
+      await rig.closePage(page);
     }
   },
 };
@@ -570,17 +493,30 @@ export const keysGate: Check = {
       assert(!typed.burst && typed.inputLen === 0,
         `the engine modelled ${typed.inputLen} characters of a password (burst ${!!typed.burst})`);
 
-      // A prefix, so a half-painted marker is caught as well as a whole one.
+      // A prefix, so a half-painted marker is caught as well as a whole one. Two layers are
+      // read because they hold different paint. The grid holds only what the server echoed,
+      // and a prediction never reaches it: the engine paints its guesses into its own
+      // z-index:10 overlay above the screen, so that layer is read whole. Its hidden
+      // children count too, since a released run keeps its text until the next paint.
+      const leak = GATE_MARKER.slice(0, 7);
       const after = await screenRows(page, typed);
-      assert(!after.join('\n').includes(GATE_MARKER.slice(0, 7)), 'the password was painted onto the screen');
+      assert(!after.join('\n').includes(leak), 'the password was painted onto the screen');
+      const overlay = await page.evaluate(() => {
+        const screen = document.querySelector('.xterm-screen');
+        const layer = screen && Array.from(screen.children).find(
+          (el): el is HTMLElement => el instanceof HTMLElement && el.style.zIndex === '10',
+        );
+        return layer ? layer.textContent ?? '' : '';
+      });
+      assert(!overlay.includes(leak), 'the prediction overlay painted the password onto the screen');
 
       await page.keyboard.press('Control+C');
       await Bun.sleep(800);
 
-      return '5 assertions, nothing painted while the gate was down';
+      return '6 assertions, nothing painted while the gate was down';
     } finally {
       await page.keyboard.press('Control+u').catch(() => undefined);
-      await page.close();
+      await rig.closePage(page);
     }
   },
 };
@@ -593,7 +529,7 @@ export const keysLearning: Check = {
     const page = await rig.page(VIEWPORT);
     try {
       await freshLine(page);
-      const cols = await columns(page);
+      const cols = (await probe(page)).cols;
       await launchApp(page, 'composer');
       await waitSafe(page, 15000, 'the gate never re-armed inside the composer, so nothing there could be predicted');
 
@@ -654,7 +590,58 @@ export const keysLearning: Check = {
       return `5 assertions, wrap predicted after ${crossings} crossings`;
     } finally {
       await teardownApp(page).catch(() => undefined);
-      await page.close();
+      await rig.closePage(page);
+    }
+  },
+};
+
+export const paneBounds: Check = {
+  name: 'pane-bounds',
+  what: 'v4 keeps optimistic rows and columns inside the active tmux pane',
+  needsFreshPane: true,
+  async run(rig): Promise<string> {
+    const page = await rig.page(VIEWPORT);
+    try {
+      const lower = await rig.splitPane('rows');
+      await waitFor(page, (want) => {
+        const p = window.__ehPredict;
+        return p.safe && p.top === want.top && p.bottom === want.bottom &&
+          p.left === want.left && p.right === want.right;
+      }, lower, 15000, 'the v4 gate never reported the lower pane geometry');
+      const lowerProbe = await probe(page);
+      assert(lower.top > 0, `the row split created top ${lower.top}, expected a lower pane`);
+      assert(lowerProbe.row - lowerProbe.baseY >= lower.top && lowerProbe.row - lowerProbe.baseY < lower.bottom,
+        `the lower pane cursor row ${lowerProbe.row - lowerProbe.baseY} escaped [${lower.top}, ${lower.bottom})`);
+
+      await rig.collapsePanes();
+      const right = await rig.splitPane('columns');
+      await waitFor(page, (want) => {
+        const p = window.__ehPredict;
+        return p.safe && p.top === want.top && p.bottom === want.bottom &&
+          p.left === want.left && p.right === want.right;
+      }, right, 15000, 'the v4 gate never reported the right pane geometry');
+      const start = await probe(page);
+      assert(right.left > 0 && right.right <= start.cols,
+        `the column split produced [${right.left}, ${right.right}) in ${start.cols} columns`);
+      const remaining = right.right - start.col - 1;
+      if (remaining < 8) inconclusive(`the right pane opened with only ${remaining} cells before its wrap edge`);
+      const edge = burstOf(await typeAndRead(page, 'x'.repeat(remaining), 0), 'typing to the right pane edge');
+      assert(edge.line.length === right.right - 1,
+        `the model stopped at column ${edge.line.length}, expected ${right.right - 1}`);
+      const wrapped = burstOf(await typeAndRead(page, 'z', 0), 'right pane wrap');
+      assert(wrapped.row === edge.row + 1 && wrapped.line.length === right.left,
+        `the right pane wrap landed at row ${wrapped.row}, column ${wrapped.line.length}; expected ${edge.row + 1}/${right.left}`);
+      await quietOrSkip(page, 'the right pane wrap');
+      const crossedUp = burstOf(await pressAndRead(page, 'ArrowLeft'), 'right pane seam up');
+      assert(crossedUp.row === edge.row && crossedUp.line.length === right.right - 1,
+        `Left crossed to row ${crossedUp.row}, column ${crossedUp.line.length}; expected ${edge.row}/${right.right - 1}`);
+      const crossedDown = burstOf(await pressAndRead(page, 'ArrowRight'), 'right pane seam down');
+      assert(crossedDown.row === wrapped.row && crossedDown.line.length === right.left,
+        `Right crossed to row ${crossedDown.row}, column ${crossedDown.line.length}; expected ${wrapped.row}/${right.left}`);
+      return `lower pane [${lower.top},${lower.bottom}) and right pane [${right.left},${right.right}) stayed bounded`;
+    } finally {
+      await rig.collapsePanes().catch(() => undefined);
+      await rig.closePage(page);
     }
   },
 };
@@ -671,7 +658,7 @@ export const keysComposer: Check = {
     const page = await rig.page(VIEWPORT);
     try {
       await freshLine(page);
-      const cols = await columns(page);
+      const cols = (await probe(page)).cols;
       await launchApp(page, 'claude');
       await waitSafe(page, 30000, 'the gate never re-armed inside claude');
       // A fixed beat rather than a quiet() wait: the composer redraws on its own
@@ -789,7 +776,7 @@ export const keysComposer: Check = {
     } finally {
       // The body exits claude on its own. This catches the runs that never got there.
       await teardownApp(page).catch(() => undefined);
-      await page.close();
+      await rig.closePage(page);
     }
   },
 };

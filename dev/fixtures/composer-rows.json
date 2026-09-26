@@ -1,0 +1,120 @@
+{
+  "note": [
+    "Rows captured verbatim from real composers at 100 columns, with",
+    "  tmux capture-pane -pN   (-N, or tmux trims the trailing blanks these rows are read for)",
+    "inside a workspace container where each tool is signed in. Re-capture when an",
+    "application redraws its composer; dev/scripts/measure-tui.ts is what notices that.",
+    "The `end` expectations are NOT copied from the engine: each is the cursor column tmux",
+    "reported for that pane, which is where the application itself put the caret after the",
+    "last character of the draft. A wrong textEnd cannot agree with that by accident."
+  ],
+  "cols": 100,
+  "cases": [
+    {
+      "app": "grok",
+      "row": "frame-top",
+      "text": "  ╭──────────────────────────────────────────────────────────────────────────────────────────────╮  ",
+      "frame": true
+    },
+    {
+      "app": "grok",
+      "row": "frame-bottom-labelled",
+      "text": "  ╰─────────────────────────────────────────────────────────────────────────── Grok 4.6 (xhigh) ─╯  ",
+      "frame": true
+    },
+    {
+      "app": "grok",
+      "row": "first",
+      "text": "  │ ❯ alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november     │  ",
+      "frame": false
+    },
+    {
+      "app": "grok",
+      "row": "continuation",
+      "text": "  │   oscar papa quebec romeo sierra tango                                                       │  ",
+      "frame": false,
+      "start": 6,
+      "end": 42
+    },
+    {
+      "app": "grok",
+      "row": "hint",
+      "text": "  Enter:send  │  Shift+Tab:mode  │  Ctrl+.:shortcuts                                                ",
+      "frame": false
+    },
+    {
+      "app": "opencode",
+      "row": "frame-bottom",
+      "text": "             ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀            ",
+      "frame": true
+    },
+    {
+      "app": "opencode",
+      "row": "bar-only",
+      "text": "             ┃                                                                                      ",
+      "frame": false
+    },
+    {
+      "app": "opencode",
+      "row": "continuation",
+      "text": "             ┃  lima mike november oscar papa quebec romeo sierra tango                             ",
+      "frame": false,
+      "start": 16,
+      "end": 71
+    },
+    {
+      "app": "opencode",
+      "row": "hint",
+      "text": "             tab agents  ctrl+p commands                                                            ",
+      "frame": false
+    },
+    {
+      "app": "claude",
+      "row": "rule-above",
+      "text": "────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "frame": true
+    },
+    {
+      "app": "claude",
+      "row": "rule-below",
+      "text": "────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "frame": true
+    },
+    {
+      "app": "claude",
+      "row": "first",
+      "text": "❯ alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar      ",
+      "frame": false
+    },
+    {
+      "app": "claude",
+      "row": "continuation",
+      "text": "  papa quebec romeo sierra tango                                                                    ",
+      "frame": false,
+      "start": 2,
+      "end": 32
+    },
+    {
+      "app": "claude",
+      "row": "hint",
+      "text": "  ⏵⏵ bypass permissions on (shift+tab to cycle)                         Not logged in · Run /login  ",
+      "frame": false
+    },
+    {
+      "app": "zsh",
+      "row": "full-to-edge",
+      "text": "➜  workspace echo alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike nove",
+      "frame": false,
+      "start": 0,
+      "end": 100
+    },
+    {
+      "app": "zsh",
+      "row": "continuation",
+      "text": "mber oscar papa quebec                                                                              ",
+      "frame": false,
+      "start": 0,
+      "end": 22
+    }
+  ]
+}

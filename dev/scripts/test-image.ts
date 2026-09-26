@@ -1,12 +1,20 @@
 #!/usr/bin/env bun
-import { $ } from 'bun';
-import { loadConfig, log, formatTestSummary, dockerExec, shellErrorText } from './lib';
+import {
+  loadConfig,
+  log,
+  formatTestSummary,
+  dockerExec,
+  runBoundedProcess,
+  type ProcessResult,
+} from './lib';
 import toolDefs from '../../tool-definitions.json';
 
 const config = loadConfig();
 const stamp = Date.now();
 const containerName = `envhaven-test-${stamp}`;
 const noPasswordName = `envhaven-test-nopass-${stamp}`;
+const hashPasswordName = `envhaven-test-hash-${stamp}`;
+const filesystemSecurityName = `envhaven-test-fs-${stamp}`;
 
 // Two kinds of check live in this file, and conflating them is what drove the old CI
 // steps to guess at sleeps. `boot` marks the ones that only become true once s6 has
@@ -15,19 +23,21 @@ const noPasswordName = `envhaven-test-nopass-${stamp}`;
 // the container exists, so it runs exactly once: a missing tool is a regression to
 // report in a second, not something to retry for minutes.
 //
-// The budget's floor is init-zsh-config, which waits up to its own MAX_WAIT of 120s for
-// the zsh mod to write /config/.zshrc and only then gives up
-// (runtime/scripts/init-zsh-config-run) — svc-console is one of the services blocked
-// behind that oneshot. Ahead of it, LSIO's mod-init fetches DOCKER_MODS from lscr.io,
-// which is the part that varies with the network. Three minutes clears both.
+// Most of the budget is LSIO's mod-init, which fetches DOCKER_MODS from lscr.io and is the
+// part that varies with the network. code-server, sshd and svc-console all wait behind it:
+// they depend on init-zsh-config, which s6 runs only after the mods
+// (runtime/scripts/init-zsh-config-run).
 const BOOT_TIMEOUT_MS = 300_000;
 const POLL_INTERVAL_MS = 2000;
+const DOCKER_OPERATION_TIMEOUT_MS = 30_000;
+const BOOT_PROBE_TIMEOUT_MS = 10_000;
 
 // Fixed, not config.password. These containers are thrown away at the end of the run, so
 // the value carries no meaning, and the console check below splices it into a shell
 // string — a configured password is free text that may contain spaces or quotes, and
 // does not belong there.
 const TEST_PASSWORD = 'testpass';
+const TEST_PASSWORD_SHA256 = '13d249f2cb4127b40cfa757866850278793f814ded3c587fe5889e889a7a9f6c';
 
 interface Test {
   name: string;
@@ -41,6 +51,9 @@ interface Test {
 }
 
 const toolCommands = toolDefs.tools.map(({ command }) => command);
+const launcherCommands = toolDefs.tools
+  .filter((tool) => tool.launchArgs?.length)
+  .map(({ command }) => command);
 
 // Runs as abc with HOME=/config — the uid and home every workspace process actually gets,
 // so a tool that resolves here resolves for the people who use the container. Root has
@@ -48,12 +61,254 @@ const toolCommands = toolDefs.tools.map(({ command }) => command);
 // are trying to observe.
 const asUser = { user: 'abc', env: { HOME: '/config' } };
 
+const launcherContract = String.raw`set -eu
+d=$(mktemp -d)
+trap 'rm -rf "$d"' EXIT HUP INT TERM
+mkdir -p "$d/bin" "$d/override"
+for tool in agy grok muse; do
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$*"' >"$d/bin/$tool"
+  chmod +x "$d/bin/$tool"
+done
+printf '%s\n' '#!/usr/bin/env bash' 'printf override' >"$d/override/agy"
+chmod +x "$d/override/agy"
+printf '%s\n' '{"tools":[{"command":"agy","launchArgs":["--dangerously-skip-permissions"]},{"command":"grok","launchArgs":["--always-approve"],"prepareCommand":["false"]},{"command":"muse","launchArgs":["--disable-approval"],"launchArgsWhen":"bare"}]}' >"$d/tools.json"
+agy_out=$(ENVHAVEN_TOOL_BIN_DIR="$d/bin" ENVHAVEN_TOOL_DEFS_JSON="$d/tools.json" /opt/envhaven/wrappers/agy prompt)
+grok_out=$(ENVHAVEN_TOOL_BIN_DIR="$d/bin" ENVHAVEN_TOOL_DEFS_JSON="$d/tools.json" /opt/envhaven/wrappers/grok prompt 2>"$d/grok.err")
+muse_bare=$(ENVHAVEN_TOOL_BIN_DIR="$d/bin" ENVHAVEN_TOOL_DEFS_JSON="$d/tools.json" /opt/envhaven/wrappers/muse)
+muse_login=$(ENVHAVEN_TOOL_BIN_DIR="$d/bin" ENVHAVEN_TOOL_DEFS_JSON="$d/tools.json" /opt/envhaven/wrappers/muse login)
+[ "$agy_out" = '--dangerously-skip-permissions prompt' ]
+[ "$grok_out" = '--always-approve prompt' ]
+grep -qxF 'envhaven: grok preparation failed; starting without it' "$d/grok.err"
+[ "$muse_bare" = '--disable-approval' ]
+[ "$muse_login" = 'login' ]
+[ "$(PATH="$d/override:$PATH" agy prompt)" = 'override' ]`;
+
+const bashrcMigrationContract = String.raw`set -eu
+d=$(mktemp -d)
+trap 'rm -rf "$d"' EXIT HUP INT TERM
+mkdir -p "$d/dotfiles"
+printf '%s' "alias agy='agy --dangerously-skip-permissions'
+export USER_SETTING=kept" >"$d/dotfiles/bashrc"
+ln -s dotfiles/bashrc "$d/.bashrc"
+printf guard >"$d/outside"
+ln -s "$d/outside" "$d/.bashrc.tmp"
+HOME="$d" /usr/local/lib/envhaven/envhaven-install-rc-hook bash
+[ -L "$d/.bashrc" ]
+[ "$(cat "$d/outside")" = guard ]
+[ -L "$d/.bashrc.tmp" ]
+grep -q '^export USER_SETTING=kept$' "$d/dotfiles/bashrc"
+grep -qxF '[ -f /defaults/bashrc-additions ] && . /defaults/bashrc-additions' "$d/dotfiles/bashrc"
+if grep -q '^alias agy=' "$d/dotfiles/bashrc"; then
+  echo 'the legacy agy alias survived the migration' >&2
+  exit 1
+fi
+set -- "$d"/dotfiles/.bashrc.envhaven.*
+[ ! -e "$1" ]`;
+
+// The zsh hook is the credential store's only zsh loader, so it has to reach a fresh HOME,
+// follow a dotfiles link without replacing it, stay single across boots, and refuse a
+// link that leaves HOME.
+const zshrcHookContract = String.raw`set -eu
+d=$(mktemp -d)
+trap 'rm -rf "$d"' EXIT HUP INT TERM
+hook='if [ -r "$HOME/.config/envhaven/environment" ]; then . "$HOME/.config/envhaven/environment"; fi'
+mkdir -p "$d/fresh" "$d/linked/dotfiles" "$d/escape"
+HOME="$d/fresh" /usr/local/lib/envhaven/envhaven-install-rc-hook zsh
+[ "$(cat "$d/fresh/.zshrc")" = "$hook" ]
+printf '%s' 'export USER_SETTING=kept' >"$d/linked/dotfiles/zshrc"
+ln -s dotfiles/zshrc "$d/linked/.zshrc"
+HOME="$d/linked" /usr/local/lib/envhaven/envhaven-install-rc-hook zsh
+HOME="$d/linked" /usr/local/lib/envhaven/envhaven-install-rc-hook zsh
+[ -L "$d/linked/.zshrc" ]
+[ "$(head -n 1 "$d/linked/dotfiles/zshrc")" = 'export USER_SETTING=kept' ]
+[ "$(tail -n 1 "$d/linked/dotfiles/zshrc")" = "$hook" ]
+[ "$(grep -cxF "$hook" "$d/linked/dotfiles/zshrc")" = 1 ]
+set -- "$d"/linked/dotfiles/.zshrc.envhaven.*
+[ ! -e "$1" ]
+printf guard >"$d/outside"
+ln -s "$d/outside" "$d/escape/.zshrc"
+if HOME="$d/escape" /usr/local/lib/envhaven/envhaven-install-rc-hook zsh 2>/dev/null; then
+  echo 'a .zshrc link leaving HOME was followed' >&2
+  exit 1
+fi
+[ "$(cat "$d/outside")" = guard ]`;
+
+// tmux copies the environment of the shell that starts its server into every later
+// window, where removing a stored key can no longer reach. A login outside tmux starts
+// that server from the welcome and execs into it (the attach fails here, with no
+// terminal), so the store must not be loaded yet at that point. Shells that skip the
+// welcome still load it: through the ~/.zshrc line when the Oh My Zsh drop-in never
+// runs, and through the drop-in when ~/.zshrc lacks that line.
+const credentialStoreLoadContract = String.raw`set -eu
+d=$(mktemp -d)
+trap 'for shell in bash zsh; do TMUX_TMPDIR="$d/tmux-$shell" tmux kill-server 2>/dev/null || :; done; rm -rf "$d"' EXIT HUP INT TERM
+store="export ENVHAVEN_STORE_PROBE='stored'"
+for home in home omz omz-nohook; do
+  mkdir -p "$d/$home/.config/envhaven"
+  printf '%s\n' "$store" >"$d/$home/.config/envhaven/environment"
+done
+mkdir -p "$d/omz-custom" "$d/tmux-bash" "$d/tmux-zsh"
+printf '%s\n' '. /defaults/zshrc-additions' >"$d/home/.zshrc"
+HOME="$d/home" /usr/local/lib/envhaven/envhaven-install-rc-hook bash
+HOME="$d/home" /usr/local/lib/envhaven/envhaven-install-rc-hook zsh
+for shell in bash zsh; do
+  HOME="$d/home" TMUX_TMPDIR="$d/tmux-$shell" "$shell" -i -c : </dev/null >/dev/null 2>&1 || :
+  TMUX_TMPDIR="$d/tmux-$shell" tmux has-session -t =envhaven
+  if TMUX_TMPDIR="$d/tmux-$shell" tmux show-environment -g ENVHAVEN_STORE_PROBE >/dev/null 2>&1; then
+    echo "$shell seeded the tmux server with a stored key" >&2
+    exit 1
+  fi
+  HOME="$d/home" ENVHAVEN_SKIP_WELCOME=1 "$shell" -i -c 'printf "probe=%s\n" "$ENVHAVEN_STORE_PROBE"' </dev/null 2>/dev/null | grep -qx probe=stored
+done
+printf '%s\n' 'ZSH_DISABLE_COMPFIX=true' 'export ZSH=/config/.oh-my-zsh' "ZSH_CUSTOM=$d/omz-custom" 'source "$ZSH/oh-my-zsh.sh"' >"$d/omz/.zshrc"
+HOME="$d/omz" /usr/local/lib/envhaven/envhaven-install-rc-hook zsh
+HOME="$d/omz" zsh -i -c 'printf "probe=%s\n" "$ENVHAVEN_STORE_PROBE"' </dev/null 2>/dev/null | grep -qx probe=stored
+printf '%s\n' 'ZSH_DISABLE_COMPFIX=true' 'export ZSH=/config/.oh-my-zsh' 'source "$ZSH/oh-my-zsh.sh"' >"$d/omz-nohook/.zshrc"
+HOME="$d/omz-nohook" ENVHAVEN_SKIP_WELCOME=1 zsh -i -c 'printf "probe=%s\n" "$ENVHAVEN_STORE_PROBE"' </dev/null 2>/dev/null | grep -qx probe=stored`;
+
+const antigravityPreparationContract = String.raw`set -eu
+d=$(mktemp -d)
+trap 'rm -rf "$d"' EXIT HUP INT TERM
+mkdir -p "$d/.gemini/antigravity-cli"
+printf '%s\n' '{"modelProvider":"oauth","theme":"dark"}' >"$d/.gemini/antigravity-cli/settings.json"
+HOME="$d" /usr/local/lib/envhaven/envhaven-prepare-antigravity --force >/dev/null
+jq -e '.modelProvider == "gemini" and .theme == "dark"' "$d/.gemini/antigravity-cli/settings.json" >/dev/null
+mkdir -p "$d/keyless" "$d/elsewhere/antigravity-cli"
+printf '%s\n' '{"theme":"guard"}' >"$d/elsewhere/antigravity-cli/settings.json"
+ln -s "$d/elsewhere" "$d/keyless/.gemini"
+env -u GEMINI_API_KEY HOME="$d/keyless" /usr/local/lib/envhaven/envhaven-prepare-antigravity
+[ "$(cat "$d/elsewhere/antigravity-cli/settings.json")" = '{"theme":"guard"}' ]
+mkdir -p "$d/empty/.gemini/antigravity-cli"
+: >"$d/empty/.gemini/antigravity-cli/settings.json"
+if HOME="$d/empty" /usr/local/lib/envhaven/envhaven-prepare-antigravity --force >/dev/null 2>&1; then
+  echo 'an empty Antigravity settings file was rewritten' >&2
+  exit 1
+fi
+[ ! -s "$d/empty/.gemini/antigravity-cli/settings.json" ]
+[ ! -e "$d/empty/.gemini/antigravity-cli/.model-provider.envhaven" ]`;
+
+const ownershipRepairContract = String.raw`set -eu
+target=$(mktemp /tmp/envhaven-ownership-target.XXXXXX)
+link=/opt/envhaven/.ownership-test-link
+trap 'rm -f "$link" "$target"' EXIT HUP INT TERM
+chown root:root "$target"
+ln -s "$target" "$link"
+chown -h root:root "$link"
+/usr/local/lib/envhaven/envhaven-repair-tool-ownership
+[ "$(stat -c %u "$target")" = 0 ]
+[ "$(stat -c %u "$link")" = 1000 ]`;
+
+// ~/.oh-my-zsh/custom is a dotfiles link inside HOME, which is followed, and its themes
+// directory links outside HOME, which is refused. The theme target is abc-owned, so only
+// the HOME check stands between it and the write, and the refusal must not keep any
+// service from starting.
+const filesystemSecurityFixture = String.raw`set -eu
+mkdir -p /config/.oh-my-zsh /config/dotfiles/omz-custom /tmp/envhaven-kimi-target /tmp/envhaven-antigravity-target/antigravity-cli /tmp/envhaven-theme-target
+printf kimi-guard >/tmp/envhaven-kimi-target/guard
+printf zsh-guard >/tmp/envhaven-zsh-target
+printf '%s\n' '{"modelProvider":"outside","theme":"guard"}' >/tmp/envhaven-antigravity-target/antigravity-cli/settings.json
+ln -s /tmp/envhaven-kimi-target /config/.kimi-code
+ln -s ../dotfiles/omz-custom /config/.oh-my-zsh/custom
+ln -s /tmp/envhaven-zsh-target /config/dotfiles/omz-custom/envhaven.zsh
+ln -s /tmp/envhaven-theme-target /config/dotfiles/omz-custom/themes
+ln -s /tmp/envhaven-antigravity-target /config/.gemini
+printf '%s\n' 'export ANTHROPIC_API_KEY="legacy-value"' >/config/.zshrc
+printf '%s\n' 'export ANTHROPIC_API_KEY="legacy-value"' >/config/.bashrc
+chown -R 1234:1234 /config /tmp/envhaven-theme-target
+exec /init`;
+
+const filesystemSecurityContract = String.raw`set -eu
+[ "$(id -u abc)" = 1234 ]
+[ "$(id -g abc)" = 1234 ]
+[ -L /config/.kimi-code ]
+[ "$(cat /tmp/envhaven-kimi-target/guard)" = kimi-guard ]
+[ ! -e /tmp/envhaven-kimi-target/region ]
+[ -L /config/.oh-my-zsh/custom ]
+[ -f /config/dotfiles/omz-custom/envhaven.zsh ]
+[ ! -L /config/dotfiles/omz-custom/envhaven.zsh ]
+[ "$(stat -c %u:%g /config/dotfiles/omz-custom/envhaven.zsh)" = 1234:1234 ]
+grep -qxF '# EnvHaven zsh configuration' /config/dotfiles/omz-custom/envhaven.zsh
+[ "$(cat /tmp/envhaven-zsh-target)" = zsh-guard ]
+[ "$(stat -c %u:%g /tmp/envhaven-zsh-target)" = 0:0 ]
+[ -z "$(ls -A /tmp/envhaven-theme-target)" ]
+jq -e '.modelProvider == "outside" and .theme == "guard"' /tmp/envhaven-antigravity-target/antigravity-cli/settings.json >/dev/null
+[ "$(stat -c %u:%g /tmp/envhaven-antigravity-target/antigravity-cli/settings.json)" = 0:0 ]
+grep -qxF 'if [ -r "$HOME/.config/envhaven/environment" ]; then . "$HOME/.config/envhaven/environment"; fi' /config/.zshrc
+[ "$(stat -c %u:%g /config/.zshrc)" = 1234:1234 ]
+grep -qxF "export ANTHROPIC_API_KEY='legacy-value'" /config/.config/envhaven/environment
+if grep -q '^export ANTHROPIC_API_KEY=' /config/.zshrc /config/.bashrc; then
+  echo 'a legacy rc export survived the migration' >&2
+  exit 1
+fi
+if grep -q '^# EnvHaven legacy sidebar migration ' /config/.config/envhaven/environment; then
+  echo 'a legacy migration receipt survived in the store' >&2
+  exit 1
+fi
+curl -sf http://localhost:8443/healthz >/dev/null
+pgrep sshd >/dev/null
+curl -sf http://localhost:7681/__console/ui | grep -q 'EnvHaven Terminal'`;
+
+const hashProofContract = String.raw`set -eu
+issued=$(date +%s)
+proof=$(node -e 'const c=require("crypto");const key=Buffer.from(c.hkdfSync("sha256",Buffer.from(process.env.HASHED_PASSWORD),Buffer.from("envhaven-console"),Buffer.from("token-signing-key/v1"),32));process.stdout.write(c.createHmac("sha256",key).update("extension-token|"+process.argv[1]).digest("base64url"))' "$issued")
+token=$(curl -sf -X POST -H "X-EnvHaven-Issued: $issued" -H "X-EnvHaven-Proof: $proof" http://localhost:7681/__console/internal-token)
+printf '%s' "$token" | grep -qE '^[0-9]+\.'
+wrong=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-EnvHaven-Issued: $issued" -H 'X-EnvHaven-Proof: wrong' http://localhost:7681/__console/internal-token)
+[ "$wrong" = 401 ]`;
+
+const passwordlessActionContract = String.raw`set -eu
+action() {
+  output=$(/opt/envhaven/bin/envhaven-console --action-json "$1") || {
+    status=$?
+    printf 'local action failed (%s) for %s: %s\n' "$status" "$1" "$output" >&2
+    return "$status"
+  }
+  printf '%s\n' "$output" | jq -e '.ok == true' >/dev/null || {
+    printf 'invalid local action response: %s\n' "$output" >&2
+    return 1
+  }
+}
+action '{"action":"new-window"}'
+index=$(tmux list-windows -t envhaven -F '#{window_index}' | sort -n | tail -n 1)
+[ -n "$index" ] || { printf 'new window was not listed\n' >&2; exit 1; }
+action "$(printf '{"action":"select-window","index":%s}' "$index")"
+[ "$(tmux display-message -p -t envhaven '#{window_index}')" = "$index" ] || {
+  printf 'window %s was not selected\n' "$index" >&2
+  exit 1
+}
+action "$(printf '{"action":"kill-window","index":%s}' "$index")"
+if tmux list-windows -t envhaven -F '#{window_index}' 2>/dev/null | grep -qx "$index"; then
+  printf 'window %s was not killed\n' "$index" >&2
+  exit 1
+fi
+if /opt/envhaven/bin/envhaven-console --action-json '{"action":"select-window"}' >/tmp/envhaven-action-error.json; then
+  printf 'invalid action unexpectedly succeeded\n' >&2
+  exit 1
+fi
+jq -e '.ok == false and .error == "invalid index"' /tmp/envhaven-action-error.json >/dev/null || {
+  printf 'invalid error response: ' >&2
+  cat /tmp/envhaven-action-error.json >&2
+  exit 1
+}`;
+
 const tests: Test[] = [
   { name: 'code-server health', cmd: 'curl -sf http://localhost:8443/healthz', boot: true },
   { name: 'SSH daemon', cmd: 'pgrep sshd', boot: true },
   {
     name: 'browser terminal page',
     cmd: `curl -sf http://localhost:7681/__console/ui | grep -q 'EnvHaven Terminal'`,
+    boot: true,
+  },
+  {
+    name: 'hash-password container: browser terminal page',
+    cmd: `curl -sf http://localhost:7681/__console/ui | grep -q 'EnvHaven Terminal'`,
+    container: hashPasswordName,
+    boot: true,
+  },
+  {
+    name: 'custom PUID filesystem security, dotfiles links, and legacy migration',
+    cmd: filesystemSecurityContract,
+    container: filesystemSecurityName,
     boot: true,
   },
 
@@ -79,6 +334,16 @@ const tests: Test[] = [
   {
     name: 'claude seed symlink',
     cmd: 'test -L /config/.local/bin/claude && test -x /config/.local/bin/claude',
+    boot: true,
+    ...asUser,
+  },
+  {
+    name: 'Kimi region marker is an abc-owned regular file',
+    cmd:
+      `set -e; test -f /config/.kimi-code/region; test ! -L /config/.kimi-code/region; ` +
+      `[ "$(cat /config/.kimi-code/region)" = global ]; ` +
+      `[ "$(stat -c %u:%g /config/.kimi-code/region)" = "$(id -u):$(id -g)" ]; ` +
+      `set -- /config/.kimi-code/.region.envhaven.*; test ! -e "$1"`,
     boot: true,
     ...asUser,
   },
@@ -116,6 +381,11 @@ const tests: Test[] = [
       `[ "$(curl -s -o /dev/null -w '%{http_code}' -c /tmp/cj -d password=${TEST_PASSWORD} http://localhost:7681/__console/login)" = 204 ]; ` +
       `curl -sf -b /tmp/cj http://localhost:7681/__console/token | grep -qE '^[0-9]+\\.'`,
   },
+  {
+    name: 'hash-only extension token flow',
+    cmd: hashProofContract,
+    container: hashPasswordName,
+  },
   // The user-visible half of the same promise: no password, no port. On its own this
   // would also be satisfied by a console that started and crashed, which is why the boot
   // check above asserts the service exited 0 rather than merely that nothing is listening.
@@ -124,6 +394,21 @@ const tests: Test[] = [
     cmd: '! curl -s --max-time 2 http://localhost:7681/',
     container: noPasswordName,
   },
+  {
+    name: 'no-password container: typed local console actions',
+    cmd: passwordlessActionContract,
+    container: noPasswordName,
+    ...asUser,
+  },
+  {
+    name: 'startup creates no root-owned workspace state',
+    cmd:
+      `set -e; for path in /config/.cache/amp /config/.factory /config/.kiro; do ` +
+      `test ! -e "$path" || [ "$(stat -c %u "$path")" = "$(id -u)" ]; done`,
+    ...asUser,
+  },
+  // As root: /tmp/tmux-0 is root's 0700 socket directory, so abc could never see the socket.
+  { name: 'startup starts no root tmux server', cmd: 'test ! -S /tmp/tmux-0/default' },
 
   // --version, not `which`: cloudflared comes from mise, which writes a shim because the
   // tool is listed in mise.toml, not because it installed. This is the only cloudflared
@@ -155,6 +440,52 @@ const tests: Test[] = [
   {
     name: 'tool roster matches the repo',
     cmd: `[ "$(jq -r '.tools | length' /opt/envhaven/tool-definitions.json)" -eq ${toolCommands.length} ]`,
+    ...asUser,
+  },
+  {
+    name: 'tool launcher defaults, subcommands, and user override',
+    cmd: launcherContract,
+    ...asUser,
+  },
+  {
+    name: 'tool launcher policy is image-owned',
+    cmd: '[ "$(stat -c %u /opt/envhaven/wrappers)" -eq 0 ] && ! test -w /opt/envhaven/wrappers',
+    ...asUser,
+  },
+  // Generated from the REPO's catalog: every tool with launchArgs resolves to its own
+  // launcher link, and no other tool has one. The Dockerfile derives the same list from
+  // the image's copy, so a new tool cannot ship without its defaults.
+  {
+    name: 'catalog launch defaults resolve through the launcher',
+    cmd:
+      `[ "$(ls -A /opt/envhaven/wrappers | wc -l)" -eq ${launcherCommands.length} ] && ` +
+      `for t in ${launcherCommands.join(' ')}; do ` +
+      `[ "$(command -v "$t")" = "/opt/envhaven/wrappers/$t" ] && ` +
+      `[ "$(readlink "/opt/envhaven/wrappers/$t")" = /usr/local/lib/envhaven/envhaven-tool-launcher ] || exit 1; done`,
+    ...asUser,
+  },
+  {
+    name: 'ownership repair does not dereference symlinks',
+    cmd: ownershipRepairContract,
+  },
+  {
+    name: 'bashrc migration is atomic and ignores the legacy temp path',
+    cmd: bashrcMigrationContract,
+    ...asUser,
+  },
+  {
+    name: 'zshrc store hook follows dotfiles links, stays single, and stays inside HOME',
+    cmd: zshrcHookContract,
+    ...asUser,
+  },
+  {
+    name: 'credential store loads after the welcome and without the zsh drop-in',
+    cmd: credentialStoreLoadContract,
+    ...asUser,
+  },
+  {
+    name: 'Antigravity preparation preserves settings, skips keyless launches, refuses empty settings',
+    cmd: antigravityPreparationContract,
     ...asUser,
   },
   ...toolCommands.map((command) => ({
@@ -200,7 +531,11 @@ function cleanup(): Promise<void> {
     await startPromise.catch(() => {});
     log.dim('Cleaning up test containers...');
     // -v drops the anonymous volume the image's `VOLUME /config` creates on every run.
-    await $`docker rm -f -v ${containerName} ${noPasswordName}`.quiet().nothrow();
+    const result = await runBoundedProcess(
+      ['docker', 'rm', '-f', '-v', containerName, noPasswordName, hashPasswordName, filesystemSecurityName],
+      DOCKER_OPERATION_TIMEOUT_MS
+    );
+    if (!result.success && result.output) log.plain(result.output);
   })();
   return cleanupPromise;
 }
@@ -210,37 +545,74 @@ function cleanup(): Promise<void> {
 process.on('SIGINT', () => void cleanup().then(() => process.exit(130)));
 process.on('SIGTERM', () => void cleanup().then(() => process.exit(143)));
 
-function runOnce(test: Test) {
+function runOnce(test: Test, timeoutMs = DOCKER_OPERATION_TIMEOUT_MS) {
   const target = test.container ?? containerName;
-  return dockerExec(target, test.cmd, { user: test.user, env: test.env });
+  return dockerExec(target, test.cmd, { user: test.user, env: test.env, timeoutMs });
 }
 
 async function pollUntilReady(test: Test, deadline: number) {
+  let lastResult: ProcessResult = {
+    success: false,
+    output: `Image boot deadline expired before ${test.name}`,
+  };
+
   for (;;) {
-    const result = await runOnce(test);
-    if (result.success || Date.now() >= deadline) return result;
-    await Bun.sleep(POLL_INTERVAL_MS);
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return lastResult;
+
+    lastResult = await runOnce(test, Math.min(BOOT_PROBE_TIMEOUT_MS, remainingMs));
+    if (lastResult.success || Date.now() >= deadline) return lastResult;
+    await Bun.sleep(Math.max(0, Math.min(POLL_INTERVAL_MS, deadline - Date.now())));
   }
+}
+
+async function startContainer(args: string[], deadline: number): Promise<void> {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) throw new Error('Image boot deadline expired before container creation');
+
+  const result = await runBoundedProcess(['docker', 'run', ...args], remainingMs);
+  if (!result.success) throw new Error(result.output || 'docker run failed');
 }
 
 log.info(`Testing image: ${config.image}`);
 log.info('Starting test containers...');
+const bootDeadline = Date.now() + BOOT_TIMEOUT_MS;
 
-// With a password the documented console flow works; without one the gate holds and 7681
-// never opens. Both are the image's real behaviour, so both need a container, and they
-// start together so neither is penalised for being second.
+// Plaintext and hash-only credentials exercise both self-host token paths; without
+// either credential the gate holds and 7681 never opens. The fourth container seeds
+// hostile persisted paths before s6 starts and uses a non-default uid/gid.
 // allSettled rather than all: `all` rejects while the other `docker run` is still in
 // flight, so cleanup could fire before the surviving container exists and leak it.
 startPromise = Promise.allSettled([
-  $`docker run -d --name ${containerName} -e PASSWORD=${TEST_PASSWORD} -e SUDO_PASSWORD=${TEST_PASSWORD} ${config.image}`.quiet(),
-  $`docker run -d --name ${noPasswordName} ${config.image}`.quiet(),
+  startContainer([
+    '-d', '--name', containerName,
+    '-e', `PASSWORD=${TEST_PASSWORD}`,
+    '-e', `SUDO_PASSWORD=${TEST_PASSWORD}`,
+    config.image,
+  ], bootDeadline),
+  startContainer(['-d', '--name', noPasswordName, config.image], bootDeadline),
+  startContainer([
+    '-d', '--name', hashPasswordName,
+    '-e', `HASHED_PASSWORD=${TEST_PASSWORD_SHA256}`,
+    config.image,
+  ], bootDeadline),
+  startContainer([
+    '-d', '--name', filesystemSecurityName,
+    '-e', 'PUID=1234',
+    '-e', 'PGID=1234',
+    '-e', 'DOCKER_MODS=',
+    '-e', `PASSWORD=${TEST_PASSWORD}`,
+    '--entrypoint', '/bin/bash',
+    config.image,
+    '-c', filesystemSecurityFixture,
+  ], bootDeadline),
 ]);
 const started = await startPromise;
 
 const startFailures = started.filter((r) => r.status === 'rejected');
 if (startFailures.length > 0) {
   log.error('Failed to start test containers');
-  for (const failure of startFailures) log.plain(shellErrorText(failure.reason));
+  for (const failure of startFailures) log.plain(String(failure.reason));
   await cleanup();
   process.exit(1);
 }
@@ -256,7 +628,6 @@ log.dim(
     `then ${imageChecks.length} image checks...`
 );
 
-const deadline = Date.now() + BOOT_TIMEOUT_MS;
 let passed = 0;
 let failed = 0;
 const failedContainers = new Set<string>();
@@ -284,7 +655,7 @@ try {
   // failure into a page of them with nothing marking which is the cause.
   let booted = true;
   for (const test of bootChecks) {
-    if (!record(test, await pollUntilReady(test, deadline))) {
+    if (!record(test, await pollUntilReady(test, bootDeadline))) {
       booted = false;
       break;
     }
@@ -303,7 +674,11 @@ try {
   for (const name of failedContainers) {
     log.newline();
     log.header(`Container logs: ${name}`);
-    await $`docker logs ${name}`.nothrow();
+    const result = await runBoundedProcess(
+      ['docker', 'logs', name],
+      DOCKER_OPERATION_TIMEOUT_MS
+    );
+    if (result.output) log.plain(result.output);
   }
 } finally {
   await cleanup();

@@ -102,7 +102,7 @@ export async function runWatch(
   if (!existsSync(join(EXTENSION_DIR, 'node_modules'))) {
     addLog('info', 'Installing extension dependencies...');
     try {
-      await $`bun install`.cwd(EXTENSION_DIR).quiet();
+      await $`bun install --frozen-lockfile`.cwd(EXTENSION_DIR).quiet();
     } catch {
       addLog('error', 'Failed to install extension dependencies');
       return;
@@ -112,7 +112,7 @@ export async function runWatch(
   if (!existsSync(join(WEBVIEW_DIR, 'node_modules'))) {
     addLog('info', 'Installing webview dependencies...');
     try {
-      await $`bun install`.cwd(WEBVIEW_DIR).quiet();
+      await $`bun install --frozen-lockfile`.cwd(WEBVIEW_DIR).quiet();
     } catch {
       addLog('error', 'Failed to install webview dependencies');
       return;

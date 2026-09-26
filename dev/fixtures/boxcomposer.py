@@ -2,12 +2,14 @@
 """Composer mimic that paints its own background, for predictive-echo e2e.
 
 composer.py, except every rendered row is filled to the full terminal width in
-the application's own background (palette 236). That one difference is the
-whole point: when the engine paints a keystroke before the echo arrives, the
-predicted glyph has to land on the colour the APPLICATION drew. Get it wrong
-and the character sits in a differently coloured hole for a round trip, which
-is visible on every keystroke and invisible to any check that reads the grid
-instead of the pixels. Exit with ^C.
+the application's own background (palette 236) and drafted in its own ink
+(palette 80). Those two differences are the whole point: when the engine paints
+a keystroke before the echo arrives, the predicted glyph has to land on the
+colour the APPLICATION drew, in the colour the APPLICATION would have drawn it
+in. Get either wrong and the character sits in a differently coloured hole for a
+round trip, or in ink that reads as another application's, which is visible on
+every keystroke and invisible to any check that reads the grid instead of the
+pixels. Exit with ^C.
 """
 import os
 import re
@@ -21,6 +23,13 @@ cols, rows = os.get_terminal_size(fd)
 W = cols - 2          # max rendered row length (measured: wrap keeps rows <= cols-2)
 PROMPT, INDENT = '> ', '  '
 BOXBG, BOXRS = '\x1b[48;5;236m', '\x1b[0m'
+# A panelled composer that drew its draft in the DEFAULT foreground would let a predictor
+# painting the theme's colour pass by coincidence, which is exactly what the first run of
+# the draftink check did. The real one this mimics (grok) picks its own from the terminal
+# theme: under a light theme `\x1b[38;5;235m` for the draft, against `248` for its border
+# and `238` for its prompt (under a dark one it drafts in 254 with a 251 prompt), so this
+# does too, and a predictor that guesses the theme's colour is visibly wrong.
+INK = '\x1b[38;5;80m'
 buf, cur = '', 0
 WORD = re.compile(r'[0-9A-Za-zÀ-ɏͰ-ϿЀ-ӿḀ-ỿ]')
 
@@ -71,7 +80,7 @@ def render():
     top = rows - len(lines) - 1  # one status row below, like the composer's hint line
     clear_from = min(top, last_top)  # a shrinking block must erase its old top rows
     last_top = top
-    out = (f'\x1b[{clear_from};1H\x1b[J' + f'\x1b[{top};1H' + '\r\n'.join(BOXBG + ln.ljust(cols)[:cols] + BOXRS for ln in lines)
+    out = (f'\x1b[{clear_from};1H\x1b[J' + f'\x1b[{top};1H' + '\r\n'.join(BOXBG + INK + ln.ljust(cols)[:cols] + BOXRS for ln in lines)
            + f'\x1b[{rows};1H{STATUS}' + f'\x1b[{top + li};{col + 1}H')
     sys.stdout.write(out)
     sys.stdout.flush()

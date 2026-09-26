@@ -4,14 +4,8 @@ export type ContainerStatus = 'running' | 'stopped' | 'not_found';
 
 export async function getContainerStatus(containerName: string): Promise<ContainerStatus> {
   try {
-    const result = await $`docker ps -a --format {{.Names}}:{{.State}}`.quiet();
-    for (const line of result.text().split('\n')) {
-      const [name, state] = line.split(':');
-      if (name === containerName) {
-        return state === 'running' ? 'running' : 'stopped';
-      }
-    }
-    return 'not_found';
+    const result = await $`docker inspect --type container --format {{.State.Running}} ${containerName}`.quiet();
+    return result.text().trim() === 'true' ? 'running' : 'stopped';
   } catch {
     return 'not_found';
   }
@@ -55,20 +49,6 @@ export async function waitForContainer(
   return false;
 }
 
-/**
- * Both streams of a failed `$` call. Bun raises `$.ShellError` for a non-zero exit and
- * also for a command it could not run at all, so this covers a missing container, an
- * unreachable daemon and a missing `docker` binary alike. Anything else — a setup failure
- * such as an unreadable cwd — arrives as a plain `Error` with nothing on either stream,
- * which is why this narrows rather than casts: a cast would turn that case into an empty
- * string and print a bare check name with no reason. Note `$.ShellError` and not a
- * `ShellError` import; the class is only reachable through the `$` namespace.
- */
-export function shellErrorText(error: unknown): string {
-  if (!(error instanceof $.ShellError)) return String(error);
-  return [error.stdout.toString(), error.stderr.toString()].filter(Boolean).join('\n').trim();
-}
-
 export interface ExecOptions {
   /** Run as this user instead of root. Root is neither the uid nor the HOME any workspace
    *  process gets, and it bypasses DAC on top, so a permission check made as root passes
@@ -77,6 +57,54 @@ export interface ExecOptions {
   user?: string;
   /** Extra environment for the exec'd process; `abc` needs HOME=/config. */
   env?: Record<string, string>;
+  /** Maximum wall-clock time for the Docker client process. */
+  timeoutMs?: number;
+}
+
+export interface ProcessResult {
+  success: boolean;
+  output: string;
+}
+
+export async function runBoundedProcess(
+  command: string[],
+  timeoutMs: number
+): Promise<ProcessResult> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new RangeError('Process timeout must be a positive number');
+  }
+
+  try {
+    const process = Bun.spawn(command, {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      process.kill('SIGKILL');
+    }, timeoutMs);
+
+    try {
+      const [exitCode, stdout, stderr] = await Promise.all([
+        process.exited,
+        new Response(process.stdout).text(),
+        new Response(process.stderr).text(),
+      ]);
+      const output = [stdout, stderr].filter(Boolean).join('\n').trim();
+      if (timedOut) {
+        return {
+          success: false,
+          output: [`Process timed out after ${timeoutMs}ms`, output].filter(Boolean).join('\n'),
+        };
+      }
+      return { success: exitCode === 0, output };
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (error) {
+    return { success: false, output: String(error) };
+  }
 }
 
 export async function dockerExec(
@@ -90,15 +118,10 @@ export async function dockerExec(
     flags.push('-e', `${key}=${value}`);
   }
 
-  try {
-    const result = await $`docker exec ${flags} ${containerName} sh -c ${command}`.quiet();
-    return { success: true, output: result.text().trim() };
-  } catch (error) {
-    // Keep the container's own words. This used to return an empty string, so a failed
-    // check printed its name and nothing else, and diagnosing one meant reproducing the
-    // whole boot by hand somewhere else.
-    return { success: false, output: shellErrorText(error) };
-  }
+  return runBoundedProcess(
+    ['docker', 'exec', ...flags, containerName, 'sh', '-c', command],
+    options.timeoutMs ?? 30_000
+  );
 }
 
 export async function dockerExecStream(

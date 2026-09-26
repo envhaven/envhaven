@@ -17,7 +17,7 @@
 import type { Page } from '@playwright/test';
 import { log } from '../log';
 import {
-  PIXEL_VIEWPORT, VIEWPORT, assert, inconclusive, launchApp, quiet, teardownApp,
+  PIXEL_VIEWPORT, VIEWPORT, assert, inconclusive, launchApp, probe, quiet, teardownApp,
   type Check,
 } from '../console-rig';
 
@@ -155,27 +155,28 @@ const ahead = (b: Awaited<ReturnType<typeof burstState>>) =>
   !!b && b.burstRow === b.paneRow && b.modelCol !== b.paneCol;
 
 /**
- * Put Claude Code in the pane and wait until its composer is really drawn.
+ * Put a ghost-drawing composer in the pane and wait until its hint is really drawn.
  *
- * `launchApp` returns once the pane reports `claude`, which happens well before the
- * input box exists. Both checks read the composer row itself, so they wait for the
- * stronger signal: the app's own prompt glyph (U+276F) opening the cursor's row with
- * the caret parked two columns in.
+ * The driver is the mimic with GHOST=1: no real application on the logged-in roster
+ * shows a placeholder anymore (claude's `Try "…"` is gone in v2.1), and the engine's
+ * ghost handling is app-agnostic — it keys on the cells' styling, not on the name.
+ * `launchApp` returns once the pane reports the process, which happens well before
+ * the input box exists; the wait below is for the prompt glyph and the ghost run.
  */
 async function launchComposer(page: Page) {
-  await launchApp(page, 'claude');
+  await launchApp(page, 'ghostmimic');
   try {
     await page.waitForFunction(
       () => {
         const p = window.__ehPredict;
         const t = p.text(p.row);
-        return !!t && t.charCodeAt(0) === 0x276f && p.col === 2;
+        return !!t && t.startsWith('> ') && p.col === 2 && t.trimEnd().length > 3;
       },
       null,
       { timeout: 30000 },
     );
   } catch {
-    inconclusive('Claude Code never drew its composer prompt');
+    inconclusive('the ghost mimic never drew its composer prompt');
   }
   // Measured against the app rather than the wire: the hint lands a beat after the prompt.
   await Bun.sleep(1500);
@@ -195,9 +196,10 @@ async function launchComposer(page: Page) {
  * to clip a screenshot to that one row.
  *
  * Ghost text is any span styled unlike plain input, which is what render() keys on. The
- * two matter equally: the opening `Try "…"` placeholder is `xterm-dim`, while the hint
- * redrawn after a clear is a plain palette grey (`xterm-fg-246`). The first fix keyed on
- * dim alone and shipped the bug in the other, so the match covers both.
+ * two matter equally: Claude Code opened on a `Try "…"` placeholder in `xterm-dim` and
+ * redrew the hint after a clear in a plain palette grey (`xterm-fg-246`), and the ghost
+ * mimic draws the same pair. The first fix keyed on dim alone and shipped the bug in the
+ * other, so the match covers both.
  */
 function composerGhost(page: Page) {
   return page.evaluate(() => {
@@ -243,12 +245,13 @@ export const ghostcover: Check = {
   // symptom: the prediction covers the FIRST columns of the hint while the rest keeps
   // sitting beside the caret, eaten one character per keystroke until the echo erases it.
   //
-  // Two phases, because Claude Code rotates its hint styling and a dim-keyed cover silently
-  // missed the palette-grey one. The unconfirmed window is widened honestly, without
-  // touching latency: a fast multi-character burst cannot match until the WHOLE burst has
-  // echoed, since reconcile needs curCol === line.length, so `matched` stays false for a
-  // full round trip. A phase proves nothing unless the burst was genuinely unconfirmed on
-  // both sides of the screenshot, which is checked either side and skipped when it was not.
+  // Two phases, because Claude Code rotated its hint styling (the mimic keeps the rotation)
+  // and a dim-keyed cover silently missed the palette-grey one. The unconfirmed window is
+  // widened honestly, without touching latency: a fast multi-character burst cannot match
+  // until the WHOLE burst has echoed, since reconcile needs curCol === line.length, so
+  // `matched` stays false for a full round trip. A phase proves nothing unless the burst was
+  // genuinely unconfirmed on both sides of the screenshot, which is checked either side and
+  // skipped when it was not.
   //
   // Fresh pane because phase one is the first placeholder the app ever draws, and an
   // inherited pane may already hold an application or half a typed line.
@@ -383,11 +386,12 @@ export const ghostcover: Check = {
 
       await phase('initial placeholder');
 
-      // Clear the input so the app redraws its hint. It rotates between the dim `Try "…"`
-      // and a palette-grey suggestion, and only the second exercises the branch the
-      // dim-only fix missed, so re-roll for it rather than leave that coverage to chance.
-      // If it never turns up the phase still runs, and the styling it actually saw is
-      // reported, so the result never overclaims.
+      // Clear the input so the mimic redraws its hint. Like Claude Code, it draws every hint
+      // after the first in a plain palette grey, and only that styling exercises the branch
+      // the dim-only fix missed. The re-roll dates from driving Claude Code, whose grey hint
+      // came at random; the mimic draws it on the first clear. If it never turns up the
+      // phase still runs, and the styling it actually saw is reported, so the result never
+      // overclaims.
       let styling = '';
       for (let i = 0; i < 8; i++) {
         await page.keyboard.press('Control+u');
@@ -401,8 +405,9 @@ export const ghostcover: Check = {
       // Past the wrap column, unbroken. wrapStep replaces `tail` wholesale at the seam, and
       // an unbroken token is both what a user types and the composer's hardest wrap branch.
       // No screenshot here: the frame recorder is the assertion.
-      const cols = await page.evaluate(() => (window.__ehPredict.text(window.__ehPredict.row) || '').length);
-      assert(cols > 0, 'could not read the terminal width');
+      // The terminal's own width, never a row's string length: a row holding a combining
+      // mark reads one longer than the terminal is wide.
+      const cols = (await probe(page)).cols;
       const run = 'sdhgaskugaskdgasjhdafgsjdhasfduasyfqwertyuiopasdfghjklzxcvbnm'.repeat(3).slice(0, cols + 12);
       await page.keyboard.type(run, { delay: 20 });
       await Bun.sleep(2200);
@@ -431,7 +436,7 @@ export const ghostcover: Check = {
     } finally {
       await stopBlockFrames(page).catch(() => undefined);
       await teardownApp(page).catch(() => undefined);
-      await page.close();
+      await rig.closePage(page);
     }
   },
 };
@@ -496,7 +501,7 @@ export const staletail: Check = {
   // Four flows, and the erase ones are the only way into that state. A run where the
   // state never armed is measuring nothing, so it reports skipped rather than passing.
   //
-  // Fresh pane for the same reason as ghostcover: the flows need Claude Code launched
+  // Fresh pane for the same reason as ghostcover: the flows need the ghost mimic launched
   // from a shell, drawing the hint it draws on a cold composer.
   needsFreshPane: true,
   async run(rig): Promise<string> {
@@ -562,7 +567,7 @@ export const staletail: Check = {
     } finally {
       await stopBlockFrames(page).catch(() => undefined);
       await teardownApp(page).catch(() => undefined);
-      await page.close();
+      await rig.closePage(page);
     }
   },
 };

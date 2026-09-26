@@ -28,24 +28,14 @@ try {
   await $`bun install --frozen-lockfile`.cwd(EXTENSION_DIR).quiet();
   pass('Extension dependencies installed');
 } catch {
-  try {
-    await $`bun install`.cwd(EXTENSION_DIR).quiet();
-    pass('Extension dependencies installed');
-  } catch {
-    fail('Extension dependencies failed to install');
-  }
+  fail('Extension frozen install failed');
 }
 
 try {
   await $`bun install --frozen-lockfile`.cwd(WEBVIEW_DIR).quiet();
   pass('Webview dependencies installed');
 } catch {
-  try {
-    await $`bun install`.cwd(WEBVIEW_DIR).quiet();
-    pass('Webview dependencies installed');
-  } catch {
-    fail('Webview dependencies failed to install');
-  }
+  fail('Webview frozen install failed');
 }
 
 log.header('Type checking extension host');
@@ -63,6 +53,18 @@ try {
   pass('Extension unit tests passed');
 } catch {
   fail('Extension unit tests failed');
+}
+
+log.header('Running webview unit tests');
+// A separate run because extension/bunfig.toml pins `[test] root` to src/__tests__ (keeping
+// the Playwright specs in e2e/ out of bun test), which also puts webview/ out of reach.
+// What lives here is the icon-adapter guard: generated artwork and renderer coverage must
+// continue to match the canonical tool roster exactly.
+try {
+  await $`bun test`.cwd(WEBVIEW_DIR);
+  pass('Webview unit tests passed');
+} catch {
+  fail('Webview unit tests failed');
 }
 
 log.header('Building extension host');
@@ -117,7 +119,7 @@ if (existsSync(join(WEBVIEW_DIR, 'build/index.html'))) {
 
 log.header('Packaging extension');
 try {
-  await $`bunx vsce package --out envhaven.vsix`.cwd(EXTENSION_DIR);
+  await $`bunx --no-install --package @vscode/vsce vsce package --out envhaven.vsix`.cwd(EXTENSION_DIR);
   pass('Extension packaged successfully');
 } catch {
   fail('Extension packaging failed');

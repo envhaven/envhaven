@@ -8,10 +8,18 @@ Development tooling for EnvHaven. Contains the TUI (`eh`) and standalone scripts
 dev/
 ├── scripts/              # Standalone scripts (SOURCE OF TRUTH)
 │   ├── lib/              # Shared utilities
+│   │   ├── index.ts      # Barrel (config, docker, env, log); console harness and engine excluded
 │   │   ├── config.ts     # Config from .env.dev
 │   │   ├── docker.ts     # Docker operations
 │   │   ├── log.ts        # CLI output formatting
-│   │   └── env.ts        # Env file parsing
+│   │   ├── env.ts        # Env file parsing
+│   │   ├── console-apps.ts      # One row per application the console harness drives
+│   │   ├── engine.ts            # Loads the console model for scripts and reads the engine source
+│   │   ├── console-rig.ts       # Playwright page and browser rig
+│   │   ├── console-proxy.ts     # Local and in-container latency proxy lifecycle
+│   │   ├── console-managed-tmux.ts # Managed auth and ownership-safe tmux isolation
+│   │   ├── console-checks/      # The echo harness's checks, one file per family (wrap, cursor, paint, keys, composers, …)
+│   │   └── console-tests/       # Static asset, model, runtime, and harness contract suites
 │   ├── build.ts          # docker build
 │   ├── start.ts          # docker run
 │   ├── stop.ts           # docker rm
@@ -22,6 +30,10 @@ dev/
 │   ├── test-extension.ts # Extension build test
 │   ├── extension-build.ts
 │   ├── extension-install.ts
+│   ├── test-console-ui.ts    # Small orchestrator for console-tests/; CI, no browser
+│   ├── platform-tool-catalog.ts # Generate/check the catalog artifact and tool docs
+│   ├── test-console-echo.ts  # Predictive-echo harness
+│   ├── measure-tui.ts        # Measures a TUI's composer for the model's `var TUI` table
 │   └── README.md
 ├── src/
 │   ├── actions/          # TUI wrappers (call scripts/)
@@ -35,9 +47,9 @@ dev/
 
 ## Design Principles
 
-1. **Scripts as source of truth** - Core operations (build, start, logs, tests) live in `scripts/`; TUI-only actions (watch, release, shell) live in `src/actions/`
+1. **Scripts as source of truth** - Core operations (build, start, logs, tests) live in `scripts/`; TUI-only actions (watch, release, shell, delete container) live in `src/actions/`. The TUI's recreate is a delete followed by `start.ts`; the script equivalent is `start.ts --fresh`. `scripts/stop.ts` is the reverse case: a script with no key bound to it
 2. **TUI wraps scripts** - `src/actions/` spawn scripts and format output
-3. **CI calls scripts** - GitHub Actions runs `test-extension.ts`, `test-image.ts` and `test-console-ui.ts` directly; only the image build uses Buildx
+3. **CI calls scripts** - GitHub Actions runs the catalog check, `test-extension.ts`, `test-image.ts` and `test-console-ui.ts` directly; only the image build uses Buildx
 4. **Config from env** - Scripts read `dev/.env.dev`, and an exported variable outranks it
 
 ## Tech Stack
@@ -129,15 +141,25 @@ docker exec envhaven-test sh -c '
 
 **Why this works**: code-server reads extensions from `/config/extensions/` at activation. Replacing the directory contents and reloading the sidebar picks up changes without restarting the container.
 
-**When to use**: Any extension change (webview UI, sidebar-provider logic, environment detection, tool-definitions.json). Saves ~10 minutes vs a full `docker build`.
+**When to use**: Any extension change (webview UI, sidebar-provider logic, environment detection, tool-definitions.json). Saves ~10 minutes vs a full `bun dev/scripts/build.ts`.
 
-**When NOT to use**: Changes to the Dockerfile, runtime init scripts, or installed tool versions — those require a full `bun dev/scripts/build.ts`.
+**When NOT to use**: Changes to the Dockerfile, runtime init scripts, or installed tool versions. Those require a full `bun dev/scripts/build.ts`.
 
 **Playwright E2E** can run against the injected extension immediately:
 ```bash
 cd extension && npx playwright test --reporter=list
 ```
 Playwright config lives at `extension/playwright.config.ts`, tests at `extension/e2e/`.
+
+## Console Hot-Inject (echo engine, pump, gate)
+
+The same trick covers `console/`: the binary is Go and embeds the engine, so rebuilding and
+dropping it in replaces everything the browser terminal serves. Stop the service before
+overwriting the binary (`text file busy` otherwise). The full command block, including the
+Docker build (the same golang:1.26 as the image's builder stage; mise's go 1.22.5 also
+builds it) and the verify step, is
+`docs/development.md` → "Trying a console change in a live container". It works against `envhaven-test` and
+managed workspace containers alike.
 
 ## TUI Action Pattern
 

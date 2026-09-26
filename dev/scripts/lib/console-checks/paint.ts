@@ -10,9 +10,10 @@
 // that scale, and at scale 1 a cell offers too few pixels to sample a band inside.
 import type { Page } from '@playwright/test';
 import { log } from '../log';
+import { APPS, type AppName, appsWith } from '../console-apps';
 import {
-  APPS, PIXEL_VIEWPORT, type AppName, type Check, type ConsoleRig, assert, inconclusive,
-  launchApp, probe, quiet, teardownApp,
+  PIXEL_VIEWPORT, type Check, type ConsoleRig,
+  assert, inconclusive, launchApp, probe, quiet, settle, sweep, teardownApp,
 } from '../console-rig';
 
 type Rgb = [number, number, number];
@@ -155,6 +156,11 @@ function rgbOf(css: string): Rgb | null {
   const m = css.match(/(\d+),\s*(\d+),\s*(\d+)/);
   return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
 }
+/** The alpha of a CSS colour, 1 when it has none: xterm draws SGR 2 (dim) as rgba(..., 0.5). */
+function alphaOf(css: string): number {
+  const m = css.match(/^rgba\((?:\s*\d+\s*,){3}\s*([\d.]+)\s*\)/);
+  return m ? Number(m[1]) : 1;
+}
 
 // ---------------------------------------------------------------------------
 // boxbg
@@ -172,6 +178,72 @@ const TOLERANCE = 12;
 // Sampling starts here because the first cells belong to the app's prompt or its box
 // border, which are ink and would read as a wrong background on every run.
 const FIRST_COL = 2;
+
+export const cursorGhost: Check = {
+  name: 'cursor-ghost',
+  what: 'moving between composer rows erases the old inverse caret before its echo arrives',
+  needsFreshPane: true,
+  async run(rig) {
+    const page = await rig.page(PIXEL_VIEWPORT);
+    try {
+      await launchApp(page, 'invcomposer');
+      const start = await probe(page);
+      await page.keyboard.type('x'.repeat(start.cols - 6) + ' yoyo', { delay: 12 });
+      await settle(page, 6000);
+      assert((await probe(page)).wrap?.pull === true, 'the mimic did not establish its two-row composer');
+
+      const moves = [
+        { key: 'Control+a', cross: true },
+        { key: 'Control+e', cross: true },
+        { key: 'Alt+ArrowLeft', cross: false },
+        { key: 'ArrowLeft', cross: true },
+        { key: 'ArrowRight', cross: true },
+        { key: 'Alt+ArrowLeft', cross: true },
+        { key: 'Alt+ArrowRight', cross: true },
+        { key: 'ArrowRight', cross: false },
+        { key: 'ArrowLeft', cross: false },
+      ];
+      for (const move of moves) {
+        await settle(page, 6000);
+        const before = await probe(page);
+        const row = await readRow(page, 'model');
+        assert(!!row, `${move.key}: the source row is missing`);
+        const caret = row!.spans.find((span) => span.col <= before.col && span.col + span.n > before.col);
+        assert(!!caret?.bg && caret.bg !== row!.pageBg, `${move.key}: the source cell has no inverse caret`);
+        const reference = rgbOf(row!.bg || row!.pageBg)!;
+        const sourceText = await page.evaluate((r) => window.__ehPredict.text(r), before.row);
+        await page.keyboard.press(move.key);
+        const pending = await probe(page);
+        assert(!!pending.burst && !pending.hold, `${move.key}: navigation was not predicted`);
+        assert((pending.burst!.row !== before.row) === move.cross,
+          `${move.key}: unexpected predicted row ${pending.burst!.row}, started at ${before.row}`);
+        assert(pending.burst!.row !== before.row || pending.burst!.line.length !== before.col,
+          `${move.key}: the predicted cursor did not move`);
+        const shot = await page.screenshot({ clip: {
+          x: row!.sx + before.col * row!.cw,
+          y: row!.sy + row!.vrow * row!.ch,
+          width: row!.cw, height: row!.ch,
+        } });
+        const after = await probe(page);
+        assert(after.row === before.row && after.col === before.col,
+          `${move.key}: echo arrived before the old caret could be sampled; increase --down`);
+        const pixels = (await samplePixels(page, shot, 1, BAND))[0]!;
+        assert(pixels.every((pixel) => pixel.every((channel, i) => Math.abs(channel - reference[i]!) <= TOLERANCE)),
+          `${move.key}: the old caret is still visible on row ${before.row}, column ${before.col}`);
+        await settle(page, 6000);
+        const landed = await probe(page);
+        assert(landed.row === pending.burst!.row && landed.col === pending.burst!.line.length,
+          `${move.key}: the real cursor did not reach the predicted position`);
+        const unchanged = await page.evaluate((r) => window.__ehPredict.text(r), before.row);
+        assert(unchanged === sourceText, `${move.key}: covering the caret changed its underlying text`);
+      }
+      return `${moves.length} character, word, and Home/End moves cleared the old caret before echo`;
+    } finally {
+      await teardownApp(page).catch(() => undefined);
+      await rig.closePage(page);
+    }
+  },
+};
 
 type BoxShape = 'mimic' | 'inverse' | 'claude';
 
@@ -354,7 +426,7 @@ async function runBoxBg(rig: ConsoleRig, shape: BoxShape): Promise<string> {
       ` (${checked.typing} and ${checked.deleting} columns)`;
   } finally {
     await teardownApp(page).catch(() => undefined);
-    await page.close();
+    await rig.closePage(page);
   }
 }
 
@@ -495,7 +567,164 @@ export const blinkbg: Check = {
       return `the off beat sat on the application's ${box}, with the on beat at ${cursor}`;
     } finally {
       await teardownApp(page).catch(() => undefined);
-      await page.close();
+      await rig.closePage(page);
     }
+  },
+};
+
+// ---------------------------------------------------------------------------
+// draftink
+// ---------------------------------------------------------------------------
+
+// The applications draftink drives: the shell first, then every row of console-apps.ts
+// marked `ink`, in roster order. Why each one is on that list is the comment on its row,
+// where anyone adding a tool looks; the two mimics are there because the real CLIs cannot
+// be held in the states this check needs.
+const INK_APPS: (AppName | null)[] = [null, ...appsWith('ink')];
+
+/** The first painted glyph in the predictor's overlay: its column, its text, its colour. */
+async function overlayInk(page: Page): Promise<{ col: number; text: string; color: string; vrow: number } | null> {
+  return page.evaluate(() => {
+    const screen = document.querySelector('.xterm-screen');
+    const rows = document.querySelector('.xterm-rows');
+    if (!screen || !rows || !rows.children.length) return null;
+    const ch = rows.children[0].getBoundingClientRect().height;
+    for (const layer of Array.from(screen.children)) {
+      if (!(layer instanceof HTMLElement) || layer.style.zIndex !== '10') continue;
+      for (const line of Array.from(layer.children)) {
+        if (!(line instanceof HTMLElement)) continue;
+        // `.eh-ink` is the engine's own name for a run of PREDICTED characters. The overlay
+        // also holds transparent padding, cover runs painted in the background colour and an
+        // inverted cursor block, and picking through those by style reads the wrong cell.
+        const sp = line.querySelector('.eh-ink');
+        if (!(sp instanceof HTMLElement) || !/\S/.test(sp.textContent || '')) continue;
+        let col = 0;
+        for (const prev of Array.from(line.children)) {
+          if (prev === sp) break;
+          col += (prev.textContent || '').length;
+        }
+        return {
+          col, text: sp.textContent || '', color: sp.style.color,
+          vrow: Math.round(parseFloat(line.style.top || '0') / ch),
+        };
+      }
+    }
+    return null;
+  });
+}
+
+/** The colour the application itself drew at one cell, once its echo has landed. */
+async function settledInk(page: Page, vrow: number, col: number): Promise<{ ch: string; color: string } | null> {
+  return page.evaluate(({ vrow, col }) => {
+    const rows = document.querySelector('.xterm-rows');
+    const el = rows && rows.children[vrow];
+    if (!el) return null;
+    let n = 0;
+    for (const sp of Array.from(el.children)) {
+      if (!(sp instanceof HTMLElement)) continue;
+      const t = sp.textContent || '';
+      // Counted even when nothing is read from it: a cursor run occupies real cells, and
+      // skipping it without advancing puts every column after it one cell to the left.
+      const skip = /xterm-cursor|xterm-decoration/.test(sp.className);
+      if (col < n + t.length) {
+        const c = t.charAt(col - n);
+        return !skip && /\S/.test(c) ? { ch: c, color: getComputedStyle(sp).color } : null;
+      }
+      n += t.length;
+    }
+    return null;
+  }, { vrow, col });
+}
+
+export const draftink: Check = {
+  name: 'draftink',
+  what: 'a predicted character is painted in the colour the application draws its draft in',
+  needsFreshPane: true,
+  // The product claim this file exists for is that a predicted character is
+  // indistinguishable from the echoed one, and colour is half of that. Two faults have
+  // shipped against it, in opposite directions, and neither was visible to any check that
+  // reads the grid — the DOM held the right character both times.
+  //
+  //   The theme's foreground, always. grok paints its composer in its own palette, so
+  //   under a light dashboard theme every predicted character came out rgb(10,10,10) on
+  //   rgb(18,18,18): painted on time, and invisible until the echo replaced it.
+  //
+  //   The row's widest ink, always. A composer nobody has typed into holds no draft at
+  //   all, only chrome, so the first keystrokes of every line were painted in zsh's
+  //   prompt colour and in Claude Code's dim placeholder.
+  //
+  // So the assertion is neither of those colours by name: it is that the overlay's glyph
+  // and the application's own glyph, at the same cell, are the same colour. That holds
+  // whatever palette an application picks, and it is the thing the user actually sees.
+  //
+  // Both states are exercised per app, because they take different paths. The FIRST
+  // keystroke of a session has no draft to learn from and rests on the fallback; a later
+  // one is painted in the colour learned from the application's own echo.
+  async run(rig): Promise<string> {
+    const page = await rig.page(PIXEL_VIEWPORT);
+    const notes = await sweep(rig, page, INK_APPS, async (app, v) => {
+      const name = app ?? 'zsh';
+      if (!(await quiet(page, 600, 20000))) {
+        v.skip('the wire never settled after the app took the pane');
+        return;
+      }
+
+      // `phase` types, catches the overlay mid-flight, then lets the echo land and
+      // reads the application's own colour at the very cell the overlay painted.
+      const phase = async (label: string, keys: string) => {
+        await page.keyboard.type(keys, { delay: 12 });
+        const ink = await overlayInk(page);
+        if (!ink) {
+          v.skip(`${label}: no glyph was still unreconciled to read a colour from`);
+          return;
+        }
+        if (!(await quiet(page, 700, 12000))) {
+          v.skip(`${label}: the echo never settled, so there is nothing to compare against`);
+          return;
+        }
+        const real = await settledInk(page, ink.vrow, ink.col);
+        if (!real) {
+          v.skip(`${label}: the application drew nothing at column ${ink.col}`);
+          return;
+        }
+        if (real.ch !== ink.text.charAt(0)) {
+          v.skip(
+            `${label}: predicted ${JSON.stringify(ink.text.charAt(0))} at column ${ink.col}, ` +
+            `the application put ${JSON.stringify(real.ch)} there — different cells cannot be compared`,
+          );
+          return;
+        }
+        const a = rgbOf(ink.color);
+        const b = rgbOf(real.color);
+        if (!a || !b) {
+          v.skip(`${label}: could not read ${ink.color} / ${real.color} as colours`);
+          return;
+        }
+        // Alpha counts: a prediction painted in xterm's dim colour is rgba(..., 0.5) over
+        // the same rgb, and dropping the fourth number would pass it as a match.
+        const off = Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2]),
+                             Math.abs(alphaOf(ink.color) - alphaOf(real.color)) * 255);
+        if (off > TOLERANCE) {
+          v.fail(
+            `${label}: predicted ${JSON.stringify(ink.text.charAt(0))} in ${ink.color}, ` +
+            `the application drew it in ${real.color} (off by ${off})`,
+          );
+        } else {
+          v.pass(`${name}/${label} ${real.color}`);
+        }
+      };
+
+      // Nothing has been typed into this application yet, so there is no draft to have
+      // learned a colour from. This is the state both shipped faults were in.
+      await phase('first', 'q');
+      // And now there is: the colour comes from the application's own echo.
+      await phase('learned', 'wertyu');
+      await page.keyboard.press('Control+U');
+      await Bun.sleep(300);
+    });
+    // A state that was not measured is not a pass: the two faults this check exists for
+    // live in specific rows, and a run that skipped them has not looked (sweep makes any
+    // skip inconclusive).
+    return `${notes.length} state(s) matched the application's own ink: ${notes.join(', ')}`;
   },
 };

@@ -8,30 +8,23 @@
 import type { Page } from '@playwright/test';
 import { log } from '../log';
 import {
-  VIEWPORT, assert, type Burst, type Check, gridRow, inconclusive, launchApp, probe,
-  quiet, teardownApp,
+  VIEWPORT, assert, type Burst, type Check, type Snapshot, gridRow, inconclusive,
+  launchApp, probe, quiet, teardownApp,
 } from '../console-rig';
 
-/** What `probe()` vends, for the helpers that hand a snapshot back to a check. */
-type Snapshot = Awaited<ReturnType<typeof probe>>;
 
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/**
- * The terminal's width, read off the row the cursor is on.
- *
- * The probe pads every row it vends out to the full width, so any live row answers
- * this. The cursor's row is the one guaranteed to exist.
- */
-async function termCols(page: Page): Promise<number> {
-  const cols = await page.evaluate(() => {
-    const p = window.__ehPredict;
-    return p.text(p.row)?.length ?? 0;
-  });
-  assert(cols > 0, 'could not read the terminal width');
-  return cols;
+/** The last row in [from, to) that holds ink, or `fallback` when none does. */
+async function lastInkRow(page: Page, from: number, to: number, fallback: number): Promise<number> {
+  let last = fallback;
+  for (let r = from; r < to; r++) {
+    const t = await gridRow(page, r);
+    if (t && t.trim()) last = r;
+  }
+  return last;
 }
 
 /**
@@ -244,7 +237,7 @@ export const clonecolor: Check = {
       // that merely reaches the wrap column is a coin flip, and a run that never wraps
       // proves nothing at all. Two full rows of content wraps several times at any
       // width this ever runs at.
-      const cols = await termCols(page);
+      const cols = (await probe(page)).cols;
       let draft = '';
       for (let i = 0; draft.length < cols * 2; i++) {
         draft += CLONECOLOR_WORDS[i % CLONECOLOR_WORDS.length] + ' ';
@@ -361,7 +354,7 @@ export const clonecolor: Check = {
       return `${res.checked} rows clone identically; the moved block (${res.boxRows} rows, classed ${JSON.stringify(res.boxCls)}) carries no cursor`;
     } finally {
       await teardownApp(page).catch(() => undefined);
-      await page.close();
+      await rig.closePage(page);
     }
   },
 };
@@ -380,7 +373,7 @@ export const wrapseed: Check = {
   async run(rig): Promise<string> {
     const page: Page = await rig.page(VIEWPORT);
     try {
-      const cols = await termCols(page);
+      const cols = (await probe(page)).cols;
       const start = await probe(page);
       if (start.app !== 'zsh') {
         inconclusive(`the pane is running ${start.app}, so the shell's seeded wrap style is not what would be under test`);
@@ -430,41 +423,54 @@ export const wrapseed: Check = {
       return `the first wrap landed at row ${b.row} column 0 with the edge glyph in column ${cols - 1}, no echo needed`;
     } finally {
       await page.keyboard.press('Control+u').catch(() => undefined);
-      await page.close();
+      await rig.closePage(page);
     }
   },
 };
 
-export const boxrise: Check = {
-  name: 'boxrise',
-  what: 'a composer wrap lifts the box one row and repaints it where the settled box lands',
-  // Launches an application, so it needs the pane sitting at a shell prompt.
-  needsFreshPane: true,
-  // Claude Code grows its composer upward. The wrap adds a row at the top while the
-  // bottom rule holds still, so the engine has to move the frame itself, one row up,
-  // a round trip before the application gets around to it.
-  //
-  // Whether it moved the right rows is a question about content and the probe answers
-  // it. Whether the moved frame LOOKS like the frame that arrives is a question about
-  // pixels, so the top rule is clipped at the instant of the wrap and again once the
-  // echo has settled, and the two bands are compared.
-  async run(rig): Promise<string> {
+// The two growth directions a word-pulling composer can take, and the one app on the
+// roster that seeds each: grok's box is bottom-pinned and rises (the wrap adds a row
+// at the top, the frame moves up), claude's floats and falls (the box grows over its
+// own bottom rule, the frame moves down). One body drives both, because the claim is
+// the same in both directions: the frame the engine moves at the wrap is the frame
+// the echo paints one round trip later. The moved rule is clipped at the instant of
+// the wrap and again once the echo has settled, and the two bands are compared.
+function boxFrame(app: 'grok' | 'claude', up: 'always' | 'layout'): Check['run'] {
+  return async (rig) => {
     const page: Page = await rig.page(VIEWPORT);
     try {
-      const cols = await termCols(page);
-      await launchApp(page, 'claude');
-      await awaitComposer(page);
+      const cols = (await probe(page)).cols;
+      await launchApp(page, app);
+      await quiet(page, 1500, 30000);
+
+      // The frame a wrap moves is read off the live box; grok's box settles to its
+      // bottom-pinned spot a beat after it starts answering, and a wrap measured
+      // before that lands in the engine's stale-height ride (by design, not fault).
+      // Wait for the pinned layout, or say the check never ran.
+      if (up === 'always') {
+        const deadline = Date.now() + 15000;
+        for (;;) {
+          const p = await probe(page);
+          const bottom = await lastInkRow(page, p.row + 1, p.baseY + p.rows, p.row);
+          if ((p.baseY + p.rows - 1) - bottom < p.rows / 2) break;
+          if (Date.now() > deadline) inconclusive('the box never settled to its pinned layout');
+          await Bun.sleep(400);
+        }
+      }
 
       const rest = await probe(page);
       const cursorRow = rest.row;
       assert(
-        !!rest.wrap && rest.wrap.down === false,
-        `the composer seed should grow upward, the engine holds ${JSON.stringify(rest.wrap)}`,
+        !!rest.wrap && rest.wrap.pull,
+        `${app}'s seed should be a word pull, the engine holds ${JSON.stringify(rest.wrap)}`,
       );
 
-      // A run-up that stops a few columns short of the break, then a word to break on.
-      // Sized off the live width for the same reason clonecolor's draft is.
-      await page.keyboard.type('z'.repeat(cols - 14) + ' PALAB', { delay: 5 });
+      // A run-up that stops a few columns short of the break, then a word to break
+      // on. Sized off the live geometry: the apps' floors differ (grok's draft opens
+      // six cells in), and a fixed count wraps one of them during the run-up itself.
+      const room = rest.wrap.atLen - rest.col - 8;
+      if (room < 8) inconclusive(`only ${room} columns of runway before the wrap edge`);
+      await page.keyboard.type('z'.repeat(room) + ' PALAB', { delay: 5 });
       if (!(await quiet(page, 1000, 15000))) inconclusive('the composer never settled before the wrap');
 
       const g = await geom(page);
@@ -477,32 +483,45 @@ export const boxrise: Check = {
       }
 
       const box = wrapped.box;
-      assert(box !== null, 'the wrap moved no frame at all, so the composer box never rose');
+      assert(box !== null, 'the wrap moved no frame at all');
+      // grok's box is bottom-pinned, so its wraps always rise. claude's floats: the
+      // direction is the layout's, read per wrap — the box grows down into blank
+      // rows and rises once its frame reaches the pane's last row. Read the layout
+      // the way the engine just did: the box bottom is the last non-blank row of the
+      // frame, and room below it is what makes down possible at all.
+      let wantDelta: number;
+      if (up === 'always') {
+        wantDelta = -1;
+      } else {
+        const bottom = await lastInkRow(page, cursorRow + 1, Math.min(cursorRow + 5, baseY + rest.rows), cursorRow);
+        wantDelta = bottom < baseY + rest.rows - 1 ? 1 : -1;
+      }
       assert(
-        box.delta === -1,
-        `the wrap should move the box up exactly one row, the frame reports ${JSON.stringify(box)}`,
+        box.delta === wantDelta,
+        `the wrap should move the box ${wantDelta === -1 ? 'up' : 'down'} one row for this layout, the frame reports ${JSON.stringify(box)}`,
       );
       assert(
-        box.textRow === cursorRow - 1,
-        `the pre-wrap text should rise to row ${cursorRow - 1}, the frame put it at ${box.textRow}`,
-      );
-      assert(
-        wrapped.burst.row === cursorRow,
-        `the cursor should keep row ${cursorRow}, the model moved it to ${wrapped.burst.row}`,
-      );
-      const rule = (await gridRow(page, cursorRow + 1))?.replace(/ +$/, '') ?? '';
-      assert(
-        /^─+$/.test(rule),
-        `the bottom rule under the cursor row should still be one unbroken line, the grid holds ${JSON.stringify(rule)}`,
+        wrapped.burst.row === cursorRow + (wantDelta === -1 ? 0 : 1),
+        wantDelta === -1
+          ? `the cursor should keep row ${cursorRow}, the model moved it to ${wrapped.burst.row}`
+          : `the cursor should drop to row ${cursorRow + 1}, the model left it at ${wrapped.burst.row}`,
       );
 
       // The moved rule is the border this whole thing is about, so it is the band that
-      // gets compared by pixels. The input row it lifts is compared by content
+      // gets compared by pixels. Rising, that is the top rule one row up; falling, the
+      // bottom rule one row down. The input row beside it is compared by content
       // instead: overlay text is greyscale-antialiased where xterm's own rows are
       // LCD-antialiased, a difference every predicted glyph in this engine carries and
       // no amount of frame work can settle.
-      const ruleRow = cursorRow - 2;
+      const ruleRow = wantDelta === -1 ? cursorRow - 2 : cursorRow + 2;
       const optimistic = await band(page, g, baseY, ruleRow, ruleRow);
+      // The engine drops its moved frame when the echo lands, so a frame it still holds
+      // after the clip means the clip photographed the engine's frame. An echo that beat
+      // the clip would make both bands the app's own frame, and the comparison would pass
+      // having compared nothing.
+      if ((await probe(page)).box === null) {
+        inconclusive('the echo landed before the optimistic clip finished, so it photographed the settled frame');
+      }
       await Bun.sleep(1800);
 
       // Both bands are pinned to the screen position those rows had before the wrap.
@@ -520,16 +539,30 @@ export const boxrise: Check = {
         inconclusive('the two clips came back different sizes, so the terminal geometry moved under the check');
       }
       if (diff.pct >= DIFF_BUDGET_PCT) {
-        for (const line of await dumpRows(page, ruleRow, cursorRow + 1)) log.dim(`    ${line}`);
+        for (const line of await dumpRows(page, ruleRow - 2, cursorRow + 2)) log.dim(`    ${line}`);
       }
       assert(
         diff.pct < DIFF_BUDGET_PCT,
         `the rule the frame moved to row ${ruleRow} is not the rule the echo drew there: ${diff.visible} of ${diff.total} pixels differ visibly (${diff.pct.toFixed(3)}%)`,
       );
-      return `the box rose one row and the moved rule matched the settled one to within ${diff.pct.toFixed(3)}% of pixels`;
+      return `the box moved one row ${wantDelta === -1 ? 'up' : 'down'} and the moved rule matched the settled one to within ${diff.pct.toFixed(3)}% of pixels`;
     } finally {
       await teardownApp(page).catch(() => undefined);
-      await page.close();
+      await rig.closePage(page);
     }
-  },
+  };
+}
+
+export const boxrise: Check = {
+  name: 'boxrise',
+  what: "grok's bottom-pinned composer lifts its frame one row at a wrap, painted where the settled box lands",
+  needsFreshPane: true,
+  run: boxFrame('grok', 'always'),
+};
+
+export const boxfall: Check = {
+  name: 'boxfall',
+  what: "claude's floating composer moves its frame with the layout at a wrap, painted where the settled box lands",
+  needsFreshPane: true,
+  run: boxFrame('claude', 'layout'),
 };

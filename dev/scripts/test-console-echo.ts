@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // End-to-end checks for the console's predictive echo.
 //
-// console/ui/terminal.html paints a keystroke before the server has echoed it, then
+// console/ui/assets/eh-predictor.js paints a keystroke before the server has echoed it, then
 // reconciles that guess against the real grid as the bytes arrive. Everything about
 // it is a race, so nothing about it can be checked by reading the source: the engine
 // has to be run against a real terminal over a link slow enough for the prediction
@@ -22,24 +22,31 @@
 //   skip    the check never reached the state it guards, so it proved nothing
 // Skips exit non-zero. A guard that did not run is not a guard.
 import { loadConfig, log, isContainerRunning } from './lib';
+import { rosterDrift } from './lib/console-apps';
 import { ConsoleRig, Inconclusive, type Check } from './lib/console-rig';
-import { tailmove, endreach } from './lib/console-checks/cursor';
-import { clonecolor, wrapseed, boxrise } from './lib/console-checks/clone';
+import { retryCleanup, retryableCleanup } from './lib/console-proxy';
+import { tailmove, midline, endreach } from './lib/console-checks/cursor';
+import { clonecolor, wrapseed, boxrise, boxfall } from './lib/console-checks/clone';
 import { seedwrap, wrapkeep } from './lib/console-checks/wrap';
-import { dupeBox, statusCard } from './lib/console-checks/status';
+import { dupeBox, reconnectInput, statusCard } from './lib/console-checks/status';
 import { ghostcover, staletail } from './lib/console-checks/ghost';
-import { boxbgMimic, boxbgInverse, boxbgClaude, blinkbg } from './lib/console-checks/paint';
+import { boxbgMimic, boxbgInverse, boxbgClaude, blinkbg, cursorGhost, draftink } from './lib/console-checks/paint';
 import {
-  keysTyping, keysChords, keysMacChords, keysNav, keysEditing, keysGate,
-  keysLearning, keysComposer,
+  keysTyping, keysChords, keysMacChords, keysNav, keysEditing, keysGate, keysLearning, keysComposer, paneBounds,
 } from './lib/console-checks/keys';
+import {
+  keysEditingComposer, keysWords, keysGhost, keysTrailing, keysStorm, keysReflow,
+} from './lib/console-checks/composers';
 
 // Ordered by what each one costs and what it leaves behind. The cheap state checks
 // come first so a broken engine is reported in a minute rather than in twenty. The
-// two at the end are last for a reason: blinkbg drives a mimic that cannot be killed
-// with ^C, and the status check restarts the console service under a live page.
+// final checks are last for a reason: blinkbg drives a mimic that cannot be killed
+// with ^C, pane-bounds changes the tmux layout, and the transport checks restart the
+// console service under a live page.
 const CHECKS: Check[] = [
   tailmove,
+  midline,
+  cursorGhost,
   endreach,
   keysTyping,
   keysChords,
@@ -49,18 +56,28 @@ const CHECKS: Check[] = [
   keysGate,
   keysLearning,
   keysComposer,
+  keysEditingComposer,
+  keysReflow,
+  keysWords,
+  keysGhost,
+  keysTrailing,
+  keysStorm,
   clonecolor,
   wrapseed,
   boxrise,
+  boxfall,
   seedwrap,
   wrapkeep,
   dupeBox,
   ghostcover,
   staletail,
+  draftink,
   boxbgMimic,
   boxbgInverse,
   boxbgClaude,
   blinkbg,
+  paneBounds,
+  reconnectInput,
   statusCard,
 ];
 
@@ -103,7 +120,42 @@ if (unknown.length) {
 const selected = named.length ? CHECKS.filter((c) => named.includes(c.name)) : CHECKS;
 
 log.info(`Container: ${container}`);
-const rig = await ConsoleRig.open({ container, password, downMs, upMs });
+// A tool is registered once, on its row in lib/console-apps.ts, and each check derives
+// its roster from that row. What can still drift is the row against the model: a seeded
+// app whose wrap table row was deleted, or a word rule the checks never drive. This is the
+// one place that notices, before a run that would print green without ever touching the
+// app. test-console-ui.ts asks the same question in CI, with no container.
+{
+  const drift = rosterDrift();
+  if (drift.length) {
+    log.error(`console-apps.ts and the model disagree: ${drift.join('; ')}`);
+    process.exit(1);
+  }
+}
+
+// A signal may land while the proxy and browser are still opening. Cleanup waits for
+// that attempt, shares concurrent callers, and retries failed owned-resource disposal.
+const rigPromise = ConsoleRig.open({ container, password, downMs, upMs });
+let cleanupPromise: Promise<void> | null = null;
+const closeRig = retryableCleanup(() => rigPromise.then((active) => active.close(), () => undefined));
+function cleanup(): Promise<void> {
+  cleanupPromise ??= retryCleanup(closeRig).finally(() => { cleanupPromise = null; });
+  return cleanupPromise;
+}
+// The first signal owns the rest of the run: it cleans up and exits with its own code. The
+// check loop stops at the next check, because another one would restart the console or
+// kill tmux under that cleanup, and then waits on the same exit rather than print a
+// summary of a run that never finished.
+let stopping: Promise<void> | null = null;
+function exitAfterCleanup(code: number): void {
+  stopping ??= cleanup()
+    .catch((error) => log.error(`Console cleanup failed: ${error instanceof Error ? error.message : String(error)}`))
+    .finally(() => process.exit(code));
+}
+process.on('SIGINT', () => exitAfterCleanup(130));
+process.on('SIGTERM', () => exitAfterCleanup(143));
+
+const rig = await rigPromise;
 
 let passed = 0;
 let failed = 0;
@@ -111,6 +163,7 @@ let skipped = 0;
 
 try {
   for (const check of selected) {
+    if (stopping) break;
     log.newline();
     log.info(`${check.name}: ${check.what}`);
     if (check.needsFreshPane) await rig.resetPane();
@@ -143,7 +196,7 @@ try {
     }
   }
 } finally {
-  await rig.close();
+  await (stopping ?? cleanup());
 }
 
 log.newline();

@@ -58,6 +58,15 @@ def pos_of(idx):
 
 last_top = rows
 STATUS = '  \u23f5\u23f5 mimic status'  # symbol-led like the real composer's hint row
+# GHOST=1 draws a placeholder on the empty input, deleted by the first real
+# character: Claude Code's `Try "…"` contract, so the ghost checks keep a live
+# driver now that the real composer no longer shows one. It keeps the measured
+# styling too. The first placeholder is dim (SGR 2) and every one redrawn after
+# the input empties again is a plain palette grey (246), so the engine's cover
+# is exercised on both kinds of ghost cell.
+GHOST = os.environ.get('GHOST') == '1'
+PLACEHOLDER = 'Try "how do I log an error?"'
+ghost_sgr = '\x1b[2m'
 
 
 def render():
@@ -69,7 +78,10 @@ def render():
     top = rows - len(lines) - 1  # one status row below, like the composer's hint line
     clear_from = min(top, last_top)  # a shrinking block must erase its old top rows
     last_top = top
-    out = (f'\x1b[{clear_from};1H\x1b[J' + f'\x1b[{top};1H' + '\r\n'.join(lines)
+    body = '\r\n'.join(lines)
+    if GHOST and not buf:
+        body = PROMPT + ghost_sgr + PLACEHOLDER + '\x1b[0m'
+    out = (f'\x1b[{clear_from};1H\x1b[J' + f'\x1b[{top};1H' + body
            + f'\x1b[{rows};1H{STATUS}' + f'\x1b[{top + li};{col + 1}H')
     sys.stdout.write(out)
     sys.stdout.flush()
@@ -153,6 +165,8 @@ try:
                 i += 1
             else:
                 i += 1
+        if buf:
+            ghost_sgr = '\x1b[38;5;246m'
         render()
 except KeyboardInterrupt:
     pass
