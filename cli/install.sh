@@ -2,7 +2,7 @@
 #
 # Haven CLI - Remote Install Script
 # Downloads prebuilt binaries from GitHub releases.
-# Served via: curl -fsSL https://envhaven.com/install.sh | sh
+# Served via: curl -fsSL https://envhaven.com/install.sh | bash
 #
 # For local development, use: ./install-local.sh
 #

@@ -31,16 +31,8 @@ cd dev && bun run setup   # One-time: install, build, link
 eh                        # Launch from anywhere
 ```
 
-| Key | Action | Description |
-|-----|--------|-------------|
-| `s` | Start Container | Run or restart `envhaven-test` |
-| `b` | Build Image | Rebuild `envhaven:dev` Docker image |
-| `w` | Watch Extension | Live extension development |
-| `r` | Release | Tag and push (triggers Image + CLI build) |
-| `t` | Test | Submenu: Validate Image, Test CLI, Test Extension |
-| `l` | Logs | Stream container logs |
-| `x` | Shell | SSH into container |
-| `,` | Settings | View/edit configuration |
+The keys are listed in `dev/README.md` under "Keybindings"; `?` inside the TUI shows the
+same list.
 
 ### Configuration
 
@@ -59,6 +51,8 @@ Settings in `dev/.env.dev`:
 | `ENVHAVEN_HOST` | `localhost` | Host for access URLs |
 | `ENVHAVEN_WEB_PORT` | `8443` | Web UI port |
 | `ENVHAVEN_SSH_PORT` | `2222` | SSH port |
+| `ENVHAVEN_CONSOLE_PORT` | `7681` | Embedded console port |
+| `ENVHAVEN_PASSWORD` | `test` | Container password |
 | `ENVHAVEN_HOST_REPO_PATH` | - | Host path for Docker-in-Docker setups (see below) |
 
 ### Docker-in-Docker (DinD) Setup
@@ -97,6 +91,8 @@ The build takes approximately 15-20 minutes due to the number of runtimes and AI
 ```bash
 docker buildx build --platform linux/amd64,linux/arm64 -t envhaven:dev .
 ```
+
+The arm64 half currently fails; [GitHub Actions](#github-actions) says why.
 
 ## Running a Test Container
 
@@ -154,11 +150,11 @@ bun dev/scripts/test-extension.ts
 
 ```bash
 cd console && go vet ./... && go test -race -count=1 ./...
-bun dev/scripts/test-console-ui.ts   # terminal page structure, run from the repo root
+bun dev/scripts/test-console-ui.ts   # terminal runtime structure, run from the repo root
 ```
 
 The browser terminal predicts where an AI CLI's input box will wrap, from a table
-of measured constants in `console/ui/assets/eh-engine.js`. Those applications redesign
+of measured constants in `console/ui/assets/eh-model.js`. Those applications redesign
 their composers between releases, so the table has an instrument rather than a
 comment vouching for it:
 
@@ -172,6 +168,8 @@ application in tmux on a socket of its own, and measures at two widths. Run it
 when a wrap starts looking wrong, and replace the row it reports. It is not in CI:
 it drives third-party TUIs whose startup screens change, and a gate that breaks
 when someone else ships an onboarding dialog would cost more than it catches.
+Adding a tool to the roster is the runbook in `architecture.md` under "Adding New
+Tools"; measuring its composer is step 7 there.
 
 Prediction itself is a race, so none of it can be checked by reading the source.
 `test-console-echo.ts` runs the engine against a real terminal through a proxy
@@ -189,6 +187,12 @@ applications in `dev/fixtures/` are copied into the container for it; they exist
 because the real CLIs cannot be driven into some of the states the checks need, a
 controlled background or a self-drawn caret among them.
 
+The implementation is split by resource: `console-rig.ts` owns Playwright,
+`console-proxy.ts` owns the delay process and run-scoped fixtures, while
+`console-managed-tmux.ts` owns managed token minting and a per-run grouped tmux view.
+Signal cleanup shares in-flight work, retries failed disposal up to three times, and
+remembers each resource only after it closes successfully.
+
 Every check reports pass, fail or skip, and a skip exits non-zero. That
 distinction carries more weight here than usual: a check that never reached the
 state it guards has proved nothing, and counting it as a pass is how a suite stops
@@ -197,7 +201,44 @@ reason `measure-tui.ts` does.
 
 CI runs the Go suite and `test-console-ui.ts` on every pull request, and again on
 the release path: `docker.yml` calls the CI workflow and publishes nothing to
-ghcr unless it passes. The Go suite covers both auth modes (platform JWT and web password), the session pump wire protocol, the HTTP API guard and its CORS behavior, the tmux action allowlist, page framing (CSP `frame-ancestors` and `X-Frame-Options`), the skills domain (`console/skills.go` + `skills_test.go`), and pins the vendored xterm assets byte-for-byte (see `console/ui/assets/LICENSE`). The `/tools` and `/skills` wire shapes are pinned by `console/testdata/*.golden.json`, which the extension's `bun test` also reads for its conformance check, so a change on either side of that contract fails a test.
+ghcr unless it passes. The static test executes the shipped `eh-model.js` directly,
+including the shared v1/v4 frame fixtures and deterministic controller transitions,
+without loading a browser. The Go suite covers both auth modes (platform JWT and web password), the session pump wire protocol, the HTTP API guard and its CORS behavior, the tmux action allowlist, page framing (CSP `frame-ancestors` and `X-Frame-Options`), the skills domain (`console/skills.go` + `skills_test.go`), and pins the vendored xterm assets byte-for-byte (see `console/ui/assets/LICENSE`). The `/tools` and `/skills` wire shapes are pinned by `console/testdata/*.golden.json`, which the extension's `bun test` also reads for its conformance check, so a change on either side of that contract fails a test.
+
+### Trying a console change in a live container
+
+A console change reaches a running workspace without a release: the binary is Go and
+embeds the browser runtime, so a rebuilt binary dropped into a running container is the whole
+deploy: build it in Docker, so the binary carries the same golang:1.26 toolchain as the
+image's console-builder stage (the workspace's mise go 1.22.5 builds it too), copy it
+in, restart the service. `s6-svc -d` first; overwriting a running binary fails with `text file busy`.
+
+```bash
+docker build -f - -t envhaven-console-build . <<'EOF'
+FROM golang:1.26
+WORKDIR /console
+COPY console/go.mod console/go.sum ./
+RUN go mod download
+COPY console/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/envhaven-console .
+EOF
+docker create --name console-extract envhaven-console-build
+docker cp console-extract:/out/envhaven-console /tmp/envhaven-console
+docker rm console-extract
+docker cp /tmp/envhaven-console <container>:/tmp/envhaven-console
+docker exec -u root <container> sh -c \
+  's6-svc -d /run/service/svc-console; sleep 1; \
+   cp /tmp/envhaven-console /opt/envhaven/bin/envhaven-console; \
+   chmod +x /opt/envhaven/bin/envhaven-console; s6-svc -u /run/service/svc-console'
+```
+
+Verify the changed module the container serves matches the tree, for example:
+`curl -s <console>/__console/assets/eh-predict-input.js | grep -c <a symbol your change adds>`.
+The user reloads the console and tests; asset URLs carry a content hash, so no hard refresh
+is needed. The same loop covers `envhaven-test` and a
+managed workspace container; a managed console additionally fatals at startup if it cannot
+fetch the platform's signing keys, and the fix is the environment file in
+`/run/s6/container_environment/` rather than the binary.
 
 ## Project Structure
 
@@ -241,16 +282,18 @@ envhaven/
 │   ├── scripts/          # s6-overlay init scripts
 │   ├── overrides/        # code-server UI patches
 │   └── templates/        # Config templates (AGENTS.md, settings.json)
+├── skills/               # Agent skills; the console fetches these from GitHub at runtime
 ├── Dockerfile
 ├── docker-compose.yml
 ├── mise.toml             # Tool version manifest
+├── tool-definitions.json # The AI tool roster; source of truth for every --version gate
 └── README.md
 ```
 
 ### Directory Distinction
 
-- **`runtime/`** — Packaged into the Docker image, runs inside the container
-- **`dev/`** — Development TUI and scripts, runs on your machine
+- **`runtime/`**: Packaged into the Docker image, runs inside the container
+- **`dev/`**: Development TUI and scripts, runs on your machine
 
 ## Dockerfile Overview
 
@@ -258,20 +301,30 @@ The Dockerfile uses a multi-stage build. See [Architecture](architecture.md) for
 
 ### Stage 1: Extension Builder
 
-Compiles the VS Code extension using `oven/bun:alpine`.
+Compiles the VS Code extension using `oven/bun:1.3.5-alpine`.
+
+### Stage 1b: Console Builder
+
+Compiles the in-container console server (Go) using `golang:1.26`. Its binary is copied into the
+main image.
 
 ### Stage 2: Main Image
 
 Based on `linuxserver/code-server:latest`:
 
-1. **System dependencies** - Build tools, SSH server
-2. **Tool directory** - `/opt/envhaven/bin` (survives `/config` mount)
-3. **mise** - Manages Node.js, Bun, Python, Go, and some AI tools (opencode, goose)
-4. **Rust** - Installed via rustup (cargo, rustc)
-5. **uv** - Python tool installer (aider, vibe, hermes)
-6. **AI Tools** - npm globals (codex, gemini, qwen, amp, auggie, pi, openclaw) + standalone installers (claude, kiro, droid)
-7. **VS Code Extension** - Pre-installed to `/app/pre-installed-extensions`
-8. **s6-overlay Services** - Init scripts from `runtime/scripts/`
+1. **System dependencies** - Build tools and base CLIs via apt
+2. **Docker CLI** - 27.5.1, x86_64-pinned, when `INSTALL_DOCKER=true` (the default)
+3. **SSH server** - Host keys and `sshd_config`
+4. **Tool directory** - `/opt/envhaven/bin` (survives `/config` mount)
+5. **mise** - Manages Node.js, Bun, Python, Go, and some AI tools (opencode, goose, fx, kimi). Once mise is installed the build switches to uid 1000 and stays there through the console binary, so each tool lands owned by the workspace user; a final `find -uid 0` sweep repairs only what the root-run verification block touches
+6. **Rust** - Installed via rustup (cargo, rustc)
+7. **uv** - Python tool installer (vibe, hermes)
+8. **npm globals** - codex, qwen, amp, pi, openclaw
+9. **Playwright** - Browser automation plus Chromium, into `/opt/envhaven/playwright`
+10. **Standalone installers** - claude, kiro, droid, agy, grok, muse
+11. **Console server** - The Go binary from stage 1b, into `/opt/envhaven/bin`
+12. **VS Code Extension** - Pre-installed to `/app/pre-installed-extensions`
+13. **s6-overlay Services** - Init scripts from `runtime/scripts/`
 
 ### Why `/opt/envhaven/bin`?
 
@@ -287,7 +340,7 @@ Solution: Install tools to `/opt/envhaven/bin/` which is never mounted over. Use
 eh    # Press 'w' for Watch Extension
 ```
 
-Edit files in `extension/` — changes auto-compile and reinstall. Reload the browser to see updates.
+Edit files in `extension/`; changes auto-compile and reinstall. Reload the browser to see updates.
 
 ### Manual Extension Development
 
@@ -351,22 +404,32 @@ Scripts in `runtime/scripts/` run at container startup via s6-overlay:
 
 | Script | Purpose |
 |--------|---------|
-| `init-extensions-run` | Install VS Code extensions |
+| `init-env-compat-run` | Compatibility shim for legacy container environments; no self-hosted configuration |
+| `init-extensions-run` | Symlink pre-installed extensions; on first boot only (marked by `/config/.extensions-installed`) fetch the GitHub theme from Open VSX |
 | `init-vscode-settings-run` | Apply VS Code settings |
 | `init-agents-md-run` | Generate AGENTS.md |
 | `init-agent-config-run` | Seed AI agent configs (Claude, Codex) |
 | `init-user-config-run` | Configure git, SSH, and user shell; create `/config/artifacts` |
-| `init-zsh-config-run` | Configure zsh |
+| `init-zsh-config-run` | Configure zsh, add the `.zshrc` credential store hook, and migrate legacy EnvHaven-owned rc exports into the managed credential store. Each failure is logged and startup continues, because code-server, sshd and the console wait on it |
 | `svc-sshd-run` | Run SSH daemon |
 | `svc-cloudflared-run` | Cloudflare tunnel (if `CLOUDFLARE_TUNNEL_TOKEN` set) |
-| `svc-console-run` | In-container console server (:7681) |
+| `svc-console-run` | In-container console server (:7681): the browser terminal and the `/__console/` HTTP API, documented in `configuration.md` |
+| `svc-console-finish` | s6 finish script for the console service |
 
-User-facing scripts (installed to `/opt/envhaven/bin/`):
+Runtime executables:
 
-| Script | Command | Purpose |
-|--------|---------|---------|
-| `envhaven-status` | `envhaven` | Workspace status banner |
-| `envhaven-welcome.sh` | - | Shell init (auto-attach) |
+| Script | Installed to | Command | Purpose |
+|--------|--------------|---------|---------|
+| `envhaven-status` | `/opt/envhaven/bin/` | `envhaven` | Workspace status banner; ready tool names come from `envhaven-console --ready-tools` |
+| `envhaven-tool-launcher` | `/usr/local/lib/envhaven/` with links in `/opt/envhaven/wrappers/` | Each catalog tool with `launchArgs` | Apply catalog-declared launch defaults in interactive and non-interactive shells; the build derives the links from the catalog |
+| `envhaven-prepare-antigravity` | `/usr/local/lib/envhaven/` with a PATH link | - | Preserve settings while selecting Gemini for key auth |
+| `envhaven-install-rc-hook` | `/usr/local/lib/envhaven/` | - | Atomically keep one EnvHaven line in `.bashrc` (the bash additions) or at the end of `.zshrc` (the credential store, for zsh that never runs the Oh My Zsh drop-in) |
+| `claude-auth-helper` | `/opt/envhaven/bin/` | - | Claude's `authCommand` in `tool-definitions.json` |
+| `envhaven-version-check` | `/opt/envhaven/bin/` | - | Image version check |
+| `tmux-copy-hint` | `/opt/envhaven/bin/` | - | Copy-mode hint shown in tmux |
+| `envhaven-welcome.sh` | `/defaults/` | - | Shell init (auto-attach), sourced by the bash and zsh rc additions |
+| `bashrc-additions` | `/defaults/` | - | Bash rc additions: sources `envhaven-welcome.sh`, then the managed credential store, so the tmux server the welcome starts never inherits stored keys |
+| `zshrc-additions` | `/defaults/` | - | Oh My Zsh drop-in: selects the EnvHaven theme over the stock default, then sources `envhaven-welcome.sh` and the managed credential store, in that order, so the tmux server the welcome starts never inherits stored keys |
 
 ## GitHub Actions
 
@@ -378,4 +441,4 @@ CI/CD is split across three workflows in `.github/workflows/`:
 | `docker.yml` | Push to `master`, `v*` tags | Build and push the image to GitHub Container Registry (`dev` on master; `X.Y.Z`, `X.Y` and `latest` on a tag) |
 | `cli.yml` | `v*` tags (plus a `latest` artifact on `master`) | Build and release Haven CLI binaries |
 
-CI builds `linux/amd64` only, and each tag points at a single manifest rather than an index. Adding arm64 means restoring the push-by-digest build and the manifest-merge job `docker.yml` used to carry, plus an arch case for the x86_64-pinned docker binary at `Dockerfile:83` ([issue #1](https://github.com/envhaven/envhaven/issues/1)). Until then the multi-arch command below produces an arm64 image that cannot run Docker-in-Docker.
+CI builds `linux/amd64` only, and each tag points at a single manifest rather than an index. Adding arm64 means restoring the push-by-digest build and the manifest-merge job `docker.yml` used to carry, plus an arch case for each of the two x86_64-pinned artefacts in the `Dockerfile`: the static docker binary and grok's release asset ([issue #1](https://github.com/envhaven/envhaven/issues/1)). Until then an arm64 build fails at grok's install step.

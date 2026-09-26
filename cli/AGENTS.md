@@ -43,7 +43,7 @@ cli/
 │   ├── build.ts              # Build script
 │   └── bundle-mutagen.ts     # Mutagen bundling
 ├── test/                     # Unit tests
-├── install.sh                # curl | sh installer
+├── install.sh                # curl | bash installer
 └── install-local.sh          # Local build + install
 ```
 
@@ -53,8 +53,8 @@ cli/
 
 Only 3 commands are handled by the CLI:
 - `haven connect [path] [target]` - Connect with optional inline target
-- `haven disconnect`
-- `haven status`
+- `haven disconnect [path]`
+- `haven status [path]`
 
 Everything else is passed through to the remote: `haven opencode` → `ssh remote opencode`
 
@@ -76,7 +76,8 @@ Target formats:
 
 ### Connection Config
 
-Stored in `~/.config/haven/connections.json`:
+Stored in `~/.config/haven/connections.json` (`XDG_CONFIG_HOME` wins if set; per-connection session
+state lives beside it in `sessions/<hash>.json`, and the mutagen data dir honours `XDG_DATA_HOME`):
 
 ```json
 {
@@ -112,13 +113,13 @@ When no SSH keys exist, Haven generates `~/.ssh/haven_ed25519`:
 - No passphrase (works without ssh-agent)
 - Comment: `haven-cli`
 
-This is the simplest path — one-time setup, zero ongoing maintenance.
+This is the simplest path: one-time setup, zero ongoing maintenance.
 
 #### Proactive Key Encryption Detection
 
 The CLI detects encrypted (passphrase-protected) keys **before** attempting connection. This avoids confusing failures from BatchMode's inability to prompt for passphrases.
 
-**Detection method:** `ssh-keygen -y -P "" -f <keyfile>` — exits non-zero if key is encrypted.
+**Detection method:** `ssh-keygen -y -P "" -f <keyfile>`, which exits non-zero if the key is encrypted.
 
 **Agent check:** `ssh-add -l` returns fingerprints of keys loaded in ssh-agent.
 
@@ -254,7 +255,7 @@ Users who log in via GitHub OAuth have their SSH keys automatically imported to 
 - **Passphrase-less**: Just works
 - **Passphrase-protected**: Need ssh-agent with key loaded
 
-The haven key option still works — it just means having two authorized keys on the workspace.
+The haven key option still works; it just means having two authorized keys on the workspace.
 
 ### SSH Configuration
 
@@ -349,7 +350,7 @@ The CLI has two distribution channels:
 When a git tag `v*` is pushed:
 - `release` job builds all platform binaries
 - Binaries are uploaded to GitHub releases
-- Users install via: `curl -fsSL https://raw.githubusercontent.com/envhaven/envhaven/master/cli/install.sh | sh`
+- Users install via: `curl -fsSL https://raw.githubusercontent.com/envhaven/envhaven/master/cli/install.sh | bash`
 
 This path only works when the repo is public.
 
@@ -359,7 +360,7 @@ On every push to master that changes `cli/`:
 - `latest` job builds all platform binaries
 - Binaries are uploaded as workflow artifact `haven-cli-latest`
 - Platform (`envhaven/platform`) proxies downloads with beta token verification
-- Users install via: `curl -fsSL "https://envhaven.com/install.sh?beta=TOKEN" | sh`
+- Users install via: `curl -fsSL "https://envhaven.com/install.sh?beta=TOKEN" | bash`
 
 **Key differences:**
 
@@ -376,7 +377,13 @@ On every push to master that changes `cli/`:
 - Beta testers who want the latest features
 - Internal team always on latest
 
-The install script at `envhaven.com/install.sh` auto-adds `~/.local/bin` to the user's PATH by modifying their shell rc file (.zshrc, .bashrc, etc.).
+The install script at `envhaven.com/install.sh` writes the binary to `~/.local/bin` and, when that
+directory is not already on `PATH`, prints the `export PATH="$PATH:$HOME/.local/bin"` line for the
+user to add. It does not modify any shell rc file. It is a `#!/bin/bash` script (`[[ ]]`, `&>`):
+under dash it still installs the binary but prints `[[: not found` and skips the PATH hint (and
+`&>` parses as a background job plus an empty redirect, so the curl branch runs whether or not
+curl exists), and
+macOS `sh` is bash in POSIX mode; `| bash` is the form that behaves the same everywhere.
 
 ## Common Issues
 

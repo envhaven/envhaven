@@ -27,6 +27,10 @@ Inherited from [linuxserver/code-server](https://docs.linuxserver.io/images/dock
 | `ENVHAVEN_MANAGED` | false | Set to `true` only on managed hosting: switches the extension UI and the browser terminal's auth to platform JWT mode, which needs platform-injected credentials. Do not set when self-hosting. |
 | `HAVEN_IDLE_TIMEOUT` | - | Auto-disconnect Haven CLI sessions after idle period (e.g., `30m`, `2h`, `0` to disable) |
 | `ENVHAVEN_SKIP_WELCOME` | - | Set to `1` to skip auto-attach to tmux on shell start |
+| `ENVHAVEN_EXPOSED_PORT` | `3000` | Which loopback port counts as "your app". `envhaven-status` and the sidebar's Live URL card show it only on managed hosting; self-hosted it surfaces only as `preview.port` and `preview.portOpen` in `GET /__console/stats` |
+| `GITHUB_TOKEN` | - | Authenticates the console's skills-registry calls to the GitHub API. Unset means the anonymous rate limit |
+| `OPENCODE_PERMISSION` | `{"*":"allow"}` | Baked into the image. The container is the sandbox, so OpenCode runs without permission prompts. Override it at `docker run` if you want prompts back |
+| `FX_PERMISSION_MODE` | `yolo` | Baked into the image for the same reason. fx's own default, `auto`, sends every unresolved tool call to a reviewer model and bills that request. Override it at `docker run` with `ask` or `auto` |
 | `CLOUDFLARE_TUNNEL_TOKEN` | - | Expose the container through your own Cloudflare tunnel. Unset = the built-in `cloudflared` service stays off. |
 
 ### AI Tool API Keys
@@ -35,17 +39,28 @@ Set the key(s) for the tools you use. This is the complete list of recognized va
 
 | Variable | Notes |
 |----------|-------|
-| `ANTHROPIC_API_KEY` | `sk-ant-...` — Claude Code, OpenCode, Pi, OpenClaw, Hermes Agent, Aider, Goose |
+| `ANTHROPIC_API_KEY` | `sk-ant-...` for Claude Code, OpenCode, Pi, OpenClaw, Hermes Agent, Goose |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Use a Claude subscription instead of a key (`claude setup-token`) |
-| `OPENAI_API_KEY` | `sk-...` — Codex, OpenCode, Pi, OpenClaw, Hermes Agent, Aider, Goose, Qwen Code |
-| `GEMINI_API_KEY` | Gemini CLI, OpenCode, Pi, OpenClaw, Hermes Agent, Aider |
-| `GOOGLE_API_KEY` | Alias for Gemini access (Gemini CLI, OpenCode, Pi, OpenClaw, Hermes Agent) |
+| `CODEX_ACCESS_TOKEN` | Enterprise Codex automation credential; process-owned, so removing it requires a workspace restart |
+| `OPENAI_API_KEY` | `sk-...` for OpenCode, Pi, OpenClaw, Hermes Agent, Goose, Qwen Code |
+| `GEMINI_API_KEY` | OpenCode, Pi, OpenClaw, Hermes Agent, Antigravity CLI |
+| `GOOGLE_API_KEY` | Alias for Gemini access (OpenCode, OpenClaw, Hermes Agent) |
 | `MISTRAL_API_KEY` | Mistral Vibe |
-| `OPENROUTER_API_KEY` | Aider, Hermes Agent (OpenRouter models) |
+| `OPENROUTER_API_KEY` | Hermes Agent (OpenRouter models) |
 | `AMP_API_KEY` | Amp |
-| `AUGMENT_SESSION_AUTH` | Augment (`auggie token print`) |
-| `FACTORY_API_KEY` | Factory Droid |
-| `QWEN_API_KEY` | Qwen Code |
+| `FACTORY_API_KEY` | Factory |
+| `XAI_API_KEY` | `xai-...` for Grok Build |
+| `META_API_KEY` | Muse Code |
+| `AI_GATEWAY_API_KEY` | `vck_...` for fx (Vercel AI Gateway) |
+
+Keys saved through the EnvHaven Variables pane or a tool's Launch menu live in
+`~/.config/envhaven/environment`. The console atomically replaces this complete mode-`0600` store,
+and fresh bash and zsh sessions source it. Manually authored exports in `.bashrc` or `.zshrc` remain
+valid and detectable, but EnvHaven never edits or removes them. Process-level values come from the
+container configuration and require a workspace restart after changes. Startup migrates explicit
+`# envhaven` exports from older images. It also recognizes the earlier sidebar's unmarked format only
+when both rc files contain one static double-quoted export with the same decoded name and value for a
+known managed variable. Duplicates, mismatches, and every other unmarked export remain user-owned.
 
 ## SSH Configuration
 
@@ -62,14 +77,14 @@ ssh abc@localhost -p 2222
 
 ### Key-Based Authentication (Recommended)
 
-**The easiest way**: Import your SSH public keys directly from GitHub! GitHub stores your public keys at `https://github.com/USERNAME.keys`.
+**The easiest way**: Import your SSH public keys directly from GitHub. GitHub stores your public keys at `https://github.com/USERNAME.keys`.
 
 ```yaml
 environment:
   - PUBLIC_KEY_URL=https://github.com/yourusername.keys
 ```
 
-That's it! All your GitHub-registered SSH **public** keys are automatically added to `authorized_keys` on container startup.
+That's it. All your GitHub-registered SSH **public** keys are automatically added to `authorized_keys` on container startup.
 
 **Other options:**
 
@@ -200,14 +215,26 @@ Everything else stays with the browser. `⌘C`, `⌘V`, `⌘A` and every chord n
 
 The console port also serves a small HTTP API under `/__console/`, used by the extension sidebar and the managed dashboard. Every route requires the same `Authorization: Bearer` token the WebSocket presents; there is no separate credential.
 
-- `GET /__console/stats`: CPU, RAM, disk, tmux windows, preview-port status
+When a passwordless self-host disables that HTTP service, the in-container extension can
+still run the fixed tmux actions through the console binary's local JSON mode. This does not
+open port 7681, and the binary applies the same allowlist and validation as the HTTP route.
+
+- `GET /__console/stats`: CPU, RAM, disk (used and reachable capacity, the figures `df` reports), tmux windows, preview-port status
 - `GET|POST /__console/tools`: the AI-tool catalog with per-tool install and auth status; `POST` sets an API key or signs a tool out
 - `GET|POST|DELETE /__console/env`: names of dashboard-managed env vars (never their values); `POST` sets one, `DELETE` removes one
 - `GET|POST /__console/skills`: installed list, registry search, install/remove; `GET /__console/skills/markdown` and `.../skills/local` fetch a skill's SKILL.md
 - `GET|POST|DELETE /__console/artifacts`: list, upload, delete files in `/config/artifacts`; `GET /__console/artifacts/raw` downloads one
 - `POST /__console/action`: tmux actions, fixed allowlist: `launch`, `connect`, `new-window`, `select-window`, `kill-window`, `insert-path`
+- `GET /__console/assets/<file>`: the terminal page's own bundles, fonts and engine, unauthenticated; each is served with a content-hash `ETag` and `Cache-Control: no-cache`, and the page loads them by hash-stamped URLs, so a viewer never runs one build's engine under another build's page
 
 Self-hosted, the API never sets `Access-Control-Allow-Origin`, so browsers can call it same-origin only; a CORS allowlist exists solely for the managed dashboard's origins. The self-host terminal page also refuses to be embedded (`X-Frame-Options: DENY`); open it top-level.
+
+Managed hosting supplies that policy as a comma-separated list of full origins. Entries
+are exact unless the hostname starts with
+one complete wildcard label, for example `https://*.envhaven.dev`. Scheme and explicit
+port state always match exactly, and a wildcard admits subdomains but not its bare apex.
+The same parsed list controls CORS, WebSocket upgrades, and CSP `frame-ancestors`; invalid
+entries are discarded, and an empty result falls back to exact `https://envhaven.com`.
 
 ### Predictive echo
 
@@ -221,16 +248,25 @@ Without the parameter, or with `?echo=0`, the terminal shows only what the serve
 
 Predictive echo is built to stay away from secrets, and it fails toward caution. The server watches the active shell and withholds local echo during standard hidden prompts (`sudo`, `passwd`, `read -s`, and anything else that turns off terminal echo), while known secret readers such as `gpg` and `pinentry` run in the foreground, and inside sessions it cannot see into (`ssh`, `docker`, a nested `tmux`). Any error on that path disables prediction rather than risking a guess.
 
+Current pages negotiate predictive protocol v4. Its gate frame carries the active pane's
+top, bottom, left, and right edges, with bottom and right exclusive, so prediction stays
+inside both stacked and side-by-side tmux splits. The server also retains the shipped v1
+contract for already-open pages across restarts and rollbacks; because it has no pane
+geometry, it remains conservatively unsafe.
+Safe panes keep the full observation cadence so a silent unsafe transition is caught.
+Only panes the browser already knows are unsafe reduce observations while idle.
+
 One honest caveat. A program that draws its own masked password field while keeping the terminal in a mode indistinguishable from a normal editor, and that is not on the server's known-reader list, can have a typed character painted for a moment before the mask catches up. The list covers the common cases; if that residual risk matters for your threat model, leave predictive echo off.
 
-Setting `ENVHAVEN_SKIP_WELCOME=1` disables predictive echo entirely. The safety gate watches the tmux session the console renders (its own `console-view` grouped session when self-hosting; the shared `envhaven` session on managed hosting), and skipping the auto-attach breaks that link, so the server refuses to predict rather than vouch for a pane it may not be showing.
+Setting `ENVHAVEN_SKIP_WELCOME=1` disables predictive echo entirely. The safety gate watches the tmux session the console renders (its own `console-view` grouped session when self-hosting; the shared `envhaven` session on managed hosting), and skipping the auto-attach breaks that link, so the server reports every pane as unsafe rather than vouch for a pane it may not be showing. The console still takes input as usual; each keystroke simply appears once the server echoes it.
 
 ## Bundled Developer Tools
 
-Command-line tools are baked into the image at build time, so they are available the moment the container boots (there is no first-start package download).
+Command-line tools are baked into the image at build time, so they are available the moment the container boots. Nothing about the CLI toolchain is downloaded on first start. A fresh container still reaches the network for the zsh mod below, which LinuxServer's mod loader pulls from the registry with oh-my-zsh inside, and for the GitHub VS Code theme, which `init-extensions` installs from Open VSX once.
 
 - **Installed via `apt`:** `ripgrep`, `jq`, `sqlite3`, `htop`, `unzip`, `git`, `zsh`, `tmux`, `ffmpeg`, plus `curl` and `wget`.
-- **Installed via `mise`:** `fd` (file finder), `gh` (GitHub CLI), and the language runtimes.
+- **Installed via `mise`:** `fd` (file finder), `gh` (GitHub CLI), `cloudflared`, `uv`, and the language runtimes.
+- **Also baked in:** the Docker CLI (27.5.1, when `INSTALL_DOCKER=true`, which is the default) and Playwright with Chromium under `/opt/envhaven/playwright`.
 
 The only LinuxServer.io mod in use adds the zsh shell:
 
@@ -304,7 +340,7 @@ volumes:
   envhaven-config:
 ```
 
-See `.env.example` in the repository for all available environment variables.
+See `.env.example` in the repository for a starting compose environment; the Environment Variables tables at the top of this page are the full list of keys.
 
 > **Upgrading from a pre-1.x compose file?** Early copies of `docker-compose.yml` mounted the volume as `envhaven-files` while declaring `envhaven-config`, which Compose rejects; if you fixed that locally by renaming the declaration, your data lives in a volume named `<project>_envhaven-files`. Either keep your local name, or migrate once with the container stopped:
 >

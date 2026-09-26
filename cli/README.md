@@ -2,14 +2,14 @@
 
 Local editor + remote AI coding environment.
 
-Haven CLI enables you to use your local editor (Vim, VS Code, Zed, or anything else) while AI tools (Claude Code, OpenCode, aider) run extended sessions on remote EnvHaven containers.
+Haven CLI enables you to use your local editor (Vim, VS Code, Zed, or anything else) while AI tools (Claude Code, OpenCode, Codex) run extended sessions on remote EnvHaven containers.
 
 ## Installation
 
 ### macOS / Linux
 
 ```bash
-curl -fsSL https://envhaven.com/install.sh | sh
+curl -fsSL https://envhaven.com/install.sh | bash
 ```
 
 ### Windows
@@ -18,7 +18,7 @@ Haven CLI requires WSL (Windows Subsystem for Linux):
 
 ```bash
 # In WSL terminal
-curl -fsSL https://envhaven.com/install.sh | sh
+curl -fsSL https://envhaven.com/install.sh | bash
 ```
 
 ### Manual Installation
@@ -55,7 +55,7 @@ haven connect .
 # Run AI tools on remote
 haven opencode
 haven claude
-haven aider
+haven codex
 
 # Run any command on remote
 haven npm install
@@ -115,17 +115,18 @@ haven connect . --use-gitignore
 | `preview-myproject-alice.envhaven.app` | Preview URL (via CF tunnel) |
 | `ssh-myproject-alice.envhaven.app` | SSH access (direct A record, port 22) |
 
-### `haven disconnect`
+### `haven disconnect [path]`
 
-Stop sync and disconnect from remote workspace.
+Stop sync and disconnect from remote workspace. Defaults to the current directory.
 
 ```bash
 haven disconnect
+haven disconnect ~/code/myproject
 ```
 
-### `haven status`
+### `haven status [path]`
 
-Show connection and sync status.
+Show connection and sync status. Defaults to the current directory.
 
 ```bash
 # Standard output
@@ -147,7 +148,7 @@ Run any command on the remote workspace.
 
 ```bash
 haven opencode           # Start OpenCode session
-haven aider --model gpt-4   # Run aider with args
+haven codex "fix the test"  # Run Codex with args
 haven npm install        # Run npm
 haven git push          # Run git
 ```
@@ -195,7 +196,7 @@ haven -- status
 │           ▲                       ▲                       ▲            │
 │           │                       │                       │            │
 │  ┌────────┴────────┐     ┌────────┴────────┐     ┌────────┴────────┐   │
-│  │  Claude Code    │     │    OpenCode     │     │     aider       │   │
+│  │  Claude Code    │     │    OpenCode     │     │     Codex       │   │
 │  │  Long-running   │     │  Long-running   │     │  Task-based     │   │
 │  │  AI sessions    │     │  AI sessions    │     │  AI sessions    │   │
 │  └─────────────────┘     └─────────────────┘     └─────────────────┘   │
@@ -248,9 +249,13 @@ This prevents accidentally syncing your entire home directory or massive depende
 
 ```
 ~/.config/haven/connections.json   # Connection mappings
+~/.config/haven/sessions/          # Session state, one file per local directory (hashed canonical path)
 ~/.local/share/haven/mutagen/      # Mutagen data
 ~/.ssh/config                       # SSH config (host entries appended per connection)
 ```
+
+`XDG_CONFIG_HOME` and `XDG_DATA_HOME` are honoured and take precedence over the two defaults
+above.
 
 ### SSH Keys
 
@@ -292,12 +297,12 @@ What would you like to do?
 Choice [1]:
 ```
 
-**Option 1 (Haven key)** — simplest, zero ongoing maintenance:
+**Option 1 (Haven key)**, simplest with zero ongoing maintenance:
 - Generates `~/.ssh/haven_ed25519` with no passphrase
 - Shows the public key to add to your workspace
 - One-time setup, works forever
 
-**Option 2 (ssh-agent)** — for users who prefer their existing keys:
+**Option 2 (ssh-agent)**, for users who prefer their existing keys:
 ```bash
 eval "$(ssh-agent -s)"
 ssh-add
@@ -334,7 +339,7 @@ If keys are usable but connection still fails:
 | "Permission denied" | Key not authorized | Add public key to workspace |
 | Timeout | Workspace stopped or firewall | Check workspace status |
 
-The haven key is always the simplest fix — one-time setup, no ongoing maintenance.
+The haven key is always the simplest fix: one-time setup, no ongoing maintenance.
 
 ### SSH Configuration
 

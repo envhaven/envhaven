@@ -26,8 +26,8 @@ As tools like Claude Code, OpenCode and Codex gain agency, they need full system
 EnvHaven is an isolated, remote environment with every major AI coding tool built-in. The container provides the isolation, so all agents ship with full access by default. No approval prompts, no confirmation dialogs. Your local machine stays untouched.
 
 **Workflow Freedom:**
-- **Browser-only** — Deploy the image, open VS Code in your browser, run `opencode`. Zero setup.
-- **Local editor + remote AI** — Use the Haven CLI to sync your project. Edit in Neovim, Zed, Jetbrains, et al. while agents run in the container. Changes sync in ~200ms.
+- **Browser-only**: Deploy the image, open VS Code in your browser, run `opencode`. Zero setup.
+- **Local editor + remote AI**: Use the Haven CLI to sync your project. Edit in Neovim, Zed, Jetbrains, et al. while agents run in the container. Changes sync in ~200ms.
 
 ---
 
@@ -37,13 +37,13 @@ EnvHaven is an isolated, remote environment with every major AI coding tool buil
 Give autonomous agents full access in a containerized environment. If they break something, nuke the workspace and start over. Your local machine stays untouched.
 
 🖥️ **Pick Up Where You Left Off**
-Start Claude Code on your laptop, close the lid, resume from your desktop—same session, same state. Your AI agents and dev servers keep running while you're away. Come back from any device.
+Start Claude Code on your laptop, close the lid, resume from your desktop: same session, same state. Your AI agents and dev servers keep running while you're away. Come back from any device.
 
 🌲 **Evergreen AI Tooling**
-The landscape moves too fast to manage manually. EnvHaven ships with 15+ AI CLI tools (Claude Code, OpenCode, Aider, Codex, Gemini CLI, Goose, Mistral Vibe, etc.) built-in and ready to run.
+The landscape moves too fast to manage manually. EnvHaven ships with 17 AI CLI tools (Claude Code, OpenCode, Codex, Kimi Code CLI, Muse Code, Goose, etc.) built-in and ready to run.
 
 🌐 **Instant Public URLs** *(Managed only)*
-Every managed workspace gets a wildcard `*.envhaven.app` domain. Deploy a web app, webhook receiver, or Discord bot—live instantly. No ngrok, no tunnels, no DNS.
+Every managed workspace gets a wildcard `*.envhaven.app` domain. Deploy a web app, webhook receiver, or Discord bot. Live instantly, with no ngrok, no tunnels, no DNS.
 
 💾 **Persistent & Owned**
 Unlike ephemeral environments (Codespaces) or walled gardens (Replit), EnvHaven workspaces are persistent Linux environments you own.
@@ -78,16 +78,16 @@ docker run -d \
   ghcr.io/envhaven/envhaven:latest
 ```
 
-1. Open `https://localhost:8443` (Password: `password`)
-2. Open terminal—you're dropped into a persistent session
-3. Run `opencode`, `claude`, or `aider` and start coding
+1. Open `http://localhost:8443` (Password: `password`)
+2. Open terminal; you're dropped into a persistent session
+3. Run `opencode`, `claude`, or `codex` and start coding
 
 ### Path B: Local Editor + Remote AI (Haven CLI)
 Use your local editor. Files sync bidirectionally. Agents run in the container.
 
 **1. Install Haven CLI**
 ```bash
-curl -fsSL https://envhaven.com/install.sh | sh
+curl -fsSL https://envhaven.com/install.sh | bash
 ```
 
 **2. Connect to your workspace**
@@ -120,23 +120,29 @@ No API keys are pre-set. You can set them directly in the UI via the bundled Env
 
 You can also provide your own keys via env vars (`-e ANTHROPIC_API_KEY=...`) or config files.
 
-| Tool | Command | Description |
-|------|---------|-------------|
-| **Claude Code** | `claude` | Anthropic's official CLI |
-| **Codex** | `codex` | OpenAI's coding agent |
-| **Gemini CLI** | `gemini` | Google's AI in terminal |
-| **OpenCode** | `opencode` | SST's autonomous coding agent |
-| **Pi** | `pi` | Minimal extensible coding agent |
-| **OpenClaw** | `openclaw` | Personal AI assistant gateway |
-| **Hermes Agent** | `hermes` | Self-improving agent from Nous Research |
-| **Goose** | `goose` | Block's developer agent |
-| **Aider** | `aider` | AI pair programming |
-| **Qwen Code** | `qwen` | Alibaba's coding assistant |
-| **Mistral Vibe** | `vibe` | Powered by Devstral |
-| **Factory Droid** | `droid` | Factory's AI agent |
-| **Kiro** | `kiro-cli` | AWS-powered AI CLI |
-| **Amp** | `amp` | Frontier coding agent |
-| **Augment** | `auggie` | Context-aware coding agent |
+<!-- BEGIN GENERATED: TOOL CATALOG -->
+The image includes 17 AI coding agents.
+
+| Tool | Command | Description | Authentication |
+|------|---------|-------------|----------------|
+| **[Claude Code](https://code.claude.com/docs)** | `claude` | Anthropic's official CLI | `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or `/login` in the CLI |
+| **[Codex](https://github.com/openai/codex)** | `codex` | OpenAI's coding agent | ChatGPT/device login, an API key via `codex login --with-api-key`, or `CODEX_ACCESS_TOKEN` |
+| **[OpenCode](https://opencode.ai/docs)** | `opencode` | AI coding agent from Anomaly | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, or `GOOGLE_API_KEY` |
+| **[Antigravity CLI](https://antigravity.google/docs/cli)** | `agy` | Google's agent-first CLI | `GEMINI_API_KEY`, or run `agy` to sign in |
+| **[Grok Build](https://docs.x.ai/build/overview)** | `grok` | SpaceXAI's coding agent | `XAI_API_KEY` or `grok login --device-auth` |
+| **[Kimi Code CLI](https://moonshotai.github.io/kimi-code/en/)** | `kimi` | Moonshot AI's open-source coding agent | `kimi login --region global` (use `mainland-cn` for kimi.com) |
+| **[Muse Code](https://developer.meta.com/ai/products/muse-code/)** | `muse` | Meta's agentic coding assistant | `META_API_KEY` or browser sign-in on first run |
+| **[OpenClaw](https://docs.openclaw.ai)** | `openclaw` | Personal AI assistant gateway | Provider API keys or `openclaw onboard` |
+| **[Hermes Agent](https://hermes-agent.nousresearch.com/docs)** | `hermes` | Self-improving agent from Nous Research | Provider API keys or `hermes setup` |
+| **[Pi](https://pi.dev/docs/latest)** | `pi` | Minimal extensible coding agent | Provider API keys or `/login` in the CLI |
+| **[Goose](https://goose-docs.ai)** | `goose` | Extensible open-source agent | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`; run `goose configure` |
+| **[Qwen Code](https://qwenlm.github.io/qwen-code-docs)** | `qwen` | Alibaba's coding assistant | `OPENAI_API_KEY` with an OpenAI-compatible endpoint |
+| **[Mistral Vibe](https://github.com/mistralai/mistral-vibe)** | `vibe` | Mistral's minimal CLI coding agent | `MISTRAL_API_KEY` |
+| **[Factory](https://docs.factory.ai/droid-cli/quickstart)** | `droid` | Factory's Droid coding agent | Browser login or `FACTORY_API_KEY` |
+| **[Kiro](https://kiro.dev/docs/cli)** | `kiro-cli` | AWS-powered AI CLI | Browser or device-flow login |
+| **[Amp](https://ampcode.com/manual)** | `amp` | Frontier coding agent | `AMP_API_KEY` or `amp login` |
+| **[fx](https://fx.sh/docs)** | `fx` | Tiny native coding agent from Vercel Labs | `AI_GATEWAY_API_KEY`, or run `fx` to sign in |
+<!-- END GENERATED: TOOL CATALOG -->
 
 ### Zero-Friction Permissions
 
@@ -148,7 +154,7 @@ You can re-enable prompts per tool by editing the relevant config or unsetting t
 | Language | Version | Notes |
 |----------|---------|-------|
 | **Node.js** | 22.x | LTS |
-| **Bun** | Latest | Fast JS runtime |
+| **Bun** | 1.3.5 | Fast JS runtime |
 | **Python** | 3.12 | Via `mise` |
 | **Go** | 1.22 | |
 | **Rust** | Stable | Via rustup |
@@ -198,7 +204,7 @@ The CLI enables a hybrid workflow: **Local Editor + Remote Compute**.
 │           ▲                       ▲                       ▲            │
 │           │                       │                       │            │
 │  ┌────────┴────────┐     ┌────────┴────────┐     ┌────────┴────────┐   │
-│  │  Claude Code    │     │    OpenCode     │     │     aider       │   │
+│  │  Claude Code    │     │    OpenCode     │     │     Codex       │   │
 │  │  Long-running   │     │  Long-running   │     │  Task-based     │   │
 │  │  AI sessions    │     │  AI sessions    │     │  AI sessions    │   │
 │  └─────────────────┘     └─────────────────┘     └─────────────────┘   │
@@ -266,7 +272,7 @@ See [Configuration Reference](docs/configuration.md) for all SSH options.
 
 ## Documentation
 
-- **[AI Tools Guide](docs/ai-tools.md)** — Setup guides, API keys, and usage examples for all 15+ AI coding tools
-- **[Configuration Reference](docs/configuration.md)** — Complete env vars, SSH setup, bundled tools, and compose examples
-- **[Development Guide](docs/development.md)** — Building from source, testing, and contributing
-- **[Haven CLI](cli/README.md)** — CLI source and architecture
+- **[AI Tools Guide](docs/ai-tools.md)**: Setup guides, API keys, and usage examples for all 17 AI coding tools
+- **[Configuration Reference](docs/configuration.md)**: Complete env vars, SSH setup, bundled tools, and compose examples
+- **[Development Guide](docs/development.md)**: Building from source, testing, and contributing
+- **[Haven CLI](cli/README.md)**: CLI source and architecture

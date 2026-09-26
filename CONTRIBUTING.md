@@ -21,44 +21,8 @@ Press `b` to build, `s` to start container, `t` to test.
 
 ## Repository Structure
 
-```
-envhaven/
-├── .github/workflows/    # CI/CD
-├── cli/                  # Haven CLI (local editor + remote AI)
-│   ├── src/              # TypeScript source
-│   ├── scripts/          # Build scripts
-│   ├── test/             # Unit tests
-│   └── AGENTS.md         # Architecture docs
-├── console/              # In-container console server (Go)
-├── dev/                  # Development TUI (eh)
-│   ├── scripts/          # Standalone scripts (source of truth)
-│   │   ├── lib/          # Shared utilities
-│   │   ├── build.ts      # docker build
-│   │   ├── start.ts      # docker run
-│   │   ├── test-*.ts     # Test scripts
-│   │   └── README.md     # Script documentation
-│   ├── src/              # TUI source (Ink/React)
-│   ├── .env.example      # Config template
-│   ├── AGENTS.md         # Dev tooling architecture
-│   └── README.md         # Dev CLI docs
-├── docs/                 # User documentation
-├── extension/            # VS Code extension source
-│   ├── src/              # Extension host
-│   ├── webview/          # React webview
-│   └── package.json
-├── runtime/              # Packaged INTO Docker image
-│   ├── scripts/          # s6-overlay init scripts
-│   ├── overrides/        # code-server UI patches
-│   └── templates/        # Config templates
-├── Dockerfile
-├── docker-compose.yml
-└── mise.toml             # Tool version manifest
-```
-
-### Key Distinction
-
-- **`runtime/`** — Files copied into the Docker image (runs inside container)
-- **`dev/`** — Development TUI and scripts (runs on your machine)
+The tree and the `runtime/` versus `dev/` distinction are in `docs/development.md` under
+"Project Structure".
 
 ## Development Workflow
 
@@ -69,16 +33,8 @@ cd dev && bun run setup   # One-time: install, build, link
 eh                        # Launch development TUI from anywhere
 ```
 
-| Key | Action |
-|-----|--------|
-| `s` | Start Container |
-| `b` | Build Image |
-| `w` | Watch Extension (live dev) |
-| `r` | Release (tag → Image + CLI) |
-| `t` | Test → Image / CLI / Extension |
-| `l` | View Logs |
-| `x` | Shell (SSH into container) |
-| `,` | Settings |
+The keys are listed in `dev/README.md` under "Keybindings"; `?` inside the TUI shows the
+same list.
 
 ### Container State
 
@@ -131,12 +87,7 @@ bun run build            # Build React webview
 
 ### Extension Commands
 
-| Command | Description |
-|---------|-------------|
-| `bun run build` | Bundle `src/` with esbuild (no type-check) |
-| `bun run dev` | Watch mode |
-| `bun run build:webview` | Build webview |
-| `bun run package` | Create `.vsix` |
+The `bun run` targets are described in `docs/development.md` under "Extension Commands".
 
 ## Haven CLI Development
 
@@ -157,39 +108,16 @@ See [cli/AGENTS.md](cli/AGENTS.md) for architecture.
 
 ### Dockerfile Changes
 
-The Dockerfile is organized into sections:
+The stages and their order are listed in `docs/development.md` under "Dockerfile Overview".
 
-1. Extension build (Stage 1)
-2. System dependencies
-3. Runtime installations (Node.js, Python, Go, Rust)
-4. AI tool installations
-5. VS Code configuration
-6. s6-overlay services
-
-When adding new tools, follow existing patterns and add tests.
+When adding new tools, follow existing patterns and add tests. The end-to-end
+procedure (install ladder, catalog, composer seeding, harness registrations, platform
+roster) is the runbook in `docs/architecture.md` under "Adding New Tools".
 
 ### Runtime Scripts
 
-Scripts in `runtime/scripts/` run at container startup via s6-overlay:
-
-| Script | Purpose |
-|--------|---------|
-| `init-extensions-run` | Install VS Code extensions |
-| `init-vscode-settings-run` | Apply VS Code settings |
-| `init-agents-md-run` | Generate AGENTS.md |
-| `init-agent-config-run` | Seed AI agent configs (Claude, Codex) |
-| `init-user-config-run` | Configure git, SSH, user shell; create `/config/artifacts` |
-| `init-zsh-config-run` | Configure zsh |
-| `svc-sshd-run` | Run SSH daemon |
-| `svc-cloudflared-run` | Cloudflare tunnel (if `CLOUDFLARE_TUNNEL_TOKEN` set) |
-| `svc-console-run` | In-container console server (:7681) |
-
-User-facing scripts in `runtime/scripts/` (installed to `/opt/envhaven/bin/`):
-
-| Script | Purpose |
-|--------|---------|
-| `envhaven-status` | Workspace status banner (`envhaven` command) |
-| `envhaven-welcome.sh` | Shell init (auto-attach to tmux) |
+Scripts in `runtime/scripts/` run at container startup via s6-overlay, or are installed for
+the user; both tables live in `docs/development.md` under "Runtime Scripts".
 
 ### Templates
 
