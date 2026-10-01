@@ -299,6 +299,45 @@ var EnvHavenConsolePredictor = (function () {
     });
     window.addEventListener('resize', function () { fit.fit(); });
 
+    // A vertical swipe scrolls what the pane shows. tmux draws on the alternate screen, so xterm
+    // has no scrollback of its own for a touch to move, and #term's touch-action keeps the swipe
+    // from dragging the page instead (terminal.html). It is replayed here as wheel events, which
+    // xterm reports to tmux (or to an app that tracks the mouse) exactly as it reports a real
+    // wheel. tmux scrolls 5 lines a report, so one report per 2 rows of travel keeps the first
+    // scroll close under the finger. Each event is a one-line notch, which xterm reports once.
+    // xterm scales a pixel delta under 50px by 0.3 and carries the remainder over, so pixel
+    // events would drop reports, and a short swipe could send none. Every event lands where the
+    // swipe began, so it keeps scrolling that pane when the finger crosses into another, or onto
+    // tmux's status line, where a wheel would switch windows.
+    var SWIPE_SLOP = 8, SWIPE_ROWS = 2, swipe = null;
+    window.addEventListener('touchstart', function (event) {
+      var touch = event.touches[0];
+      swipe = event.touches.length === 1 && termEl.contains(event.target)
+        ? { x: touch.clientX, y: touch.clientY, anchor: touch.clientY, vertical: false } : null;
+    }, { passive: true });
+    window.addEventListener('touchmove', function (event) {
+      if (!swipe || event.touches.length !== 1) return;
+      var touch = event.touches[0];
+      if (!swipe.vertical) {
+        var dx = Math.abs(touch.clientX - swipe.x), dy = Math.abs(touch.clientY - swipe.y);
+        if (dx < SWIPE_SLOP && dy < SWIPE_SLOP) return;
+        if (dx >= dy) { swipe = null; return; }
+        swipe.vertical = true;
+      }
+      var screen = termEl.querySelector('.xterm-screen');
+      var step = SWIPE_ROWS * screen.getBoundingClientRect().height / term.rows;
+      var steps = Math.trunc((touch.clientY - swipe.anchor) / step);
+      swipe.anchor += steps * step;
+      for (var i = 0; i < Math.abs(steps); i++) {
+        screen.dispatchEvent(new window.WheelEvent('wheel', {
+          deltaY: steps > 0 ? -1 : 1, deltaMode: window.WheelEvent.DOM_DELTA_LINE,
+          clientX: swipe.x, clientY: swipe.y, bubbles: true, cancelable: true
+        }));
+      }
+    }, { passive: true });
+    window.addEventListener('touchend', function () { swipe = null; });
+    window.addEventListener('touchcancel', function () { swipe = null; });
+
     if (embedded) window.addEventListener('message', function (event) {
       if (!auth.fromParent(event)) return;
       var data = event.data;

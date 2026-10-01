@@ -15,6 +15,13 @@
                src: url('/__console/assets/jetbrains-mono-bold.woff2') format('woff2'); }
   html, body { height: 100%; margin: 0; background: #1e1e1e; color: #ccc; font-family: system-ui, sans-serif; }
   #term { position: absolute; inset: 0; }
+  /* A one-finger drag on the terminal belongs to eh-predictor.js, which scrolls the pane with
+     it, and must leave the page alone (embedded, the dashboard's, which on iOS has room to move
+     whenever the keyboard is up). Safari settles that on a touch's first move, before a script
+     can tell a swipe from a tap, so it is declared up front, and on every element: WebKit gives
+     a scroll container its own touch-action back, and xterm's viewport is one, exposed in the
+     band the grid leaves above and below its rows. Two fingers still zoom. */
+  #term, #term * { touch-action: pinch-zoom; }
   /* JetBrains Mono ships programming ligatures (-> => != === ...) enabled through
      `calt`, and a ligature fuses two characters into ONE glyph of a different
      advance. A terminal is a grid — one cell, one glyph — and the predictive
