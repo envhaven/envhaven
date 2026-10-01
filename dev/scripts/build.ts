@@ -5,12 +5,12 @@ import { loadConfig, REPO_ROOT, log } from './lib';
 const config = loadConfig();
 const noCache = process.argv.includes('--no-cache');
 
-log.command(`docker build -t ${config.image} .`);
-log.dim(`Working directory: ${REPO_ROOT}`);
-
-const args = ['build', '-t', config.image];
+const args = ['build', '--force-rm', '-t', config.image];
 if (noCache) args.push('--no-cache');
 args.push('.');
+
+log.command(`docker ${args.join(' ')}`);
+log.dim(`Working directory: ${REPO_ROOT}`);
 
 const proc = spawn(['docker', ...args], {
   cwd: REPO_ROOT,

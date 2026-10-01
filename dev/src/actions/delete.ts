@@ -15,7 +15,7 @@ export async function deleteContainer(
     return;
   }
 
-  addLog('command', `docker rm -f ${config.containerName}`);
+  addLog('command', `docker rm -f -v ${config.containerName}`);
   addLog('info', 'Removing container...');
 
   const success = await removeContainer(config.containerName);
