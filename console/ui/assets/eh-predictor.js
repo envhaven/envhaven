@@ -194,7 +194,9 @@ var EnvHavenConsolePredictor = (function () {
         term.write(effect.text, function () { routePrediction(session.dispatch({ type: 'reconcile' })); });
       }
       else if (effect.type === 'transport-ready') status.connected(effect.refocus);
-      else if (effect.type === 'parent-ready') auth.toParent({ type: 'envhaven-console:ready' });
+      // `input` tells the parent it may send keys and arm modifiers (envhaven-console:input and
+      // :modifiers, below).
+      else if (effect.type === 'parent-ready') auth.toParent({ type: 'envhaven-console:ready', input: true });
       else throw new Error('unknown console effect: ' + effect.type);
     }
 
@@ -274,7 +276,22 @@ var EnvHavenConsolePredictor = (function () {
       }
       return true;
     });
-    term.onData(function (data) { transport.sendInput(data); });
+    // Ctrl and Alt armed on the dashboard's key bar apply to the next key typed on the keyboard,
+    // which reaches this page and never the dashboard. One key uses them (a paste or a terminal
+    // report is not a key), and the dashboard is told, so its key lets go.
+    var armed = { ctrl: false, alt: false };
+    function withArmed(data) {
+      if (!(armed.ctrl || armed.alt) || data.length !== 1) return data;
+      var out = data;
+      if (armed.ctrl && /[@-_a-z]/i.test(data)) out = String.fromCharCode(data.charCodeAt(0) & 0x1f);
+      else if (armed.ctrl && data === ' ') out = '\x00';
+      else if (armed.ctrl && data === '?') out = '\x7f';
+      if (armed.alt) out = '\x1b' + out;
+      armed = { ctrl: false, alt: false };
+      auth.toParent({ type: 'envhaven-console:modifiers-used' });
+      return out;
+    }
+    term.onData(function (data) { transport.sendInput(withArmed(data)); });
     term.onRender(function () { renderer.render(currentView); });
     term.onResize(function () {
       transport.sendResize();
@@ -285,7 +302,18 @@ var EnvHavenConsolePredictor = (function () {
     if (embedded) window.addEventListener('message', function (event) {
       if (!auth.fromParent(event)) return;
       var data = event.data;
-      if (!data || data.type !== 'envhaven-console:theme') return;
+      if (!data) return;
+      // Keys from the dashboard's on-screen key bar. The parent already holds this session (it
+      // mints the token), so they are the user's own keystrokes and take the typed-input path.
+      if (data.type === 'envhaven-console:input') {
+        if (typeof data.data === 'string') transport.sendInput(data.data);
+        return;
+      }
+      if (data.type === 'envhaven-console:modifiers') {
+        armed = { ctrl: data.ctrl === true, alt: data.alt === true };
+        return;
+      }
+      if (data.type !== 'envhaven-console:theme') return;
       var background = hexColor(data.bg), foreground = hexColor(data.fg);
       if (background) themeBg = background;
       if (foreground) themeFg = foreground;

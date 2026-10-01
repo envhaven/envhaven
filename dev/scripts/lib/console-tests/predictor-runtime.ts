@@ -878,4 +878,63 @@ export function runPredictorRuntimeTests(report: TestReporter): void {
   } catch (error) {
     fail(`Terminal link schemes: ${(error as Error).message}`);
   }
+
+  try {
+    // Embedded, the dashboard's key bar types through this page: its keys take the typed-input
+    // path, and the Ctrl/Alt it arms apply to the next key typed on the keyboard, which the
+    // dashboard never sees, so the page reports each time they are used.
+    const factory = new Function(`${predictorSource}\nreturn EnvHavenConsolePredictor;`)() as {
+      create(deps: unknown): unknown;
+    };
+    const noop = () => undefined;
+    const parent = {};
+    const listeners: Record<string, ((event: unknown) => void)[]> = {};
+    const sent: string[] = [];
+    const posted: { type?: string }[] = [];
+    let typed: ((data: string) => void) | undefined;
+    const term = {
+      cols: 20, options: {},
+      loadAddon: noop, open: noop, attachCustomKeyEventHandler: noop, onRender: noop, onResize: noop,
+      registerLinkProvider: noop, onData: (callback: (data: string) => void) => { typed = callback; },
+    };
+    const page = {
+      document: {
+        body: { style: {} }, getElementById: () => ({}),
+        fonts: { load: () => Promise.resolve(), check: () => false },
+      },
+      location: { search: '?parent=https%3A%2F%2Fdashboard.test' }, navigator: { platform: '' }, URL, parent,
+      addEventListener: (type: string, listener: (event: unknown) => void) => { (listeners[type] ??= []).push(listener); },
+    };
+    factory.create({
+      model, render: { window: page }, socket: { URLSearchParams },
+      terminal: { create: () => term, createFitAddon: () => ({ fit: noop }) },
+      renderer: { create: () => ({ render: noop }) },
+      session: { create: () => ({ view: () => ({}) }) },
+      status: { create: () => ({}) },
+      auth: { create: () => ({ fromParent: (event: { source?: unknown }) => event.source === parent, toParent: (message: { type?: string }) => { posted.push(message); } }) },
+      transport: { create: () => ({ isReady: () => true, connect: noop, sendInput: (data: string) => { sent.push(data); } }) },
+      clipboard: { create: noop },
+    });
+    const message = (source: unknown, data: unknown) => (listeners.message ?? []).forEach((listener) => listener({ source, data }));
+    message(parent, { type: 'envhaven-console:input', data: '\x1b[Z' });
+    message({}, { type: 'envhaven-console:input', data: 'not from the dashboard' });
+    typed!('a');
+    message(parent, { type: 'envhaven-console:modifiers', ctrl: true, alt: false });
+    typed!('c');
+    typed!('c');
+    message(parent, { type: 'envhaven-console:modifiers', ctrl: false, alt: true });
+    typed!('\x1b[I'); // a focus report is not a key, so Alt stays armed for the next one
+    typed!('b');
+    message(parent, { type: 'envhaven-console:modifiers', ctrl: true, alt: false });
+    message(parent, { type: 'envhaven-console:modifiers', ctrl: false, alt: false });
+    typed!('d');
+    const used = posted.filter((m) => m.type === 'envhaven-console:modifiers-used').length;
+    const expected = ['\x1b[Z', 'a', '\x03', 'c', '\x1b[I', '\x1bb', 'd'];
+    if (JSON.stringify(sent) !== JSON.stringify(expected) || used !== 2) {
+      throw new Error(`sent ${JSON.stringify(sent)} and reported ${used} uses`);
+    }
+    pass('Dashboard keys take the typed-input path; armed Ctrl/Alt apply to the next typed key');
+  } catch (error) {
+    fail(`Dashboard keys and modifiers: ${(error as Error).message}`);
+  }
 }
