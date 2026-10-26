@@ -23,5 +23,10 @@
     "@types/qrcode-terminal": "^0.12.2",
     "tsx": "^4.23.0",
     "typescript": "^6.0.3"
+  },
+  "overrides": {
+    "zod": "4.6.7",
+    "body-parser": "2.4.0",
+    "follow-redirects": "1.16.1"
   }
 }
