@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { $ } from 'bun';
-import { loadConfig, log, isContainerRunning } from './lib';
+import { join } from 'path';
+import { loadConfig, log, runStep, isContainerRunning, EXTENSION_DIR } from './lib';
 
 const config = loadConfig();
 
@@ -9,15 +10,24 @@ if (!await isContainerRunning(config.containerName)) {
   process.exit(1);
 }
 
-log.info('Packaging extension...');
+// Packaged on this side with the command test-extension.ts runs, then copied into the container,
+// so nothing is mounted. vsce 4 refuses to package without --no-dependencies (esbuild already
+// bundled every runtime import into dist/).
+const vsix = join(EXTENSION_DIR, 'envhaven.vsix');
+const target = '/tmp/envhaven.vsix';
 
-const cmd = `cd /extension && npx --yes @vscode/vsce package --out /extension/envhaven.vsix 2>&1 && /app/code-server/bin/code-server --extensions-dir /config/extensions --install-extension /extension/envhaven.vsix --force 2>&1`;
+// One step at a time, stopping at the first that fails, which runStep names with its reason.
+const installed =
+  await runStep('Packaging the extension', () =>
+    $`bunx --no-install --package @vscode/vsce vsce package --no-dependencies --out ${vsix}`.cwd(EXTENSION_DIR).quiet()
+  ) &&
+  await runStep('Copying it into the container', () =>
+    $`docker cp ${vsix} ${config.containerName}:${target}`.quiet()
+  ) &&
+  // As abc with its environment: the extension belongs in abc's extensions directory.
+  await runStep('Installing it as abc', () =>
+    $`docker exec ${config.containerName} /usr/local/lib/envhaven/as-abc /app/code-server/bin/code-server --extensions-dir /config/extensions --install-extension ${target} --force`.quiet()
+  );
 
-try {
-  await $`docker exec ${config.containerName} bash -c ${cmd}`.quiet();
-  log.success('Extension installed');
-  process.exit(0);
-} catch {
-  log.error('Extension install failed');
-  process.exit(1);
-}
+if (!installed) process.exit(1);
+log.success('Extension installed');

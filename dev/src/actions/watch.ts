@@ -2,8 +2,9 @@ import { spawn, $ } from 'bun';
 import { join } from 'path';
 import { readdirSync, statSync, existsSync } from 'fs';
 import type { Config } from '../lib/config';
-import { REPO_ROOT, DEV_ROOT, getExtensionMountPath } from '../lib/config';
-import { getContainerStatus, removeContainer, waitForContainer } from '../lib/docker';
+import { REPO_ROOT, DEV_ROOT } from '../lib/config';
+import { getContainerStatus } from '../lib/docker';
+import { runContainer } from './run';
 
 type AddLog = (type: 'info' | 'success' | 'error' | 'warn' | 'command' | 'dim', text: string) => void;
 type SetProcess = (proc: { kill: () => void } | null) => void;
@@ -11,64 +12,44 @@ type SetProcess = (proc: { kill: () => void } | null) => void;
 const EXTENSION_DIR = join(REPO_ROOT, 'extension');
 const WEBVIEW_DIR = join(EXTENSION_DIR, 'webview');
 
-async function ensureContainerWithExtension(config: Config, addLog: AddLog): Promise<boolean> {
-  const status = await getContainerStatus(config.containerName);
-  
-  if (status === 'running') {
-    try {
-      await $`docker exec ${config.containerName} test -d /extension`.quiet();
-      addLog('success', 'Container running with extension mounted');
-      return true;
-    } catch {
-      addLog('warn', 'Container running but extension not mounted');
-      addLog('info', 'Restarting with extension mount...');
-      await removeContainer(config.containerName);
-    }
-  }
-
-  const extPath = getExtensionMountPath(config);
-  addLog('info', `Starting container with extension mount: ${extPath}`);
-
-  try {
-    await $`docker run -d --name ${config.containerName} -p ${config.webPort}:8443 -p ${config.sshPort}:22 -p ${config.consolePort}:7681 -e PASSWORD=${config.password} -e SUDO_PASSWORD=${config.password} -v ${extPath}:/extension ${config.image}`.quiet();
-  } catch (e) {
-    addLog('error', `Failed to start container: ${e}`);
-    return false;
-  }
-
-  const ready = await waitForContainer(config.containerName, 90, (msg) => {
-    addLog('dim', msg);
-  });
-
-  if (!ready) {
-    addLog('error', 'Container failed to become ready');
-    return false;
-  }
-
-  addLog('success', 'Container ready');
-  return true;
-}
-
-async function runExtensionBuild(addLog: AddLog, webviewOnly: boolean = false): Promise<boolean> {
-  const args = webviewOnly ? ['--webview-only'] : [];
-  try {
-    await $`bun ${join(DEV_ROOT, 'scripts/extension-build.ts')} ${args}`.quiet();
+// Any running test container will do: extension-install.ts packages the extension on this side
+// and copies it in, so nothing is mounted and a running container is left as it is. Without
+// one, the container starts the way the Start action starts it.
+async function ensureContainer(
+  config: Config,
+  addLog: AddLog,
+  refreshStatus: () => Promise<void>
+): Promise<boolean> {
+  if (await getContainerStatus(config.containerName) === 'running') {
+    addLog('success', 'Container running');
     return true;
-  } catch {
-    addLog('error', webviewOnly ? 'Webview build failed' : 'Extension build failed');
-    return false;
   }
+
+  await runContainer(addLog, refreshStatus);
+  if (await getContainerStatus(config.containerName) === 'running') return true;
+
+  addLog('error', 'Container failed to start');
+  return false;
 }
 
-async function runExtensionInstall(config: Config, addLog: AddLog): Promise<boolean> {
-  try {
-    await $`bun ${join(DEV_ROOT, 'scripts/extension-install.ts')}`.quiet();
-    return true;
-  } catch {
-    addLog('error', 'Extension install failed');
-    return false;
+// Runs a dev script quietly. extension-build.ts and extension-install.ts write each failed step
+// and what its command printed to stderr, so a failure shows those lines instead of a bare
+// "failed".
+async function runDevScript(script: string, args: string[], addLog: AddLog): Promise<boolean> {
+  const result = await $`bun ${join(DEV_ROOT, 'scripts', script)} ${args}`.quiet().nothrow();
+  if (result.exitCode === 0) return true;
+
+  const output = result.stderr.toString().trim() || `${script} failed (exit code ${result.exitCode})`;
+  for (const line of output.split('\n')) {
+    if (line.trim()) addLog('error', line.replace(/^✗ /, ''));
   }
+  return false;
 }
+
+const runExtensionBuild = (addLog: AddLog, webviewOnly = false) =>
+  runDevScript('extension-build.ts', webviewOnly ? ['--webview-only'] : [], addLog);
+
+const runExtensionInstall = (addLog: AddLog) => runDevScript('extension-install.ts', [], addLog);
 
 function getDirectoryHash(dir: string, patterns: string[]): string {
   let hash = '';
@@ -90,12 +71,13 @@ function getDirectoryHash(dir: string, patterns: string[]): string {
 export async function runWatch(
   config: Config,
   addLog: AddLog,
+  refreshStatus: () => Promise<void>,
   setProcess: SetProcess,
   signal?: AbortSignal
 ): Promise<void> {
   addLog('info', 'Starting extension watch mode...');
 
-  if (!await ensureContainerWithExtension(config, addLog)) {
+  if (!await ensureContainer(config, addLog, refreshStatus)) {
     return;
   }
 
@@ -138,7 +120,7 @@ export async function runWatch(
     killAll();
     return;
   }
-  if (!await runExtensionInstall(config, addLog)) {
+  if (!await runExtensionInstall(addLog)) {
     killAll();
     return;
   }
@@ -161,19 +143,18 @@ export async function runWatch(
     if (currentDistHash !== lastDistHash) {
       lastDistHash = currentDistHash;
       addLog('info', 'Extension host changed, repackaging...');
-      await runExtensionInstall(config, addLog);
+      const installed = await runExtensionInstall(addLog);
       if (signal?.aborted) break;
-      addLog('success', 'Done - reload browser');
+      if (installed) addLog('success', 'Done - reload browser');
     }
 
     const currentWebviewHash = getDirectoryHash(join(WEBVIEW_DIR, 'src'), ['.tsx', '.ts', '.css']);
     if (currentWebviewHash !== lastWebviewHash) {
       lastWebviewHash = currentWebviewHash;
       addLog('info', 'Webview changed, rebuilding...');
-      await runExtensionBuild(addLog, true);
-      await runExtensionInstall(config, addLog);
+      const installed = await runExtensionBuild(addLog, true) && await runExtensionInstall(addLog);
       if (signal?.aborted) break;
-      addLog('success', 'Done - reload browser');
+      if (installed) addLog('success', 'Done - reload browser');
     }
   }
   

@@ -1,6 +1,7 @@
 {
   "name": "@envhaven/dev",
   "version": "0.1.0",
+  "private": true,
   "description": "EnvHaven development CLI - A delightful TUI for local development",
   "type": "module",
   "bin": {

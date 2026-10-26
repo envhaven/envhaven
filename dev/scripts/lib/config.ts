@@ -10,11 +10,6 @@ export interface Config {
   consolePort: number;
   password: string;
   host: string;
-  hostRepoPath: string;
-}
-
-function isRunningInContainer(): boolean {
-  return existsSync('/.dockerenv') || existsSync('/run/.containerenv');
 }
 
 const DEFAULTS: Config = {
@@ -25,7 +20,6 @@ const DEFAULTS: Config = {
   consolePort: 7681,
   password: 'test',
   host: 'localhost',
-  hostRepoPath: '',
 };
 
 function findDevRoot(): string {
@@ -78,23 +72,5 @@ export function loadConfig(): Config {
     consolePort: parseInt(get('ENVHAVEN_CONSOLE_PORT') || String(DEFAULTS.consolePort), 10),
     password: get('ENVHAVEN_PASSWORD') || DEFAULTS.password,
     host: get('ENVHAVEN_HOST') || DEFAULTS.host,
-    hostRepoPath: get('ENVHAVEN_HOST_REPO_PATH') || DEFAULTS.hostRepoPath,
   };
-}
-
-export function getExtensionMountPath(config: Config): string {
-  if (config.hostRepoPath) {
-    return join(config.hostRepoPath, 'extension');
-  }
-
-  if (isRunningInContainer()) {
-    throw new Error(
-      'ENVHAVEN_HOST_REPO_PATH is required when running inside a container.\n' +
-      'The Docker daemon runs on the host and cannot see container paths.\n\n' +
-      'Fix: Copy dev/.env.example to dev/.env.dev and set ENVHAVEN_HOST_REPO_PATH\n' +
-      'to the HOST path where this repo is mounted (check your container\'s volume mounts).'
-    );
-  }
-
-  return EXTENSION_DIR;
 }

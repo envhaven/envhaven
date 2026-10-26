@@ -1,6 +1,57 @@
 import { $ } from 'bun';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { homedir, tmpdir } from 'os';
+import { join } from 'path';
 
 export type ContainerStatus = 'running' | 'stopped' | 'not_found';
+
+/**
+ * Hands `run` the path of a private file holding `vars`, for `docker run --env-file`, and deletes
+ * it afterwards. A secret passed as `-e NAME=value` sits in the docker client's argv, where any
+ * local user can read it from `ps` or /proc for as long as the command runs. The client reads
+ * --env-file itself and sends the values in the create request, so the file only has to outlive
+ * `docker run`.
+ */
+export async function withEnvFile<T>(
+  vars: Record<string, string>,
+  run: (envFile: string) => Promise<T>
+): Promise<T> {
+  // One NAME=value per line, taken verbatim: a line break would end the value early and turn
+  // the rest of it into a variable of its own.
+  for (const [name, value] of Object.entries(vars)) {
+    if (/[\r\n]/.test(value)) {
+      throw new Error(`${name} contains a line break, which an env file cannot carry`);
+    }
+  }
+  // mkdtemp creates the directory 0700, so no other user can open or even list the file.
+  const dir = mkdtempSync(join(tmpdir(), 'envhaven-env-'));
+  try {
+    const envFile = join(dir, 'env');
+    const content = Object.entries(vars).map(([name, value]) => `${name}=${value}\n`).join('');
+    writeFileSync(envFile, content, { mode: 0o600 });
+    return await run(envFile);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * What a dev container starts with: the web and sudo password, and, because the image's SSH
+ * accepts keys only, the developer's own public key (the first of id_ed25519, id_ecdsa and
+ * id_rsa found; ssh offers each default identity, so any of them logs in), so `ssh` and `eh shell`
+ * can log in. Without one, SSH stays closed and the caller says so.
+ */
+export function devContainerEnv(password: string): Record<string, string> {
+  const env: Record<string, string> = { PASSWORD: password, SUDO_PASSWORD: password };
+  for (const name of ['id_ed25519.pub', 'id_ecdsa.pub', 'id_rsa.pub']) {
+    const path = join(homedir(), '.ssh', name);
+    if (existsSync(path)) {
+      env.PUBLIC_KEY = readFileSync(path, 'utf8').trim();
+      break;
+    }
+  }
+  return env;
+}
 
 export async function getContainerStatus(containerName: string): Promise<ContainerStatus> {
   try {

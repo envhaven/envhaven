@@ -284,17 +284,17 @@ export function App() {
             await runBuild(config, addLog, (proc) => { currentProcessRef.current = proc; }, setProgress, false, signal);
             break;
           case 'start-normal':
-            await runContainer(config, addLog, refreshStatus);
+            await runContainer(addLog, refreshStatus);
             break;
           case 'start-recreate':
             await deleteContainer(config, addLog, refreshStatus);
-            await runContainer(config, addLog, refreshStatus);
+            await runContainer(addLog, refreshStatus);
             break;
           case 'start-delete':
             await deleteContainer(config, addLog, refreshStatus);
             break;
           case 'watch':
-            await runWatch(config, addLog, (proc) => { currentProcessRef.current = proc; }, signal);
+            await runWatch(config, addLog, refreshStatus, (proc) => { currentProcessRef.current = proc; }, signal);
             break;
           case 'test-image':
             await runTestImage(config, addLog, (proc) => { currentProcessRef.current = proc; }, signal);

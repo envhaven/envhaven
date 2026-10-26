@@ -84,7 +84,9 @@ rm -f "$1" "$3" "$3.tmp"`;
       const startScript = 'umask 077; echo $$ > "$1"; shift; exec "$@"';
       await runBounded([
         'docker', 'exec', '-d', container, 'sh', '-c', startScript, 'eh-proxy-start', pidFile,
-        'env', `ENVHAVEN_LATENCY_PROXY_READY_FILE=${portFile}`,
+        // as-abc gives python3 abc's tool PATH (root's PATH leaves it out); it execs, so the pid
+        // recorded above is still the proxy's.
+        '/usr/local/lib/envhaven/as-abc', 'env', `ENVHAVEN_LATENCY_PROXY_READY_FILE=${portFile}`,
         'python3', `${fixtureDir}/latency-proxy.py`, '0', '127.0.0.1', String(CONSOLE_PORT),
         String(downMs), String(upMs), '0.0.0.0', id,
       ], 7000, 'start in-container latency proxy');

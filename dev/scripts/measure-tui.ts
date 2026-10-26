@@ -149,8 +149,11 @@ function tail(screen: string): string {
 class Pane {
   constructor(private container: string, private sock: string) {}
 
+  // tmux runs through as-abc, with the environment every workspace process gets, because the
+  // server a new-session starts passes its environment to the measured app, and root's PATH
+  // (what a bare docker exec gets) holds none of the tool directories.
   private run(args: string[]) {
-    return $`docker exec -u abc -e HOME=/config ${this.container} tmux -L ${this.sock} ${args}`
+    return $`docker exec ${this.container} /usr/local/lib/envhaven/as-abc tmux -L ${this.sock} ${args}`
       .quiet()
       .nothrow();
   }

@@ -24,12 +24,10 @@ async function runTests() {
   let failed = 0;
 
   for (const tool of AI_TOOLS) {
-    // As abc with HOME=/config, the uid and home a workspace user actually gets. A tool
-    // that only resolves for root resolves for nobody who uses the container.
-    const result = await dockerExec(config.containerName, tool.cmd, {
-      user: 'abc',
-      env: { HOME: '/config' },
-    });
+    // Through as-abc, with the uid, home and tool PATH every workspace process gets. A tool
+    // that only resolves for root resolves for nobody who uses the container, and root's
+    // PATH holds none of the tool directories.
+    const result = await dockerExec(config.containerName, `exec /usr/local/lib/envhaven/as-abc ${tool.cmd}`);
     if (result.success) {
       const version = result.output.split('\n')[0]?.trim() || 'OK';
       log.success(`${tool.name}: ${version}`);

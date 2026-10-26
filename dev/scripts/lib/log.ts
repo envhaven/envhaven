@@ -1,3 +1,5 @@
+import { $ } from 'bun';
+
 const isTTY = process.stdout.isTTY ?? false;
 
 const colors = {
@@ -20,6 +22,25 @@ export const log = {
   plain: (msg: string) => console.log(msg),
   newline: () => console.log(''),
 };
+
+/**
+ * Runs one named step of a script. A failure logs the step with what its command printed, so it
+ * says what to fix; stdout counts as well as stderr, because tsc writes its errors there.
+ * Returns whether the step succeeded, and leaves going on or exiting to the caller.
+ */
+export async function runStep(name: string, run: () => Promise<unknown>): Promise<boolean> {
+  log.info(`${name}...`);
+  try {
+    await run();
+    return true;
+  } catch (error) {
+    const printed = error instanceof $.ShellError
+      ? [error.stdout, error.stderr].map((out) => out.toString().trim()).filter(Boolean).join('\n')
+      : '';
+    log.error(`${name} failed: ${printed || (error instanceof Error ? error.message : String(error))}`);
+    return false;
+  }
+}
 
 export function formatTestSummary(passed: number, failed: number): void {
   log.newline();

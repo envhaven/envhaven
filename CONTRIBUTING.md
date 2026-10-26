@@ -246,35 +246,21 @@ services:
 docker run -v /var/run/docker.sock:/var/run/docker.sock ...
 ```
 
-### 2. Configure Path Translation
+### 2. Configure the Host Address
 
-The Docker daemon runs on the host system. When the dev scripts request to mount a volume (like `/config/workspace/envhaven/extension`), the daemon looks for that path on the **host**, not inside your container.
+The test container's ports are published on the host, so `localhost` inside your container does not reach them. Point the scripts at the host:
 
-You must tell the scripts where the repository resides on the host filesystem.
+```bash
+cp dev/.env.example dev/.env.dev
+```
 
-1.  **Find the host path:**
-    Run this *on the host machine* (or inspect via `docker inspect`):
-    ```bash
-    # Example: Inspect the container to see where /config is mounted from
-    docker inspect envhaven --format '{{ range .Mounts }}{{ if eq .Destination "/config" }}{{ .Source }}{{ end }}{{ end }}'
-    ```
+Edit `dev/.env.dev`:
+```bash
+# 'localhost' refers to your own container. Use the host's IP for access.
+ENVHAVEN_HOST=192.168.1.50
+```
 
-2.  **Configure `dev/.env.dev`:**
-    ```bash
-    cp dev/.env.example dev/.env.dev
-    ```
-
-    Edit `dev/.env.dev`:
-    ```bash
-    # 1. Set the Host Path (Host's view of your repo)
-    # If your repo is at /config/workspace/envhaven inside the container,
-    # and /config is mounted from /home/user/data on the host:
-    ENVHAVEN_HOST_REPO_PATH=/home/user/data/workspace/envhaven
-
-    # 2. Set the Host IP
-    # 'localhost' refers to the container itself. Use the host's IP for access.
-    ENVHAVEN_HOST=192.168.1.50
-    ```
+No dev script mounts a host path, so nothing needs to know where the repository lives on the host: images are built from the build context the CLI sends, and the extension is packaged here and copied into the test container.
 
 ### 3. Run the Dev TUI
 
@@ -286,40 +272,11 @@ eh
 
 - **Build (`b`)**: Builds the image using the host's Docker daemon.
 - **Start (`s`)**: Starts a sibling container on the host.
-- **Watch (`w`)**: Mounts the extension from the host path into the test container.
-
-### Visualizing Path Translation
-
-```mermaid
-graph TD
-    subgraph Host["Host Machine (Docker Daemon)"]
-        HostRepo["/home/user/data/workspace/envhaven"]
-        Socket["/var/run/docker.sock"]
-    end
-
-    subgraph DevContainer["Your Dev Container"]
-        DevRepo["/config/workspace/envhaven"]
-        DevScripts["Dev Scripts (via eh)"]
-        SocketMount["/var/run/docker.sock"]
-    end
-
-    subgraph TestContainer["envhaven-test (Sibling)"]
-        ExtMount["/extension"]
-    end
-
-    DevRepo -.->|Mounted from| HostRepo
-    Socket -.->|Mounted to| SocketMount
-    DevScripts -->|Talk to| SocketMount
-    SocketMount -->|Commands| Host
-    Host --"run -v /home/user/...:/extension"--> TestContainer
-```
-
+- **Watch (`w`)**: Packages the extension on each change and installs it into the running test container.
 
 ### Troubleshooting
 
 **"Cannot connect to test container"**: Make sure `ENVHAVEN_HOST` is set to your host's IP address, not `localhost`. From inside a container, `localhost` refers to the container itself.
-
-**"Extension not mounted"**: Verify `ENVHAVEN_HOST_REPO_PATH` is correct. The path should be what the Docker daemon sees, not what you see inside your container.
 
 **Password issues**: Check `ENVHAVEN_PASSWORD` in `dev/.env.dev`. Default is `test`.
 

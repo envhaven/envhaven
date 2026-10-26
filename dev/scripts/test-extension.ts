@@ -118,8 +118,10 @@ if (existsSync(join(WEBVIEW_DIR, 'build/index.html'))) {
 }
 
 log.header('Packaging extension');
+// The same flags as the `package` script the image build runs. esbuild bundles every runtime
+// import into dist/, and vsce 4 without --no-dependencies refuses the package outright.
 try {
-  await $`bunx --no-install --package @vscode/vsce vsce package --out envhaven.vsix`.cwd(EXTENSION_DIR);
+  await $`bunx --no-install --package @vscode/vsce vsce package --no-dependencies --out envhaven.vsix`.cwd(EXTENSION_DIR);
   pass('Extension packaged successfully');
 } catch {
   fail('Extension packaging failed');

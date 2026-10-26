@@ -1,21 +1,19 @@
 import { spawn } from 'bun';
 import { join } from 'path';
-import type { Config } from '../lib/config';
 import { DEV_ROOT } from '../lib/config';
 import { readProcessStreams, raceWithAbort } from '../lib/stream';
 
 type AddLog = (type: 'info' | 'success' | 'error' | 'warn' | 'command' | 'dim', text: string) => void;
 
+// start.ts loads the dev config itself, so the action passes none.
 export async function runContainer(
-  config: Config,
   addLog: AddLog,
   refreshStatus: () => Promise<void>,
-  options: { fresh?: boolean; mountExt?: boolean } = {}
+  options: { fresh?: boolean } = {}
 ): Promise<void> {
   const scriptPath = join(DEV_ROOT, 'scripts/start.ts');
   const args = [scriptPath];
   if (options.fresh) args.push('--fresh');
-  if (options.mountExt) args.push('--mount-ext');
 
   addLog('command', `bun ${args.join(' ')}`);
 

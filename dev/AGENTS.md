@@ -75,13 +75,12 @@ eh                        # Launch TUI from anywhere
 
 ## Docker-in-Docker Development
 
-Watch Extension (`w`) is the only action that mounts a host path. To use it from inside a container, set `ENVHAVEN_HOST_REPO_PATH` to the **host path** of this repository, which is where the daemon looks for `${ENVHAVEN_HOST_REPO_PATH}/extension`. Build, start, test, logs and shell all work without it.
+No action mounts a host path. Watch Extension (`w`) packages the extension on this side and copies it into the container with `docker cp`, so build, start, watch, test, logs and shell all work from inside a container. Keep it that way: the daemon resolves a `-v` source on the host, where a path from inside this container names something else or nothing. Copy files in with `docker cp` instead.
 
-Test containers get an ephemeral `/config`, discarded with the container.
+Test containers get an ephemeral `/config`, discarded with the container. When the daemon runs on another machine, point the printed URLs at it:
 
 ```bash
 # dev/.env.dev
-ENVHAVEN_HOST_REPO_PATH=/home/user/projects/envhaven
 ENVHAVEN_HOST=192.168.x.x
 ```
 
@@ -123,8 +122,8 @@ bun dev/scripts/extension-build.ts
 # 2. Run unit tests
 cd extension && bun test
 
-# 3. Package VSIX
-cd extension && npx --yes @vscode/vsce package --out /tmp/envhaven.vsix
+# 3. Package VSIX (vsce 4 refuses without --no-dependencies; dist/ is already bundled)
+cd extension && bunx --no-install --package @vscode/vsce vsce package --no-dependencies --out /tmp/envhaven.vsix
 
 # 4. Inject into running container
 docker cp /tmp/envhaven.vsix envhaven-test:/tmp/envhaven.vsix
@@ -157,7 +156,8 @@ The same trick covers `console/`: the binary is Go and embeds the engine, so reb
 dropping it in replaces everything the browser terminal serves. Stop the service before
 overwriting the binary (`text file busy` otherwise). The full command block, including the
 Docker build (the same golang:1.26 as the image's builder stage; mise's go 1.22.5 also
-builds it) and the verify step, is
+builds it, after downloading the go 1.26 toolchain `console/go.mod` requires
+(GOTOOLCHAIN=auto)) and the verify step, is
 `docs/development.md` → "Trying a console change in a live container". It works against `envhaven-test` and
 managed workspace containers alike.
 

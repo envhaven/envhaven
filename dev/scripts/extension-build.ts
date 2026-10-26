@@ -2,71 +2,39 @@
 import { $ } from 'bun';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { EXTENSION_DIR, WEBVIEW_DIR, log } from './lib';
+import { EXTENSION_DIR, WEBVIEW_DIR, log, runStep } from './lib';
 
 const webviewOnly = process.argv.includes('--webview-only');
 const hostOnly = process.argv.includes('--host-only');
 
-async function installDeps(): Promise<boolean> {
-  if (!existsSync(join(EXTENSION_DIR, 'node_modules'))) {
-    log.info('Installing extension dependencies...');
-    try {
-      await $`bun install --frozen-lockfile`.cwd(EXTENSION_DIR).quiet();
-    } catch {
-      log.error('Failed to install extension dependencies');
-      return false;
-    }
-  }
-  
-  if (!hostOnly && !existsSync(join(WEBVIEW_DIR, 'node_modules'))) {
-    log.info('Installing webview dependencies...');
-    try {
-      await $`bun install --frozen-lockfile`.cwd(WEBVIEW_DIR).quiet();
-    } catch {
-      log.error('Failed to install webview dependencies');
-      return false;
-    }
-  }
-  
-  return true;
+// Each install and build runs as a step, so a failure names it with what its command printed.
+let depsReady = true;
+
+if (!existsSync(join(EXTENSION_DIR, 'node_modules'))) {
+  depsReady = await runStep('Installing extension dependencies', () =>
+    $`bun install --frozen-lockfile`.cwd(EXTENSION_DIR).quiet()
+  );
 }
 
-async function buildHost(): Promise<boolean> {
-  log.info('Building extension host...');
-  try {
-    await $`bun run build`.cwd(EXTENSION_DIR).quiet();
-    log.success('Extension host built');
-    return true;
-  } catch {
-    log.error('Extension host build failed');
-    return false;
-  }
+if (depsReady && !hostOnly && !existsSync(join(WEBVIEW_DIR, 'node_modules'))) {
+  depsReady = await runStep('Installing webview dependencies', () =>
+    $`bun install --frozen-lockfile`.cwd(WEBVIEW_DIR).quiet()
+  );
 }
 
-async function buildWebview(): Promise<boolean> {
-  log.info('Building webview...');
-  try {
-    await $`bun run build`.cwd(WEBVIEW_DIR).quiet();
-    log.success('Webview built');
-    return true;
-  } catch {
-    log.error('Webview build failed');
-    return false;
-  }
-}
-
-if (!await installDeps()) {
+if (!depsReady) {
   process.exit(1);
 }
 
+// Both builds run when both are asked for, so one pass reports each failure.
 let success = true;
 
 if (!webviewOnly) {
-  success = await buildHost() && success;
+  success = await runStep('Building extension host', () => $`bun run build`.cwd(EXTENSION_DIR).quiet()) && success;
 }
 
 if (!hostOnly) {
-  success = await buildWebview() && success;
+  success = await runStep('Building webview', () => $`bun run build`.cwd(WEBVIEW_DIR).quiet()) && success;
 }
 
 if (success) {

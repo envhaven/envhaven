@@ -37,7 +37,7 @@ eh                        # Press 'b' for build, 's' for start, 't' for test, et
 | Script | Description | Options |
 |--------|-------------|---------|
 | `build.ts` | Build `envhaven:dev` Docker image | `--no-cache` |
-| `start.ts` | Start test container | `--fresh`, `--mount-ext` |
+| `start.ts` | Start test container | `--fresh` |
 | `stop.ts` | Stop and remove test container | |
 | `logs.ts` | Stream container logs | `--tail=N` |
 | `test-image.ts` | Boot two fresh containers and run every image check | |
@@ -148,7 +148,6 @@ ENVHAVEN_IMAGE=envhaven:test bun dev/scripts/test-image.ts
 | `ENVHAVEN_SSH_PORT` | `2222` | SSH port |
 | `ENVHAVEN_CONSOLE_PORT` | `7681` | Browser terminal port (opens when a password is set) |
 | `ENVHAVEN_PASSWORD` | `test` | Container password |
-| `ENVHAVEN_HOST_REPO_PATH` | | Host path for Docker-in-Docker |
 
 ## CI Usage
 
