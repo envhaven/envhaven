@@ -49,10 +49,11 @@ test/tmp/
 # a container HOME (SSH keys, agent CLI logins, code-server password).
 .test-config/
 
-# Environment files with secrets
+# Environment files with secrets: .env and every variant of it (.env.dev, .env.prod,
+# .env.production.local). The committed templates are the one exception.
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
 # Python
 __pycache__/
