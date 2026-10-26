@@ -13,6 +13,11 @@ on:
         type: boolean
         default: true
 
+# Nothing here writes unless a job widens it. Third-party actions are pinned by commit SHA (tag in
+# the comment), so a moved or hijacked tag cannot run with the release job's write scopes.
+permissions:
+  contents: read
+
 concurrency:
   group: cli-${{ github.ref }}
   cancel-in-progress: true
@@ -28,13 +33,18 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
+      # Build provenance: id-token mints the Sigstore certificate, attestations stores the result.
+      id-token: write
+      attestations: write
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.5
 
@@ -58,15 +68,34 @@ jobs:
         run: bun run build -- --all
         working-directory: cli
 
+      # Both installers (cli/install.sh and envhaven.com/install.sh) download this beside the
+      # binary and refuse to install one whose SHA-256 it does not list.
+      - name: Checksums
+        run: sha256sum haven-darwin-arm64 haven-darwin-x64 haven-linux-x64 haven-linux-arm64 > SHA256SUMS
+        working-directory: cli/dist
+
+      # Signed SLSA provenance tying each binary to this workflow run and commit. Verify with:
+      #   gh attestation verify haven-linux-x64 --repo envhaven/envhaven
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            cli/dist/haven-darwin-arm64
+            cli/dist/haven-darwin-x64
+            cli/dist/haven-linux-x64
+            cli/dist/haven-linux-arm64
+
       - name: Upload to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             cli/dist/haven-darwin-arm64
             cli/dist/haven-darwin-x64
             cli/dist/haven-linux-x64
             cli/dist/haven-linux-arm64
+            cli/dist/SHA256SUMS
 
   latest:
     name: Latest
@@ -78,24 +107,25 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 2
+          persist-credentials: false
 
       - name: Check if CLI changed
         id: changes
         run: |
           if [ "${{ inputs.force_build }}" == "true" ]; then
-            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           elif git diff --name-only HEAD~1 HEAD | grep -q '^cli/'; then
-            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           else
-            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Setup Bun
         if: steps.changes.outputs.changed == 'true'
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.5
 
@@ -136,7 +166,7 @@ jobs:
 
       - name: Upload artifact
         if: steps.changes.outputs.changed == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: haven-cli-latest
           path: |

@@ -1,0 +1,30 @@
+# Version updates for the two kinds of dependency pinned to an exact build instead of a range, so
+# nothing newer arrives unless a pull request brings it:
+#
+# - github-actions: every third-party `uses:` is pinned to a full commit SHA, with the release tag in
+#   a trailing comment that Dependabot rewrites along with the SHA. Minor and patch releases share
+#   one grouped pull request a week; each major release gets its own, so one breaking change cannot
+#   hold back the rest.
+# - docker: each FROM in the root Dockerfile is pinned by digest, so a rebuilt base image or toolchain
+#   reaches the release image only through a reviewed pull request, which ci.yml builds and tests.
+#
+# The bun lockfiles are left out: Dependabot does not raise security alerts for bun.lock, and
+# .github/workflows/audit.yml covers known vulnerabilities there instead.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - '*'
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
