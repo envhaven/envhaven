@@ -25,10 +25,16 @@ else
   RST="" BLUE="" LBLUE="" LBLUEB="" GREY="" RULE="" BODY="" AMBER=""
 fi
 
+# The printed command is copied and run on the user's own machine, so a host or port that is not
+# plainly one (a `;` in ENVHAVEN_SSH_HOST would run there) falls back to the placeholder and the
+# default port. The extension's sidebar applies the same rules to the same command.
 get_ssh_string() {
+  local default_port=2222
+  [[ "${ENVHAVEN_MANAGED:-}" == "true" ]] && default_port=22
   local host="${ENVHAVEN_SSH_HOST:-}"
-  local port="${ENVHAVEN_SSH_PORT:-$([[ "${ENVHAVEN_MANAGED:-}" == "true" ]] && echo 22 || echo 2222)}"
-  [[ -z "$host" ]] && host="<host>"
+  local port="${ENVHAVEN_SSH_PORT:-$default_port}"
+  [[ $host =~ ^[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$ || $host =~ ^[0-9A-Fa-f:.]+(%[A-Za-z0-9.:-]+)?$ ]] || host="<host>"
+  [[ $port =~ ^[0-9]{1,5}$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 )) || port=$default_port
   [[ "$port" == "22" ]] && echo "abc@${host}" || echo "abc@${host} -p ${port}"
 }
 

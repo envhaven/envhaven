@@ -63,8 +63,8 @@ Install tools to `/opt/envhaven/bin/`, a path that is **never mounted over**:
 # Create tool directory outside /config
 RUN mkdir -p /opt/envhaven/bin /opt/envhaven/uv-tools
 
-# Install straight into the safe location where the installer supports it
-RUN curl -fsSL https://mise.run | MISE_INSTALL_PATH=/opt/envhaven/bin/mise sh
+# Install straight into the safe location where the release allows it
+RUN install -o 1000 -g 1000 -m 0755 /tmp/mise/bin/mise /opt/envhaven/bin/mise
 
 # Or install, then move, when it does not
 RUN curl -fsSL https://cli.kiro.dev/install | bash && \
@@ -73,7 +73,8 @@ RUN curl -fsSL https://cli.kiro.dev/install | bash && \
 
 ### PATH Priority
 
-Users can still override any tool by installing their own version:
+This is the workspace user's PATH. Users can still override any tool by installing their own
+version:
 
 ```
 /config/.local/bin      # User overrides (first priority)
@@ -93,6 +94,7 @@ Users can still override any tool by installing their own version:
 | `/opt/envhaven/wrappers` | Launcher links for every catalog tool with `launchArgs` | No | No |
 | `/opt/envhaven/bin` | Pre-installed AI tools | No | Yes (abc-writable for self-updates) |
 | `/usr/local/lib/envhaven` | Helpers called by root during startup | No | No |
+| `/usr/share/envhaven/oh-my-zsh` | Oh My Zsh at a pinned commit, copied into a fresh volume | No | No |
 | `/opt/envhaven/uv-tools` | Python tool virtualenvs | No | Yes (abc-writable for self-updates) |
 | `/opt/envhaven/rustup`, `/opt/envhaven/cargo` | Rust toolchain and cargo home | No | Yes |
 | `/opt/envhaven/playwright` | Playwright browser cache | No | Yes |
@@ -144,13 +146,12 @@ python = "3.12"
 go = "1.22.5"
 bun = "1.3.5"
 "github:sharkdp/fd" = "10.2.0"
-"aqua:cli/cli" = "latest"          # gh
-"aqua:cloudflare/cloudflared" = "latest"
-"aqua:sst/opencode" = "latest"
-"aqua:astral-sh/uv" = "latest"
-"github:aaif-goose/goose" = "latest"
-"github:vercel-labs/fx" = "latest"
-"github:MoonshotAI/kimi-code" = "latest"
+"aqua:cli/cli" = "2.101.0"          # gh
+"aqua:sst/opencode" = "1.18.32"
+"aqua:astral-sh/uv" = "0.12.19"
+"github:aaif-goose/goose" = "1.52.0"
+"github:vercel-labs/fx" = "0.0.11"
+"github:MoonshotAI/kimi-code" = "@moonshot-ai/kimi-code@2.1.1"
 ```
 
 `github:` is the backend mise names as ubi's replacement (2026.8 warns that ubi is deprecated
@@ -178,7 +179,7 @@ mise itself is installed to `/opt/envhaven/bin/mise` with a symlink at `/usr/loc
 ENV UV_TOOL_DIR="/opt/envhaven/uv-tools"
 ENV UV_TOOL_BIN_DIR="/opt/envhaven/bin"
 
-RUN uv tool install mistral-vibe && uv tool install hermes-agent
+RUN uv tool install mistral-vibe==3.0.2 && uv tool install hermes-agent==0.19.0
 ```
 
 ### Category 3: Standalone installers
@@ -287,7 +288,7 @@ User-installed extensions go directly to `/config/extensions/` and persist norma
 
 ## Environment Variables
 
-Single source of truth in `/etc/environment`:
+The workspace user's environment lives in one file, `/etc/environment`:
 
 ```bash
 PATH="/config/.local/bin:/opt/envhaven/wrappers:/opt/envhaven/bin:/opt/envhaven/cargo/bin:/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -301,10 +302,19 @@ RUSTUP_HOME="/opt/envhaven/rustup"
 CARGO_HOME="/opt/envhaven/cargo"
 ```
 
-This file is sourced by:
+This file is loaded by:
 - SSH sessions (via `pam_env`)
-- bash (via `/etc/bash.bashrc`)
-- zsh (via `/etc/zsh/zshenv`)
+- every `abc` process root starts, through `/usr/local/lib/envhaven/as-abc`: code-server (and so
+  the editor's terminals and extensions), the console (and so its tmux sessions), and the boot
+  steps that run as `abc`
+
+Root never loads it. Root keeps the base image's PATH and `HOME=/root` (the end of the
+Dockerfile's main stage), because every directory ahead of `/usr/local/bin` above is writable by
+`abc`: the overrides in `/config/.local/bin`, and the self-updating trees in `/opt/envhaven` and
+`/mise`. A root process that resolved a bare command through one of them would run whatever `abc`
+left there. The healthcheck, the s6 services and oneshots, and `docker exec` all start from root's
+environment; `docker exec -u abc` does too, so run `/usr/local/lib/envhaven/as-abc <command>` (as
+root) to get the workspace user's.
 
 ## Adding New Tools
 

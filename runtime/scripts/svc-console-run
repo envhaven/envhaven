@@ -15,4 +15,4 @@ if [ "${ENVHAVEN_MANAGED:-}" != "true" ] && [ -z "${PASSWORD:-}" ] && [ -z "${HA
     exit 0
 fi
 
-exec s6-setuidgid abc /opt/envhaven/bin/envhaven-console
+exec /usr/local/lib/envhaven/as-abc /opt/envhaven/bin/envhaven-console

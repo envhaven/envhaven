@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
 # Runtime-installed tools must remain writable by abc, but symlink targets can
-# point outside these trees. chown -h changes the link itself, never its target.
-find /mise /opt/envhaven -path /opt/envhaven/wrappers -prune -o ! -user abc -exec chown -h abc:abc {} + 2>/dev/null
+# point outside these trees. chown -h changes the link itself, never its target, and
+# -execdir runs it from inside each entry's own directory, so a directory that abc
+# swaps for a link while find walks these abc-owned trees cannot redirect the change.
+find /mise /opt/envhaven -path /opt/envhaven/wrappers -prune -o ! -user abc -execdir chown -h abc:abc {} + 2>/dev/null

@@ -1,0 +1,13 @@
+#!/bin/sh
+# Throttle the restarts of a supervised service that keeps failing. s6 respawns a longrun about
+# once a second, so a service that cannot start would otherwise spin and log at that rate until
+# the cause clears: the console exits non-zero while the platform JWKS is unreachable at boot
+# (fail-closed, by design), sshd exits without its host keys, cloudflared exits on a rejected
+# token. The sleep widens the gap; the service stays down either way, so this only caps wasted
+# work and log volume. Shared by svc-console, svc-sshd and svc-cloudflared.
+#
+# Gated so a clean exit ($1=0, which graceful SIGTERM stops also produce) is never delayed;
+# $1=256 covers death by signal (a deliberate s6-svc -k as well as a crash), whose respawn s6
+# already paces at about once a second. Kept under s6's 5s default timeout-finish so the sleep
+# always runs to completion.
+[ "$1" = 0 ] || [ "$1" = 256 ] || exec sleep 3

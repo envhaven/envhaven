@@ -1,0 +1,10 @@
+#!/usr/bin/with-contenv bash
+
+# LinuxServer's init-adduser hands /defaults to abc at every boot (a non-recursive lsiown), so abc
+# can add files to it. Its init-crontab-config then installs /defaults/crontabs/root as root's
+# crontab, and cron runs that as root: abc code reaching root at the next restart. Take the
+# directory back for root, and remove a crontabs directory the image never ships, before
+# init-crontab-config reads it (the Dockerfile orders it after this). rm does not follow a link
+# given as its argument.
+chown root:root /defaults
+rm -rf /defaults/crontabs

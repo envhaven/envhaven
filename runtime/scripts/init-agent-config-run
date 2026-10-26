@@ -3,13 +3,19 @@
 # Copy default agent configs to user-writable locations (no-clobber)
 # Container IS the sandbox: agents run with max permissions by default
 
+# Everything below writes inside /config, abc's home, so it runs as abc: a root write there
+# follows whatever links abc left behind. bash reads this file directly on the way back in,
+# because with-contenv itself must run as root.
+if (( EUID == 0 )); then
+    exec /usr/local/lib/envhaven/as-abc /bin/bash "$0"
+fi
+
 # Claude Code: bypass permissions mode
 CLAUDE_DIR="/config/.claude"
 CLAUDE_SETTINGS="$CLAUDE_DIR/settings.json"
 if [ ! -f "$CLAUDE_SETTINGS" ]; then
     mkdir -p "$CLAUDE_DIR"
     cp /defaults/claude-settings.json "$CLAUDE_SETTINGS"
-    chown abc:abc "$CLAUDE_DIR" "$CLAUDE_SETTINGS"
     echo "Claude Code: bypass permissions installed"
 else
     echo "Claude Code: settings.json exists, skipping"
@@ -20,7 +26,6 @@ fi
 CLAUDE_CONFIG="/config/.claude.json"
 if [ ! -f "$CLAUDE_CONFIG" ]; then
     cp /defaults/claude-config.json "$CLAUDE_CONFIG"
-    chown abc:abc "$CLAUDE_CONFIG"
     echo "Claude Code: onboarding pre-seeded"
 else
     echo "Claude Code: .claude.json exists, skipping"
@@ -32,7 +37,6 @@ CODEX_CONFIG="$CODEX_DIR/config.toml"
 if [ ! -f "$CODEX_CONFIG" ]; then
     mkdir -p "$CODEX_DIR"
     cp /defaults/codex-config.toml "$CODEX_CONFIG"
-    chown abc:abc "$CODEX_DIR" "$CODEX_CONFIG"
     echo "Codex: yolo mode installed"
 else
     echo "Codex: config.toml exists, skipping"
@@ -41,7 +45,7 @@ fi
 # Kimi Code CLI: mise bypasses the regional installer, so give a fresh workspace the
 # global channel's marker. A persisted login in config.toml outranks this marker, and an
 # existing marker is never changed.
-if ! s6-setuidgid abc env HOME=/config bash -c '
+if ! bash -c '
     set -euo pipefail
     dir="$HOME/.kimi-code"
     region="$dir/region"
@@ -100,15 +104,8 @@ fi
 # Antigravity needs modelProvider=gemini before it reads GEMINI_API_KEY. The
 # same helper also runs immediately after the dashboard saves a key and before
 # every agy launch; boot remains the fallback for container-provided keys.
-if ! s6-setuidgid abc env HOME=/config /usr/local/lib/envhaven/envhaven-prepare-antigravity; then
+if ! /usr/local/lib/envhaven/envhaven-prepare-antigravity; then
     echo "WARNING: Antigravity provider preparation was skipped"
-fi
-
-# Goose: fix log directory ownership (goose crashes if root owns these)
-GOOSE_STATE="/config/.local/state/goose"
-if [ -d "$GOOSE_STATE" ]; then
-    chown -R abc:abc "$GOOSE_STATE"
-    echo "Goose: log directory ownership fixed"
 fi
 
 echo "Agent config completed"

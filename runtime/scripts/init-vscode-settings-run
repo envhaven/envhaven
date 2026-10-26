@@ -1,7 +1,11 @@
 #!/usr/bin/with-contenv bash
 
-# LinuxServer code-server always uses 'abc' as the user (unlike openssh-server)
-USERNAME="abc"
+# Writes inside /config, abc's home, so it runs as abc: a root write there follows whatever
+# links abc left behind. bash reads this file directly on the way back in, because with-contenv
+# itself must run as root.
+if (( EUID == 0 )); then
+    exec /usr/local/lib/envhaven/as-abc /bin/bash "$0"
+fi
 
 SETTINGS_DIR="/config/data/User"
 SETTINGS_FILE="$SETTINGS_DIR/settings.json"
@@ -9,6 +13,5 @@ SETTINGS_FILE="$SETTINGS_DIR/settings.json"
 if [ ! -f "$SETTINGS_FILE" ]; then
     mkdir -p "$SETTINGS_DIR"
     cp /defaults/settings.json "$SETTINGS_FILE"
-    chown -R "$USERNAME:$USERNAME" "$SETTINGS_DIR"
     echo "VS Code settings applied"
 fi

@@ -2,6 +2,13 @@
 .git
 .gitignore
 
+# Local env files hold real credentials (the quick start copies .env.example to .env and fills
+# in API keys). No COPY reaches them, but nothing else should either: the build context is
+# sent to the daemon whole.
+**/.env
+**/.env.*
+!**/.env.example
+
 # GitHub (not needed in image)
 .github
 

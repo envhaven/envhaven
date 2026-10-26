@@ -1,89 +1,38 @@
 #!/usr/bin/with-contenv bash
 
-# Install VS Code extensions
-# Note: code-server binary is at /app/code-server/bin/code-server
-# We must use full path as it's not in PATH during s6 init
+# Link the extensions baked into the image into the extensions directory code-server uses.
 #
-# IMPORTANT: linuxserver/code-server uses --extensions-dir /config/extensions
-# so we must install extensions there, not the default ~/.local/share/code-server/extensions
+# linuxserver/code-server runs with --extensions-dir /config/extensions, so that is where
+# they must appear. The EnvHaven extension is installed at build time into
+# /app/pre-installed-extensions and symlinked here at runtime to survive volume mounts.
+# Nothing is fetched from a marketplace at boot: whatever ships is reviewed with the image.
 #
-# The EnvHaven extension is pre-installed at build time to /app/pre-installed-extensions
-# and is symlinked here at runtime to survive volume mounts.
+# Writes inside /config, abc's home, so it runs as abc: a root write there follows whatever
+# links abc left behind. bash reads this file directly on the way back in, because with-contenv
+# itself must run as root.
+if (( EUID == 0 )); then
+    exec /usr/local/lib/envhaven/as-abc /bin/bash "$0"
+fi
 
-EXTENSIONS_INSTALLED="/config/.extensions-installed"
 EXTENSIONS_DIR="/config/extensions"
 PRE_INSTALLED_DIR="/app/pre-installed-extensions"
-CODE_SERVER="/app/code-server/bin/code-server"
 
-# Wait for code-server binary to exist (should already be there from base image)
-if [ ! -x "$CODE_SERVER" ]; then
-    echo "WARNING: code-server binary not found at $CODE_SERVER"
-    # Try alternate location
-    CODE_SERVER=$(which code-server 2>/dev/null || find /app -name code-server -type f -executable 2>/dev/null | head -1)
-    if [ -z "$CODE_SERVER" ]; then
-        echo "ERROR: Cannot find code-server binary"
-        exit 0  # Don't fail the container startup
-    fi
-fi
-
-echo "Using code-server at: $CODE_SERVER"
-echo "Installing extensions to: $EXTENSIONS_DIR"
-
-# Ensure extensions directory exists
 mkdir -p "$EXTENSIONS_DIR"
 
-# ----------------------------------------
-# Link pre-installed extensions (built into image)
-# These are in /app/pre-installed-extensions and need to be
-# symlinked to /config/extensions at runtime
-# ----------------------------------------
 if [ -d "$PRE_INSTALLED_DIR" ]; then
-    echo "Linking pre-installed extensions from $PRE_INSTALLED_DIR..."
     for ext in "$PRE_INSTALLED_DIR"/*; do
-        if [ -d "$ext" ]; then
-            extname=$(basename "$ext")
-            target="$EXTENSIONS_DIR/$extname"
-            if [ ! -e "$target" ]; then
-                ln -sf "$ext" "$target"
-                echo "Linked: $extname"
-            else
-                echo "Skipping $extname (already exists)"
-            fi
-        fi
-    done
-fi
-
-# Helper function to install extension to the correct directory
-install_ext() {
-    "$CODE_SERVER" --extensions-dir "$EXTENSIONS_DIR" --install-extension "$1"
-}
-
-if [ ! -f "$EXTENSIONS_INSTALLED" ]; then
-    echo "Installing VS Code extensions from Open VSX..."
-    
-    # GitHub Theme - REQUIRED for dark mode
-    install_ext GitHub.github-vscode-theme
-    
-    # Fix ownership (extensions may have been installed as root)
-    chown -R abc:abc "$EXTENSIONS_DIR" 2>/dev/null || true
-    
-    # Mark as installed
-    touch "$EXTENSIONS_INSTALLED"
-    echo "Extensions installed successfully to $EXTENSIONS_DIR"
-else
-    echo "Extensions already installed, skipping"
-fi
-
-# Always ensure EnvHaven extension is linked (even after first run)
-# This handles image updates where the extension may have changed
-if [ -d "$PRE_INSTALLED_DIR" ]; then
-    for ext in "$PRE_INSTALLED_DIR"/envhaven.*; do
-        if [ -d "$ext" ]; then
-            extname=$(basename "$ext")
-            target="$EXTENSIONS_DIR/$extname"
-            # Force re-link EnvHaven extension to get updates
-            ln -sf "$ext" "$target"
+        [ -d "$ext" ] || continue
+        extname=$(basename "$ext")
+        target="$EXTENSIONS_DIR/$extname"
+        # The EnvHaven extension is always re-linked, so an image update reaches it.
+        if [[ "$extname" == envhaven.* ]]; then
+            ln -sfn "$ext" "$target"
             echo "EnvHaven extension linked: $extname"
+        elif [ ! -e "$target" ]; then
+            ln -s "$ext" "$target"
+            echo "Linked: $extname"
+        else
+            echo "Skipping $extname (already exists)"
         fi
     done
 fi

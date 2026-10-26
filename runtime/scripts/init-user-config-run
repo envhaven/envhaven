@@ -1,28 +1,34 @@
 #!/usr/bin/with-contenv bash
 
-# Fix Docker socket permissions for non-root access
+# Root half of the workspace user's boot setup: only what needs root runs here. Everything that
+# writes inside /config runs as abc, in envhaven-user-setup at the end, because /config is abc's
+# home and a root write there follows whatever links abc left in it.
+
+# Docker access, for Plus/Pro workspaces and self-hosters who mount the host's socket: abc joins
+# the group that owns the socket. s6-setuidgid takes supplementary groups from the group
+# database, so this membership is what code-server, the console and SSH sessions actually get;
+# docker run's --group-add does not survive the switch to abc. The socket's own mode is left
+# alone, with the one exception below: it is the host's file, and a world-writable socket makes
+# every process on the host a Docker client. LinuxServer's Docker mod does the same.
 if [ -S /var/run/docker.sock ]; then
-    chmod 666 /var/run/docker.sock
-fi
-
-# Ensure XDG directories exist for tools like opencode
-mkdir -p /config/.local/share /config/.local/bin /config/.local/state /config/.config /config/.cache
-chown -R abc:abc /config/.local /config/.config /config/.cache
-
-# Shared artifacts drop box: agents write downloadable outputs here and users drop
-# files here to reference (the dashboard's Artifacts pane lists it, and a drop types
-# the path into the terminal). Created post-mount so it lives on the persisted volume.
-mkdir -p /config/artifacts
-chown abc:abc /config/artifacts
-
-# Claude Code's native updater manages ~/.local/bin/claude and its launcher check
-# expects it to exist. Seed it once (fresh volume) pointing at the image-baked
-# launcher; the first self-update replaces it with the workspace's own versioned
-# install under /config/.local/share/claude, which then persists and shadows the
-# baked copy via PATH. Guard-before-mutate: a user- or updater-owned launcher wins.
-if [ ! -e /config/.local/bin/claude ]; then
-    ln -s /opt/envhaven/claude-home/.local/bin/claude /config/.local/bin/claude
-    chown -h abc:abc /config/.local/bin/claude
+    # Images before 1.9.0 ran `chmod 666` on the socket at every boot, and the host keeps that
+    # mode until dockerd recreates the socket, so a managed host updated from one of them would
+    # still let every process on it reach Docker, the cloudflared connector in this container
+    # included. A managed host's socket serves this workspace alone, so there the mode goes back
+    # to the daemon's 660, and abc keeps access through the group it joins below. A self-hosted
+    # socket may be shared with other containers that rely on its mode, so it stays as the host
+    # left it. Remove this once every managed host has rebooted since it last ran an image older
+    # than 1.9.0.
+    if [ "${ENVHAVEN_MANAGED:-}" = "true" ] && [ "$(stat -c %a /var/run/docker.sock)" = 666 ]; then
+        chmod 660 /var/run/docker.sock && echo "Docker: set the socket's mode back to 660"
+    fi
+    DOCKER_GID=$(stat -c %g /var/run/docker.sock)
+    DOCKER_GROUP=$(getent group "$DOCKER_GID" | cut -d: -f1)
+    if [ -z "$DOCKER_GROUP" ]; then
+        DOCKER_GROUP="docker-$DOCKER_GID"
+        groupadd -g "$DOCKER_GID" "$DOCKER_GROUP"
+    fi
+    usermod -aG "$DOCKER_GROUP" abc && echo "Docker: abc joined group $DOCKER_GROUP ($DOCKER_GID)"
 fi
 
 # Ensure installed tools are writable by abc for runtime updates (npm install -g, mise install,
@@ -30,63 +36,25 @@ fi
 # Runs in background to avoid blocking startup and changes only files not already owned by abc.
 /usr/local/lib/envhaven/envhaven-repair-tool-ownership &
 
-SSHD_CONFIG="/etc/ssh/sshd_config"
-if ! grep -q "^AllowUsers" "$SSHD_CONFIG"; then
-    echo "AllowUsers abc" >> "$SSHD_CONFIG"
-    echo "SSH: AllowUsers set to abc"
-elif ! grep -q "AllowUsers.*abc" "$SSHD_CONFIG"; then
-    sed -i "s/^AllowUsers.*/AllowUsers abc/" "$SSHD_CONFIG"
-    echo "SSH: AllowUsers updated to abc"
-fi
+# A tool once run as root can leave root-owned files in abc's XDG directories and Go module
+# cache, which then break that tool for abc. ~/.ssh is listed too: LinuxServer's init-code-server
+# recreates it as root whenever it is missing, and envhaven-user-setup writes authorized_keys
+# there as abc, so a directory or key file abc cannot read or write would drop keys. chown -R
+# follows neither a symlink given as its argument nor one it meets inside the tree, and each of
+# these is a direct child of the mounted /config, a path abc cannot swap out from under it.
+for dir in /config/.local /config/.config /config/.cache /config/go /config/.ssh; do
+    [ -e "$dir" ] && chown -R abc:abc "$dir"
+done
 
-SSH_DIR="/config/.ssh"
-AUTH_KEYS="$SSH_DIR/authorized_keys"
+# LinuxServer's init-code-server recreates ~/workspace, ~/extensions and ~/data as root the same
+# way, and hands them to abc only when it finds a new volume or a changed PUID. init-agents-md,
+# init-extensions and init-vscode-settings write in them as abc and wait on this oneshot, so a
+# directory the user deleted would otherwise come back unwritable: no AGENTS.md, a default
+# workspace nobody can write to, no EnvHaven extension. Only the directory itself is handed
+# back; what is inside belongs to the user (LinuxServer leaves the workspace's contents alone
+# too), and chown -h, given a symlink, changes the link itself.
+for dir in /config/workspace /config/extensions /config/data; do
+    [ -e "$dir" ] && chown -h abc:abc "$dir"
+done
 
-mkdir -p "$SSH_DIR"
-chmod 700 "$SSH_DIR"
-touch "$AUTH_KEYS"
-chmod 600 "$AUTH_KEYS"
-
-[ -n "$PUBLIC_KEY" ] && echo "$PUBLIC_KEY" >> "$AUTH_KEYS"
-[ -n "$PUBLIC_KEY_FILE" ] && [ -f "$PUBLIC_KEY_FILE" ] && cat "$PUBLIC_KEY_FILE" >> "$AUTH_KEYS"
-if [ -n "$PUBLIC_KEY_DIR" ] && [ -d "$PUBLIC_KEY_DIR" ]; then
-    for f in "$PUBLIC_KEY_DIR"/*; do [ -f "$f" ] && cat "$f" >> "$AUTH_KEYS"; done
-fi
-[ -n "$PUBLIC_KEY_URL" ] && curl -fsSL "$PUBLIC_KEY_URL" >> "$AUTH_KEYS" 2>/dev/null
-
-awk '!seen[$0]++' "$AUTH_KEYS" > "$AUTH_KEYS.tmp" && mv "$AUTH_KEYS.tmp" "$AUTH_KEYS"
-chmod 600 "$AUTH_KEYS"
-chown -R abc:abc "$SSH_DIR"
-
-CURRENT_SHELL=$(getent passwd abc | cut -d: -f7)
-if [ "$CURRENT_SHELL" = "/bin/false" ] || [ "$CURRENT_SHELL" = "/usr/sbin/nologin" ]; then
-    if command -v zsh &> /dev/null; then
-        chsh -s "$(which zsh)" abc 2>/dev/null || true
-    else
-        chsh -s /bin/bash abc 2>/dev/null || true
-    fi
-fi
-
-# Bash has no drop-in directory (zsh has $ZSH_CUSTOM), so ~/.bashrc carries one
-# stable source line. The helper performs the one-shot legacy cleanup through a
-# same-directory mktemp + rename, preserving in-HOME dotfile symlinks and refusing
-# paths outside HOME.
-HOME=/config /usr/local/lib/envhaven/envhaven-install-rc-hook bash
-
-# Initialize version status for tmux
-if [[ -x /opt/envhaven/bin/envhaven-version-check ]]; then
-  /opt/envhaven/bin/envhaven-version-check &
-fi
-
-# Mark the workspace's first boot. The sidebar extension reads this mtime as
-# the workspace creation time to show onboarding for fresh workspaces (< 30 min)
-# and hide first-run chips on older ones (> 7 days). Only created once —
-# subsequent boots preserve the original timestamp, so restarting the container
-# does NOT re-trigger the onboarding UI.
-WORKSPACE_CREATED_MARKER="/config/.workspace-created"
-if [ ! -e "$WORKSPACE_CREATED_MARKER" ]; then
-    touch "$WORKSPACE_CREATED_MARKER"
-    chown abc:abc "$WORKSPACE_CREATED_MARKER"
-fi
-
-echo "User configuration completed"
+exec /usr/local/lib/envhaven/as-abc /usr/local/lib/envhaven/envhaven-user-setup

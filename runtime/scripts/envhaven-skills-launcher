@@ -1,0 +1,9 @@
+#!/bin/sh
+# The skills CLI (vercel-labs/skills) reports every install and removal to skills.sh unless
+# DISABLE_TELEMETRY is set, and the image carries no telemetry. /opt/envhaven/bin/skills and
+# /opt/envhaven/bin/add-skill (the same CLI under its second name) link here, ahead of mise's
+# shims on the workspace user's PATH, so a run from a shell or an agent sends no reports, as the
+# console's own runs do (console/skills.go). Only this CLI gets the variable: other tools read
+# the same name, and whether they report is the user's call.
+export DISABLE_TELEMETRY=1
+exec "/mise/shims/${0##*/}" "$@"

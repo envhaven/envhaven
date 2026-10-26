@@ -1,0 +1,128 @@
+#!/bin/bash
+# The workspace user's half of boot setup. init-user-config runs it through as-abc once the few
+# steps that need root are done. Everything here writes inside /config, which is abc's own home,
+# and that is why it runs as abc: a root process writing there follows whatever links abc left.
+#
+# Each step reports its own failure and the script carries on. sshd and the console wait on
+# init-user-config, and s6 never starts them once it fails.
+
+# XDG directories for tools like opencode, and the shared artifacts drop box: agents write
+# downloadable outputs here and users drop files here to reference (the dashboard's Artifacts
+# pane lists it, and a drop types the path into the terminal).
+mkdir -p /config/.local/share /config/.local/bin /config/.local/state /config/.config /config/.cache /config/artifacts
+
+# Claude Code's native updater manages ~/.local/bin/claude and its launcher check
+# expects it to exist. Seed it once (fresh volume) pointing at the image-baked
+# launcher; the first self-update replaces it with the workspace's own versioned
+# install under /config/.local/share/claude, which then persists and shadows the
+# baked copy via PATH. Guard-before-mutate: a user- or updater-owned launcher wins.
+if [ ! -e /config/.local/bin/claude ]; then
+    ln -s /opt/envhaven/claude-home/.local/bin/claude /config/.local/bin/claude
+fi
+
+# authorized_keys belongs to the user, so the lines already in it stay exactly as they are,
+# options included. Keys from the environment are added only as plain public keys: an
+# authorized_keys line can also carry options such as command= or environment=, which a key
+# handed to us never needs. PUBLIC_KEY_URL must be https, because keys fetched in the clear can
+# be swapped in transit for someone else's.
+SSH_DIR=/config/.ssh
+AUTH_KEYS="$SSH_DIR/authorized_keys"
+KEY_LINE='^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp(256|384|521)|sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com)[[:blank:]]+[A-Za-z0-9+/]+={0,3}([[:blank:]][^[:cntrl:]]*)?$'
+
+# Every source ends with a newline of its own: a key file saved without one would otherwise lose
+# its last key, or run it into the first key of the next source. PUBLIC_KEY_FILE and
+# PUBLIC_KEY_DIR are read as abc, and SSH takes keys only, so a path abc cannot read is reported:
+# a silent miss would leave the workspace with no way in and nothing in the log to say why.
+injected_keys() {
+    [ -n "${PUBLIC_KEY:-}" ] && printf '%s\n' "$PUBLIC_KEY"
+    if [ -n "${PUBLIC_KEY_FILE:-}" ]; then
+        if [ -f "$PUBLIC_KEY_FILE" ] && [ -r "$PUBLIC_KEY_FILE" ]; then
+            cat -- "$PUBLIC_KEY_FILE"
+            echo
+        else
+            echo "SSH: PUBLIC_KEY_FILE ($PUBLIC_KEY_FILE) is missing or unreadable for uid $(id -u); no key was taken from it" >&2
+        fi
+    fi
+    if [ -n "${PUBLIC_KEY_DIR:-}" ]; then
+        if [ -d "$PUBLIC_KEY_DIR" ] && [ -r "$PUBLIC_KEY_DIR" ] && [ -x "$PUBLIC_KEY_DIR" ]; then
+            for f in "$PUBLIC_KEY_DIR"/*; do
+                [ -f "$f" ] || continue
+                if [ -r "$f" ]; then
+                    cat -- "$f"
+                    echo
+                else
+                    echo "SSH: $f in PUBLIC_KEY_DIR is unreadable for uid $(id -u); no key was taken from it" >&2
+                fi
+            done
+        else
+            echo "SSH: PUBLIC_KEY_DIR ($PUBLIC_KEY_DIR) is missing or unreadable for uid $(id -u); no key was taken from it" >&2
+        fi
+    fi
+    if [ -n "${PUBLIC_KEY_URL:-}" ]; then
+        { curl -fsSL --proto '=https' --max-time 10 --max-filesize 1048576 -- "$PUBLIC_KEY_URL" && echo; } ||
+            echo "SSH: could not fetch PUBLIC_KEY_URL over https" >&2
+    fi
+    return 0
+}
+
+if mkdir -p "$SSH_DIR" && chmod 700 "$SSH_DIR" && tmp=$(mktemp "$SSH_DIR/.authorized_keys.XXXXXX"); then
+    [ -f "$AUTH_KEYS" ] && cat -- "$AUTH_KEYS" >"$tmp"
+    if [ -s "$tmp" ] && [ "$(tail -c1 "$tmp" | wc -l)" -eq 0 ]; then
+        printf '\n' >>"$tmp"
+    fi
+    injected_keys | tr -d '\r' | while IFS= read -r line; do
+        if ! printf '%s\n' "$line" | grep -qE "$KEY_LINE"; then
+            [ -n "$line" ] && echo "SSH: skipped an injected line that is not a plain public key" >&2
+            continue
+        fi
+        grep -qxF -- "$line" "$tmp" || printf '%s\n' "$line" >>"$tmp"
+    done
+    chmod 600 "$tmp"
+    if [ -f "$AUTH_KEYS" ] && cmp -s "$tmp" "$AUTH_KEYS"; then
+        rm -f -- "$tmp"
+    else
+        mv -f -- "$tmp" "$AUTH_KEYS" || { rm -f -- "$tmp"; echo "SSH: could not update authorized_keys" >&2; }
+    fi
+else
+    echo "SSH: could not prepare $SSH_DIR" >&2
+fi
+
+# This workspace's SSH host keys, named by /etc/ssh/sshd_config.d/envhaven.conf. Generated once
+# and kept on the volume, so the workspace answers with the same keys across image updates. abc
+# owns them: sshd reads them as root, and checks a key file's mode only when root owns it.
+HOST_KEYS=/config/.config/envhaven/ssh
+if mkdir -p "$HOST_KEYS" && chmod 700 /config/.config/envhaven "$HOST_KEYS"; then
+    for type in ed25519 ecdsa rsa; do
+        key="$HOST_KEYS/ssh_host_${type}_key"
+        [ -s "$key" ] && continue
+        rm -f -- "$key" "$key.pub"
+        ssh-keygen -q -t "$type" -N '' -C '' -f "$key" </dev/null ||
+            echo "SSH: could not generate the $type host key" >&2
+    done
+else
+    echo "SSH: could not prepare $HOST_KEYS" >&2
+fi
+
+# Bash has no drop-in directory (zsh has $ZSH_CUSTOM), so ~/.bashrc carries one
+# stable source line. The helper performs the one-shot legacy cleanup through a
+# same-directory mktemp + rename, preserving in-HOME dotfile symlinks and refusing
+# paths outside HOME.
+/usr/local/lib/envhaven/envhaven-install-rc-hook bash || echo "ERROR: could not install the bash hook" >&2
+
+# Initialize version status for tmux
+if [[ -x /opt/envhaven/bin/envhaven-version-check ]]; then
+    /opt/envhaven/bin/envhaven-version-check &
+fi
+
+# Mark the workspace's first boot. The sidebar extension reads this mtime as
+# the workspace creation time to show onboarding for fresh workspaces (< 30 min)
+# and hide first-run chips on older ones (> 7 days). Only created once —
+# subsequent boots preserve the original timestamp, so restarting the container
+# does NOT re-trigger the onboarding UI.
+WORKSPACE_CREATED_MARKER="/config/.workspace-created"
+if [ ! -e "$WORKSPACE_CREATED_MARKER" ]; then
+    touch "$WORKSPACE_CREATED_MARKER"
+fi
+
+echo "User configuration completed"
+exit 0

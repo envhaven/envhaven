@@ -23,10 +23,9 @@ const filesystemSecurityName = `envhaven-test-fs-${stamp}`;
 // the container exists, so it runs exactly once: a missing tool is a regression to
 // report in a second, not something to retry for minutes.
 //
-// Most of the budget is LSIO's mod-init, which fetches DOCKER_MODS from lscr.io and is the
-// part that varies with the network. code-server, sshd and svc-console all wait behind it:
-// they depend on init-zsh-config, which s6 runs only after the mods
-// (runtime/scripts/init-zsh-config-run).
+// The budget is generous rather than tight: code-server, sshd and svc-console all wait behind
+// the init-* oneshots, and the first boot of a fresh volume also generates SSH host keys and
+// copies Oh My Zsh into place (runtime/scripts/envhaven-user-setup, init-zsh-config-run).
 const BOOT_TIMEOUT_MS = 300_000;
 const POLL_INTERVAL_MS = 2000;
 const DOCKER_OPERATION_TIMEOUT_MS = 30_000;
@@ -46,8 +45,8 @@ interface Test {
   container?: string;
   /** Only true once s6 has brought the container up; polled against the shared budget. */
   boot?: boolean;
-  user?: string;
-  env?: Record<string, string>;
+  /** Run as abc through as-abc; otherwise as root with the container's default environment. */
+  asAbc?: boolean;
 }
 
 const toolCommands = toolDefs.tools.map(({ command }) => command);
@@ -55,11 +54,11 @@ const launcherCommands = toolDefs.tools
   .filter((tool) => tool.launchArgs?.length)
   .map(({ command }) => command);
 
-// Runs as abc with HOME=/config — the uid and home every workspace process actually gets,
-// so a tool that resolves here resolves for the people who use the container. Root has
-// neither, and it bypasses DAC on top, which is precisely what the filesystem checks below
-// are trying to observe.
-const asUser = { user: 'abc', env: { HOME: '/config' } };
+// Runs as abc through as-abc, with the environment every workspace process actually gets
+// (HOME=/config and the tool PATH from /etc/environment), so a tool that resolves here
+// resolves for the people who use the container. Root has neither, and it bypasses DAC on
+// top, which is precisely what the filesystem checks below are trying to observe.
+const asUser = { asAbc: true };
 
 const launcherContract = String.raw`set -eu
 d=$(mktemp -d)
@@ -201,7 +200,10 @@ chown -h root:root "$link"
 // ~/.oh-my-zsh/custom is a dotfiles link inside HOME, which is followed, and its themes
 // directory links outside HOME, which is refused. The theme target is abc-owned, so only
 // the HOME check stands between it and the write, and the refusal must not keep any
-// service from starting.
+// service from starting. ~/artifacts and the first-boot marker link to root-owned places
+// that older images chowned to abc or created as root on the way through, a socket stands in
+// for a mounted Docker socket owned by a group the container does not know, and a root
+// crontab sits in /defaults, which LinuxServer's boot hands to abc and its cron setup reads.
 const filesystemSecurityFixture = String.raw`set -eu
 mkdir -p /config/.oh-my-zsh /config/dotfiles/omz-custom /tmp/envhaven-kimi-target /tmp/envhaven-antigravity-target/antigravity-cli /tmp/envhaven-theme-target
 printf kimi-guard >/tmp/envhaven-kimi-target/guard
@@ -214,7 +216,15 @@ ln -s /tmp/envhaven-theme-target /config/dotfiles/omz-custom/themes
 ln -s /tmp/envhaven-antigravity-target /config/.gemini
 printf '%s\n' 'export ANTHROPIC_API_KEY="legacy-value"' >/config/.zshrc
 printf '%s\n' 'export ANTHROPIC_API_KEY="legacy-value"' >/config/.bashrc
-chown -R 1234:1234 /config /tmp/envhaven-theme-target
+mkdir -p /tmp/envhaven-artifacts-target
+ln -s /tmp/envhaven-artifacts-target /config/artifacts
+ln -s /etc/envhaven-marker-probe /config/.workspace-created
+/mise/shims/python3 -c 'import socket; socket.socket(socket.AF_UNIX).bind("/var/run/docker.sock")'
+chgrp 2345 /var/run/docker.sock
+chmod 660 /var/run/docker.sock
+mkdir -p /defaults/crontabs
+printf '%s\n' '* * * * * touch /tmp/envhaven-root-cron-ran' >/defaults/crontabs/root
+chown -R 1234:1234 /config /tmp/envhaven-theme-target /defaults
 exec /init`;
 
 const filesystemSecurityContract = String.raw`set -eu
@@ -244,6 +254,13 @@ if grep -q '^# EnvHaven legacy sidebar migration ' /config/.config/envhaven/envi
   echo 'a legacy migration receipt survived in the store' >&2
   exit 1
 fi
+[ "$(stat -c %u /tmp/envhaven-artifacts-target)" = 0 ]
+[ ! -e /etc/envhaven-marker-probe ]
+[ "$(stat -c %a /var/run/docker.sock)" = 660 ]
+id -nG abc | tr ' ' '\n' | grep -qx docker-2345
+[ "$(stat -c %u /defaults)" = 0 ]
+[ ! -e /defaults/crontabs ]
+! crontab -l -u root 2>/dev/null | grep -q envhaven-root-cron-ran
 curl -sf http://localhost:8443/healthz >/dev/null
 pgrep sshd >/dev/null
 curl -sf http://localhost:7681/__console/ui | grep -q 'EnvHaven Terminal'`;
@@ -361,6 +378,30 @@ const tests: Test[] = [
     container: noPasswordName,
     boot: true,
   },
+  {
+    name: 'no-password container: cloudflared service disabled even with a token',
+    cmd: `s6-svstat /run/service/svc-cloudflared | grep -q 'down (exitcode 0)'`,
+    container: noPasswordName,
+    boot: true,
+  },
+  // An editor with no login is a shell, so without a web password code-server stays on
+  // loopback (runtime/scripts/svc-code-server-run). 20FB is 8443 in /proc/net's hex, and 0A
+  // is LISTEN: the only listener allowed on it is 127.0.0.1.
+  {
+    name: 'no-password container: code-server listens on loopback only',
+    cmd:
+      `curl -sf http://127.0.0.1:8443/healthz >/dev/null && ` +
+      `! awk '$4 == "0A" && $2 ~ /:20FB$/ && $2 != "0100007F:20FB"' /proc/net/tcp /proc/net/tcp6 | grep -q .`,
+    container: noPasswordName,
+    boot: true,
+  },
+  // Written by envhaven-version-check, which boot now runs as abc: the script is abc's to
+  // update, so root running it would hand abc root, and the status file sits in /tmp.
+  {
+    name: 'version status is written by abc',
+    cmd: '[ "$(stat -c %U /tmp/envhaven-version-status)" = abc ]',
+    boot: true,
+  },
 
   // Everything below runs once, and only if every boot check above passed. These are
   // properties of the image rather than of a running container, so a failure here is a
@@ -381,10 +422,13 @@ const tests: Test[] = [
       `[ "$(curl -s -o /dev/null -w '%{http_code}' -c /tmp/cj -d password=${TEST_PASSWORD} http://localhost:7681/__console/login)" = 204 ]; ` +
       `curl -sf -b /tmp/cj http://localhost:7681/__console/token | grep -qE '^[0-9]+\\.'`,
   },
+  // As abc, like the extension whose proof this computes: node is a workspace tool, and root's
+  // PATH holds none of them.
   {
     name: 'hash-only extension token flow',
     cmd: hashProofContract,
     container: hashPasswordName,
+    ...asUser,
   },
   // The user-visible half of the same promise: no password, no port. On its own this
   // would also be satisfied by a console that started and crashed, which is why the boot
@@ -400,6 +444,68 @@ const tests: Test[] = [
     container: noPasswordName,
     ...asUser,
   },
+  // Keys only, and host keys this container generated for itself: the image ships none, so no
+  // two workspaces share a host key and nobody can read one out of the public image.
+  {
+    name: 'sshd accepts keys only and uses its own host keys',
+    cmd: String.raw`set -eu
+config=$(sshd -T)
+for line in 'passwordauthentication no' 'kbdinteractiveauthentication no' 'authenticationmethods publickey' 'permitrootlogin no' 'hostkey /config/.config/envhaven/ssh/ssh_host_ed25519_key'; do
+  printf '%s\n' "$config" | grep -qxF "$line" || { echo "sshd -T lacks: $line" >&2; exit 1; }
+done
+set -- /etc/ssh/ssh_host_*
+[ ! -e "$1" ] || { echo "the image ships host keys: $*" >&2; exit 1; }
+[ -s /config/.config/envhaven/ssh/ssh_host_ed25519_key ]`,
+  },
+  // Every root process starts from the image's default environment: s6, the healthcheck,
+  // docker exec. A directory abc can write on that PATH, or an entry resolving to a file abc
+  // can write, hands abc whatever root runs next by name.
+  {
+    name: "root's PATH holds nothing abc can write",
+    cmd: String.raw`ROOT_PATH=$PATH exec /usr/local/lib/envhaven/as-abc sh -c '
+for dir in $(printf "%s" "$ROOT_PATH" | tr : " "); do
+  [ -d "$dir" ] || continue
+  if [ -w "$dir" ]; then echo "abc can write $dir" >&2; exit 1; fi
+  for entry in "$dir"/*; do
+    target=$(readlink -f -- "$entry") || continue
+    if [ -w "$target" ]; then echo "abc can write $entry ($target)" >&2; exit 1; fi
+  done
+done'`,
+  },
+  // SUDO_PASSWORD is set on this container. Its s6 copy is root-only, and as-abc keeps it out
+  // of every process root starts as abc, so nothing abc can read carries it.
+  {
+    name: 'abc cannot read root-only secrets',
+    cmd: String.raw`set -eu
+if cat /run/s6/container_environment/SUDO_PASSWORD >/dev/null 2>&1; then
+  echo 'abc can read the s6 copy of SUDO_PASSWORD' >&2
+  exit 1
+fi
+for pid in $(pgrep -u abc); do
+  if tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | grep -q '^SUDO_PASSWORD'; then
+    echo "abc process $pid carries SUDO_PASSWORD" >&2
+    exit 1
+  fi
+done`,
+    ...asUser,
+  },
+  // The socket belongs to a group the image does not know; boot gives abc membership of it
+  // and leaves its mode alone. Nothing listens, so a refused connection proves the
+  // permission check passed.
+  {
+    name: 'abc reaches a mounted Docker socket through its group',
+    cmd: String.raw`python3 -c 'import socket, sys
+s = socket.socket(socket.AF_UNIX)
+try:
+    s.connect("/var/run/docker.sock")
+except ConnectionRefusedError:
+    sys.exit(0)
+except PermissionError:
+    sys.exit("abc cannot open the socket")
+sys.exit("unexpected: something is listening")'`,
+    container: filesystemSecurityName,
+    ...asUser,
+  },
   {
     name: 'startup creates no root-owned workspace state',
     cmd:
@@ -410,10 +516,36 @@ const tests: Test[] = [
   // As root: /tmp/tmux-0 is root's 0700 socket directory, so abc could never see the socket.
   { name: 'startup starts no root tmux server', cmd: 'test ! -S /tmp/tmux-0/default' },
 
-  // --version, not `which`: cloudflared comes from mise, which writes a shim because the
-  // tool is listed in mise.toml, not because it installed. This is the only cloudflared
-  // gate anywhere, and svc-cloudflared is a supervised longrun that execs it.
-  { name: 'cloudflared', cmd: 'cloudflared --version', ...asUser },
+  // The only cloudflared gate anywhere, and svc-cloudflared is a supervised longrun that execs
+  // it with the tunnel token, so abc must not be able to replace the binary.
+  {
+    name: 'cloudflared',
+    cmd: 'cloudflared --version && [ ! -w "$(readlink -f "$(command -v cloudflared)")" ]',
+    ...asUser,
+  },
+  // svc-cloudflared starts the connector with its account's groups (s6-setuidgid), and that
+  // account has nogroup alone. A group of its own would take a GID from the top of the system
+  // range, where hosts keep their docker group, and could hand the connector a mounted socket.
+  {
+    name: 'cloudflared belongs to nogroup only',
+    cmd: '[ "$(id -Gn cloudflared)" = nogroup ]',
+  },
+  // skills reports installs and removals to skills.sh unless DISABLE_TELEMETRY is set. A module
+  // preloaded into the CLI's own node process prints what that process sees and exits before
+  // the CLI runs, so this proves that both names on abc's PATH reach the CLI with telemetry off
+  // even when the caller's environment does not set the variable.
+  {
+    name: 'skills on the workspace PATH runs with telemetry off',
+    cmd: String.raw`set -eu
+d=$(mktemp -d)
+trap 'rm -rf "$d"' EXIT
+printf '%s\n' 'process.stdout.write(String(process.env.DISABLE_TELEMETRY)); process.exit(0);' >"$d/probe.cjs"
+for cli in skills add-skill; do
+  seen=$(env -u DISABLE_TELEMETRY NODE_OPTIONS="--require $d/probe.cjs" "$cli" --version)
+  [ "$seen" = 1 ] || { echo "$cli ran with DISABLE_TELEMETRY=$seen" >&2; exit 1; }
+done`,
+    ...asUser,
+  },
 
   { name: 'Node.js', cmd: 'node --version', ...asUser },
   { name: 'Python', cmd: 'python --version', ...asUser },
@@ -547,7 +679,15 @@ process.on('SIGTERM', () => void cleanup().then(() => process.exit(143)));
 
 function runOnce(test: Test, timeoutMs = DOCKER_OPERATION_TIMEOUT_MS) {
   const target = test.container ?? containerName;
-  return dockerExec(target, test.cmd, { user: test.user, env: test.env, timeoutMs });
+  // The command travels in the environment, which as-abc passes through, so it needs no
+  // second layer of shell quoting on its way to abc.
+  if (test.asAbc) {
+    return dockerExec(target, 'exec /usr/local/lib/envhaven/as-abc sh -c "$ENVHAVEN_TEST_CMD"', {
+      env: { ENVHAVEN_TEST_CMD: test.cmd },
+      timeoutMs,
+    });
+  }
+  return dockerExec(target, test.cmd, { timeoutMs });
 }
 
 async function pollUntilReady(test: Test, deadline: number) {
@@ -579,8 +719,10 @@ log.info('Starting test containers...');
 const bootDeadline = Date.now() + BOOT_TIMEOUT_MS;
 
 // Plaintext and hash-only credentials exercise both self-host token paths; without
-// either credential the gate holds and 7681 never opens. The fourth container seeds
-// hostile persisted paths before s6 starts and uses a non-default uid/gid.
+// either credential the gate holds and 7681 never opens. That no-password container
+// also gets a tunnel token, proving the connector cannot expose its loopback IDE. The
+// fourth container seeds hostile persisted paths before s6 starts and uses a non-default
+// uid/gid.
 // allSettled rather than all: `all` rejects while the other `docker run` is still in
 // flight, so cleanup could fire before the surviving container exists and leak it.
 startPromise = Promise.allSettled([
@@ -590,7 +732,11 @@ startPromise = Promise.allSettled([
     '-e', `SUDO_PASSWORD=${TEST_PASSWORD}`,
     config.image,
   ], bootDeadline),
-  startContainer(['-d', '--name', noPasswordName, config.image], bootDeadline),
+  startContainer([
+    '-d', '--name', noPasswordName,
+    '-e', 'CLOUDFLARE_TUNNEL_TOKEN=invalid-self-host-tunnel-token',
+    config.image,
+  ], bootDeadline),
   startContainer([
     '-d', '--name', hashPasswordName,
     '-e', `HASHED_PASSWORD=${TEST_PASSWORD_SHA256}`,
@@ -600,7 +746,6 @@ startPromise = Promise.allSettled([
     '-d', '--name', filesystemSecurityName,
     '-e', 'PUID=1234',
     '-e', 'PGID=1234',
-    '-e', 'DOCKER_MODS=',
     '-e', `PASSWORD=${TEST_PASSWORD}`,
     '--entrypoint', '/bin/bash',
     config.image,
@@ -669,8 +814,8 @@ try {
 
   // Every container that failed something, not just the default one — the gate check runs
   // against the other container and its logs are the only place its answer is written.
-  // Whole log, not a tail: a failed DOCKER_MODS fetch or a oneshot that gave up prints
-  // during startup, minutes before the tail this would otherwise show.
+  // Whole log, not a tail: a oneshot that gave up prints during startup, minutes before the
+  // tail this would otherwise show.
   for (const name of failedContainers) {
     log.newline();
     log.header(`Container logs: ${name}`);

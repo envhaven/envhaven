@@ -239,7 +239,8 @@ services:
       - PGID=1000
       - TZ=Etc/UTC
       - PASSWORD=password        # Web UI password
-      - SUDO_PASSWORD=password   # sudo/SSH password
+      - SUDO_PASSWORD=password   # sudo password
+      - PUBLIC_KEY_URL=https://github.com/<your-github-username>.keys   # SSH keys (SSH takes keys only)
     volumes:
       - ./config:/config         # Persist home directory
     ports:
@@ -259,11 +260,11 @@ SSH enables the Haven CLI and direct terminal access.
 | **Managed** | `ssh-{subdomain}.envhaven.app` | `haven connect . myproject-alice` |
 | **Self-hosted** | `your-server:2222` | `haven connect . abc@your-server:2222` |
 
-**Self-hosted setup:** Import your GitHub keys automatically:
+SSH accepts keys only; there is no password login. **Self-hosted setup:** Import your GitHub keys automatically:
 
 ```yaml
 environment:
-  - PUBLIC_KEY_URL=https://github.com/yourusername.keys
+  - PUBLIC_KEY_URL=https://github.com/<your-github-username>.keys
 ports:
   - "2222:22"
 ```

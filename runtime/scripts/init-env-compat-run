@@ -1,13 +1,14 @@
 #!/usr/bin/with-contenv bash
 
-# Managed VMs provisioned before 2026-04 pass the platform vars without the
-# _ prefix, and their container start scripts are frozen at provision time.
-# Canonicalize the container environment here so every consumer (console,
-# extension, init scripts) reads exactly one name: _ENVHAVEN_*. Any new
-# consumer of these vars must also declare dependencies.d/init-env-compat
-# in the Dockerfile so it cannot start before this runs.
+# Canonicalize the s6 container environment before anything reads it. Every oneshot and service
+# that starts an abc process declares dependencies.d/init-env-compat in the Dockerfile, so this
+# runs first; any new consumer of these vars must do the same.
 cd /run/s6/container_environment || exit 1
 
+# Managed VMs provisioned before 2026-04 pass the platform vars without the
+# _ prefix, and their container start scripts are frozen at provision time.
+# Canonicalize them so every consumer (console, extension, init scripts) reads
+# exactly one name: _ENVHAVEN_*.
 copied=0
 for var in WORKSPACE_ID WORKSPACE_NAME PUBLIC_URL PREVIEW_URL API_URL WORKSPACE_TOKEN; do
     if [ -f "ENVHAVEN_${var}" ] && [ ! -f "_ENVHAVEN_${var}" ]; then
@@ -19,3 +20,14 @@ done
 if [ "$copied" -gt 0 ]; then
     echo "env-compat: canonicalized ${copied} legacy ENVHAVEN_* var(s)"
 fi
+
+# s6 writes every container variable here as a world-readable file. Secrets that only root
+# services read become root-only: the tunnel token (svc-cloudflared) and the sudo password
+# (LinuxServer's init-code-server writes it into /etc/shadow). as-abc keeps the same variables
+# out of every process abc runs. The web password stays readable: code-server runs as abc
+# and needs it, and the extension reads it from here to sign in to the self-hosted console.
+for var in CLOUDFLARE_TUNNEL_TOKEN SUDO_PASSWORD SUDO_PASSWORD_HASH; do
+    if [ -f "$var" ]; then
+        chmod 600 "$var"
+    fi
+done

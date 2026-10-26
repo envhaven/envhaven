@@ -13,9 +13,9 @@ Inherited from [linuxserver/code-server](https://docs.linuxserver.io/images/dock
 | `PUID` | 1000 | User ID for file permissions |
 | `PGID` | 1000 | Group ID for file permissions |
 | `TZ` | Etc/UTC | Timezone (e.g., `America/New_York`) |
-| `PASSWORD` | - | Web GUI password. If not set, no auth required |
+| `PASSWORD` | - | Web GUI password. Without it (or `HASHED_PASSWORD`), code-server listens on 127.0.0.1 only and the browser terminal stays off |
 | `HASHED_PASSWORD` | - | Web GUI password hash (overrides `PASSWORD`) |
-| `SUDO_PASSWORD` | - | Password for sudo and SSH login |
+| `SUDO_PASSWORD` | - | Password for sudo. SSH does not accept passwords |
 | `SUDO_PASSWORD_HASH` | - | Sudo password hash (overrides `SUDO_PASSWORD`) |
 | `DEFAULT_WORKSPACE` | /config/workspace | Directory code-server opens by default |
 | `PROXY_DOMAIN` | - | If set, enables proxy domain mode |
@@ -31,7 +31,7 @@ Inherited from [linuxserver/code-server](https://docs.linuxserver.io/images/dock
 | `GITHUB_TOKEN` | - | Authenticates the console's skills-registry calls to the GitHub API. Unset means the anonymous rate limit |
 | `OPENCODE_PERMISSION` | `{"*":"allow"}` | Baked into the image. The container is the sandbox, so OpenCode runs without permission prompts. Override it at `docker run` if you want prompts back |
 | `FX_PERMISSION_MODE` | `yolo` | Baked into the image for the same reason. fx's own default, `auto`, sends every unresolved tool call to a reviewer model and bills that request. Override it at `docker run` with `ask` or `auto` |
-| `CLOUDFLARE_TUNNEL_TOKEN` | - | Expose the container through your own Cloudflare tunnel. Unset = the built-in `cloudflared` service stays off. |
+| `CLOUDFLARE_TUNNEL_TOKEN` | - | Expose the container through your own Cloudflare tunnel. Unset = the built-in `cloudflared` service stays off. A self-hosted container with no `PASSWORD`/`HASHED_PASSWORD` also keeps the connector off, so the loopback-only auth-none editor cannot become public. |
 
 ### AI Tool API Keys
 
@@ -66,34 +66,37 @@ known managed variable. Duplicates, mismatches, and every other unmarked export 
 
 SSH server runs on port 22 inside the container. Map it to an external port (e.g., 2222:22) in your Docker configuration.
 
-### Password Authentication
+SSH accepts keys only. Password and keyboard-interactive logins are disabled, so add at least one
+public key before you connect. The container generates its own host keys on first boot and keeps
+them in `/config/.config/envhaven/ssh`, so they survive image updates; the image itself ships
+none.
 
-SSH uses `SUDO_PASSWORD` (not `PASSWORD` which is for web GUI only):
-
-```bash
-ssh abc@localhost -p 2222
-# Enter SUDO_PASSWORD when prompted
-```
-
-### Key-Based Authentication (Recommended)
+### Key-Based Authentication
 
 **The easiest way**: Import your SSH public keys directly from GitHub. GitHub stores your public keys at `https://github.com/USERNAME.keys`.
 
 ```yaml
 environment:
-  - PUBLIC_KEY_URL=https://github.com/yourusername.keys
+  - PUBLIC_KEY_URL=https://github.com/<your-github-username>.keys
 ```
 
-That's it. All your GitHub-registered SSH **public** keys are automatically added to `authorized_keys` on container startup.
+That's it. All your GitHub-registered SSH **public** keys are automatically added to `authorized_keys` on container startup. Every key the URL returns can sign in, so make sure it names your own account.
+
+Keys from these variables are added only as plain public keys (`ssh-ed25519`, `ssh-rsa`,
+`ecdsa-*`, and the `sk-` security-key types); a line that carries `authorized_keys` options is
+skipped. `PUBLIC_KEY_URL` must be an `https://` URL. Lines you add to `authorized_keys` yourself are
+left exactly as they are.
 
 **Other options:**
 
 | Variable | Description |
 |----------|-------------|
-| `PUBLIC_KEY_URL` | **Recommended**: URL to fetch public keys (e.g., `https://github.com/username.keys`) |
+| `PUBLIC_KEY_URL` | **Recommended**: URL to fetch public keys (e.g., `https://github.com/<your-github-username>.keys`) |
 | `PUBLIC_KEY` | Paste a single SSH public key directly |
-| `PUBLIC_KEY_FILE` | Path to public key file inside container |
-| `PUBLIC_KEY_DIR` | Directory containing multiple public key files |
+| `PUBLIC_KEY_FILE` | Path to a public key file inside the container, readable by the workspace user (`PUID`) |
+| `PUBLIC_KEY_DIR` | Directory of public key files, readable by the workspace user (`PUID`) |
+
+Boot reads `PUBLIC_KEY_FILE` and `PUBLIC_KEY_DIR` as the workspace user. When it cannot read one, the container log says so and no key is taken from it; since SSH accepts keys only, check that log first if a key you mounted does not let you in.
 
 You can also add keys via the EnvHaven extension sidebar or manually to `/config/.ssh/authorized_keys`.
 
@@ -145,13 +148,13 @@ The EnvHaven extension and welcome banner display an SSH connection command. **Y
 | `ENVHAVEN_SSH_HOST` | *none* (shows `<host>`) | **Required.** External hostname to reach container (e.g., `myserver.com`, `192.168.1.100`) |
 | `ENVHAVEN_SSH_PORT` | 22 (managed) / 2222 (self-hosted) | External SSH port (e.g., `2222` if mapping `2222:22`) |
 
-> **Note:** If `ENVHAVEN_SSH_HOST` is not set, the SSH command will show `<host>` placeholder with a warning.
+> **Note:** If `ENVHAVEN_SSH_HOST` is not set, or is not a hostname or IP address, the SSH command shows a `<host>` placeholder with a warning. A port outside 1 to 65535 falls back to the default.
 
 **Self-hosted example:**
 
 ```yaml
 environment:
-  - PUBLIC_KEY_URL=https://github.com/yourusername.keys
+  - PUBLIC_KEY_URL=https://github.com/<your-github-username>.keys
   - ENVHAVEN_SSH_HOST=myserver.example.com
   - ENVHAVEN_SSH_PORT=2222
 ports:
@@ -191,9 +194,13 @@ Then visit `http://<host>:7681/` and enter your web password.
 
 > **Put TLS in front.** The login submits your password and the terminal carries live shell traffic, so run port 7681 behind the same HTTPS reverse proxy or tunnel you use for the IDE. Over plain HTTP the password and session ride the wire in the clear, exactly as they would for code-server itself.
 
-Briefly, how the auth works: a successful login sets a `SameSite=Strict`, `HttpOnly` session cookie scoped to `/__console`, valid for 12 hours. The page exchanges that cookie for a 60-second token and presents the token when it opens the WebSocket. The password never crosses the socket, and rotating it invalidates every issued cookie and token. The same token also authenticates the console HTTP API below.
+Briefly, how the auth works: a successful login sets a `SameSite=Strict`, `HttpOnly` session cookie scoped to `/__console`, valid for 12 hours. The page exchanges that cookie for a 60-second token and presents the token when it opens the WebSocket. The password never crosses the socket, and rotating it invalidates every issued cookie and token. Both are also tied to this install: the key that signs them is salted with a random value the console keeps in `~/.config/envhaven/console-token-salt`, so a cookie or token copied from one container does not work on another that shares the password. Deleting that file signs every browser out. The same token also authenticates the console HTTP API below.
 
-If the connection drops, the terminal says so on top of the grid and offers a Reconnect button. Your shell keeps running. The session lives in tmux, so reconnecting drops you back exactly where you were. Nothing about the connection is ever written into the scrollback, because that scrollback belongs to your shell.
+Login attempts are rate limited to ten a minute per client address (IPv6 addresses count by /64), and all addresses together share a higher ceiling that caps how fast many of them can guess. An address that has logged in successfully within the last 12 hours is exempt from that ceiling, so a flood from other addresses, one or many, cannot keep you out of an address you have used. A first login from a new address can still be held back while many addresses flood at once. Behind a reverse proxy every attempt arrives from the proxy's address and shares its limit; the console never reads `X-Forwarded-For`, which any client can set. A request body that takes longer than 10 seconds to arrive is cut off; an artifact upload is cut off only after a minute in which nothing arrives.
+
+If the connection drops, the terminal says so on top of the grid and offers a Reconnect button. Your shell keeps running. The session lives in tmux, so reconnecting drops you back exactly where you were. Nothing about the connection is ever written into the scrollback, because that scrollback belongs to your shell. The console serves up to eight terminal sessions at once; opening a ninth closes the oldest, which then offers Reconnect like any dropped session.
+
+Programs in the terminal can copy to your clipboard with the OSC 52 escape sequence, which is how a tmux selection reaches it. Since any program can send one, the page announces every clipboard write for a few seconds (inside the managed dashboard, the dashboard does), and it refuses a copy larger than 1 MB.
 
 ### Keys
 
@@ -227,7 +234,7 @@ open port 7681, and the binary applies the same allowlist and validation as the 
 - `POST /__console/action`: tmux actions, fixed allowlist: `launch`, `connect`, `new-window`, `select-window`, `kill-window`, `insert-path`
 - `GET /__console/assets/<file>`: the terminal page's own bundles, fonts and engine, unauthenticated; each is served with a content-hash `ETag` and `Cache-Control: no-cache`, and the page loads them by hash-stamped URLs, so a viewer never runs one build's engine under another build's page
 
-Self-hosted, the API never sets `Access-Control-Allow-Origin`, so browsers can call it same-origin only; a CORS allowlist exists solely for the managed dashboard's origins. The self-host terminal page also refuses to be embedded (`X-Frame-Options: DENY`); open it top-level.
+Self-hosted, the API never sets `Access-Control-Allow-Origin`, so browsers can call it same-origin only; a CORS allowlist exists solely for the managed dashboard's origins. The self-host terminal page also refuses to be embedded (`X-Frame-Options: DENY` and CSP `frame-ancestors 'none'`); open it top-level. In both modes the page's Content-Security-Policy refuses inline script and eval, loads scripts only from its own origin, and opens connections only back to that origin, so markup injected into the page could neither run code of its own nor send the terminal anywhere.
 
 Managed hosting supplies that policy as a comma-separated list of full origins. Entries
 are exact unless the hostname starts with
@@ -235,6 +242,16 @@ one complete wildcard label, for example `https://*.envhaven.dev`. Scheme and ex
 port state always match exactly, and a wildcard admits subdomains but not its bare apex.
 The same parsed list controls CORS, WebSocket upgrades, and CSP `frame-ancestors`; invalid
 entries are discarded, and an empty result falls back to exact `https://envhaven.com`.
+
+### Trust boundary
+
+The console's credentials stand between your shell and the network. Code already running in the container as the workspace user, the AI agents included, sits on the shell's side of that line: it can read the web password from the container's environment and mint itself a token, as it could log in to the IDE. Three behaviors follow from that boundary, and all are deliberate:
+
+- The extension gets its tokens from `HASHED_PASSWORD` through a loopback-only route, `POST /__console/internal-token`. The proof it sends stays valid for 30 seconds and could be replayed within them, though only by code able to compute it anyway.
+- Self-hosted, the console listens on all interfaces over plain HTTP and sets its session cookie without `Secure`, because the documented address is `http://<host>:7681`. TLS belongs to the reverse proxy in front of it.
+- Installing a skill runs the image-baked `skills` CLI, which copies third-party files from skills.sh or GitHub into the configuration of every connected agent. A skill is a set of instructions those agents follow, and they run without approval prompts, so installing one means trusting its author. The console accepts only a GitHub `owner/repo` source and hands it to the CLI as a single argument, never through a shell.
+
+The console removes `PASSWORD` and `HASHED_PASSWORD` from its own environment when it starts, as code-server does, so nothing it launches inherits them: the login shell, a tmux server started from it, `npx`, and vendor CLIs all run without them.
 
 ### Predictive echo
 
@@ -262,17 +279,17 @@ Setting `ENVHAVEN_SKIP_WELCOME=1` disables predictive echo entirely. The safety 
 
 ## Bundled Developer Tools
 
-Command-line tools are baked into the image at build time, so they are available the moment the container boots. Nothing about the CLI toolchain is downloaded on first start. A fresh container still reaches the network for the zsh mod below, which LinuxServer's mod loader pulls from the registry with oh-my-zsh inside, and for the GitHub VS Code theme, which `init-extensions` installs from Open VSX once.
+Command-line tools are baked into the image at build time, so they are available the moment the container boots, and nothing is downloaded on first start. Oh My Zsh ships in the image at a pinned commit and is copied into `/config/.oh-my-zsh` on a fresh volume; it stays a git checkout, so `omz update` works.
 
-- **Installed via `apt`:** `ripgrep`, `jq`, `sqlite3`, `htop`, `unzip`, `git`, `zsh`, `tmux`, `ffmpeg`, plus `curl` and `wget`.
-- **Installed via `mise`:** `fd` (file finder), `gh` (GitHub CLI), `cloudflared`, `uv`, and the language runtimes.
-- **Also baked in:** the Docker CLI (27.5.1, when `INSTALL_DOCKER=true`, which is the default) and Playwright with Chromium under `/opt/envhaven/playwright`.
+- **Installed via `apt`:** `ripgrep`, `jq`, `sqlite3`, `htop`, `unzip`, `git`, `zsh`, `tmux`, `ffmpeg`, plus `curl` and `wget`. `cloudflared` comes from Cloudflare's signed apt repository.
+- **Installed via `mise`:** `fd` (file finder), `gh` (GitHub CLI), `uv`, and the language runtimes.
+- **Also baked in:** the Docker CLI (27.5.1, when `INSTALL_DOCKER=true`, which is the default), Playwright with Chromium under `/opt/envhaven/playwright`, and the `skills` CLI the console installs skills with. On the workspace user's PATH, `skills` and its other name `add-skill` run with `DISABLE_TELEMETRY=1`, so they send skills.sh no install or removal reports.
 
-The only LinuxServer.io mod in use adds the zsh shell:
+The image sets no `DOCKER_MODS`. LinuxServer.io mods still work if you add one, and they run as root at every start, so add only mods you trust.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DOCKER_MODS` | `linuxserver/mods:code-server-zsh` | Installs zsh + oh-my-zsh |
+### Docker access
+
+The Docker CLI talks to a daemon only when you mount one: `-v /var/run/docker.sock:/var/run/docker.sock`. At boot, `abc` joins the group that owns the socket (one is created with the socket's group ID if the container has none), and the socket's own permissions are left as the host set them. The one exception is a managed workspace whose socket is world-writable, because images before 1.9.0 made it so: there the mode goes back to 660. Containers you start this way are siblings on the host, and access to that daemon is root on the host, so mount it only when you intend the workspace to have that.
 
 To add more tools, either install them at runtime with `sudo apt-get install ...` (the `abc` user has sudo), or extend the image for a durable setup:
 
@@ -352,25 +369,10 @@ See `.env.example` in the repository for a starting compose environment; the Env
 
 ## Development Configuration
 
-These settings are only relevant if you're developing EnvHaven itself (not just using it).
-
-### Path Translation for Docker-in-Docker
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ENVHAVEN_HOST_REPO_PATH` | - | Absolute path to the repository on the **host** filesystem. |
-
-**Required when:** Running the dev scripts (via `eh`) from inside a container (e.g., EnvHaven, DevContainer).
-
-**Purpose:** Enables the host Docker daemon to mount files from your workspace into sibling containers. Since the daemon cannot see files inside your container, you must provide the path as it exists on the host.
-
-**Example:**
-```bash
-# dev/.env.dev
-ENVHAVEN_HOST_REPO_PATH=/home/user/data/workspace/envhaven
-```
-
-See [CONTRIBUTING.md](../CONTRIBUTING.md#developing-from-within-a-container) for the full setup guide.
+These settings are only relevant if you're developing EnvHaven itself (not just using it). They
+live in `dev/.env.dev`; [development.md](development.md) lists them, and
+[CONTRIBUTING.md](../CONTRIBUTING.md#developing-from-within-a-container) covers running the dev
+tools from inside a container.
 
 ## Password Hashing
 
@@ -380,7 +382,7 @@ To use hashed passwords instead of plaintext:
 # For HASHED_PASSWORD (web GUI)
 echo -n "password" | npx argon2-cli -e
 
-# For SUDO_PASSWORD_HASH (sudo/SSH)
+# For SUDO_PASSWORD_HASH (sudo)
 # Use standard Linux password hash format: $type$salt$hashed
 openssl passwd -6 -salt xyz yourpassword
 ```

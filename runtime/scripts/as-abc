@@ -1,0 +1,28 @@
+#!/bin/bash
+# Run a command as the workspace user, with the workspace user's environment.
+#
+# Root and abc deliberately see different environments. Root keeps the base image's PATH and
+# HOME=/root (Dockerfile), because abc's PATH puts /config/.local/bin and the self-updating
+# tool trees under /mise and /opt/envhaven first, and every one of those is writable by abc: a
+# root process resolving a bare command name through them would run whatever abc left there.
+# This is the one place the two meet. Root services and oneshots that start abc processes go
+# through here rather than calling s6-setuidgid themselves.
+#
+# Secrets that only root services read are dropped before the switch, so they never reach a
+# process abc can inspect. The cloudflared connector takes the tunnel token in svc-cloudflared,
+# and LinuxServer's init-code-server writes the sudo password into /etc/shadow at boot; nothing
+# abc runs needs either. init-env-compat makes the s6 copies of the same variables root-only.
+#
+# Only shell builtins run between loading abc's PATH and the absolute s6-setuidgid, so root
+# never resolves a name through it.
+set -a
+. /etc/environment
+set +a
+export HOME=/config
+unset CLOUDFLARE_TUNNEL_TOKEN SUDO_PASSWORD SUDO_PASSWORD_HASH
+
+# A container started with --user (LinuxServer's LSIO_NON_ROOT_USER mode) is already unprivileged.
+if (( EUID != 0 )); then
+    exec "$@"
+fi
+exec /command/s6-setuidgid abc "$@"

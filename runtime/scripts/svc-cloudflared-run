@@ -8,4 +8,18 @@ if [ -z "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]; then
     exit 0
 fi
 
-exec cloudflared tunnel run --token "$CLOUDFLARE_TUNNEL_TOKEN"
+# A self-hosted auth-none editor is loopback-only for a reason: a connector in the same network
+# namespace can still reach it. Never turn that configuration into a public unauthenticated IDE.
+if [ "${ENVHAVEN_MANAGED:-}" != "true" ] && [ -z "${PASSWORD:-}" ] && [ -z "${HASHED_PASSWORD:-}" ]; then
+    echo "no PASSWORD or HASHED_PASSWORD is set: refusing to start cloudflared for a self-hosted auth-none editor"
+    s6-svc -Od .
+    exit 0
+fi
+
+# The connector holds the one credential that serves this workspace's hostnames, so it gets as
+# little as possible: its own unprivileged user, a root-owned binary that user cannot replace,
+# and an environment holding the token and nothing else. The token travels in that environment
+# (cloudflared reads TUNNEL_TOKEN) rather than in argv, which any process can read in /proc.
+exec env -i TUNNEL_TOKEN="$CLOUDFLARE_TUNNEL_TOKEN" \
+    /command/s6-setuidgid cloudflared \
+    /usr/bin/cloudflared tunnel --no-autoupdate run

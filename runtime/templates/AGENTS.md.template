@@ -246,7 +246,7 @@ haven git status        # Check git status
 
 User must add their SSH public key via:
 - **EnvHaven sidebar** (SSH access)
-- `PUBLIC_KEY_URL` env var (e.g., `https://github.com/username.keys`)
+- `PUBLIC_KEY_URL` env var (e.g., `https://github.com/<your-github-username>.keys`)
 - Manual: add to `~/.ssh/authorized_keys`
 
 ---

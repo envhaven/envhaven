@@ -6,19 +6,25 @@
 [settings]
 yes = true
 
+# Tools are pinned to exact versions, and the node and python runtimes to a release line that
+# mise fills with its latest patch, so an image build installs what was chosen rather than
+# whatever a release page said that day. Bump deliberately (`mise ls-remote <tool>`).
+# Self-updating tools still update at runtime (docs/architecture.md). cloudflared is not here:
+# the tunnel service runs it with the workspace's tunnel token, so it is a root-owned system
+# package (Dockerfile) instead of a binary in the abc-writable /mise tree.
 [tools]
 node = "22"
 python = "3.12"
 go = "1.22.5"
 bun = "1.3.5"
 "github:sharkdp/fd" = "10.2.0"
-"aqua:cli/cli" = "latest"
-"aqua:cloudflare/cloudflared" = "latest"
-"aqua:sst/opencode" = "latest"
-"aqua:astral-sh/uv" = "latest"
+"aqua:cli/cli" = "2.101.0"
+"aqua:sst/opencode" = "1.18.32"
+"aqua:astral-sh/uv" = "0.12.19"
 # `github:` is the backend mise names as ubi's replacement (2026.8 warns ubi is deprecated and
 # goes in 2027.1): one release asset per platform, autodetected, and the binary picked out of it
 # (each of goose, fd, fx and kimi ships a tar archive; mise unpacks it and finds the binary).
-"github:aaif-goose/goose" = "latest"
-"github:vercel-labs/fx" = "latest"
-"github:MoonshotAI/kimi-code" = "latest"
+"github:aaif-goose/goose" = "1.52.0"
+"github:vercel-labs/fx" = "0.0.11"
+# Kimi tags its releases with the npm package name, and mise keeps the tag as the version.
+"github:MoonshotAI/kimi-code" = "@moonshot-ai/kimi-code@2.1.1"

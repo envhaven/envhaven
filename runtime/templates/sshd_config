@@ -1,0 +1,19 @@
+# EnvHaven's sshd policy, installed as /etc/ssh/sshd_config.d/envhaven.conf. The stock
+# sshd_config includes this directory before its own settings, and sshd keeps the first value
+# it reads for each keyword, so these win.
+
+# Keys only. Managed workspaces answer on port 22 of a public address, and a password is
+# something a person chose; a key is the only credential sshd accepts.
+AuthenticationMethods publickey
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+AllowUsers abc
+X11Forwarding no
+
+# Each workspace generates its own host keys on first boot (envhaven-user-setup) and keeps them
+# on the volume, so they survive image updates. The image ships none: keys generated during the
+# build would be the same in every container, with the private halves in a public image.
+HostKey /config/.config/envhaven/ssh/ssh_host_ed25519_key
+HostKey /config/.config/envhaven/ssh/ssh_host_ecdsa_key
+HostKey /config/.config/envhaven/ssh/ssh_host_rsa_key

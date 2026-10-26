@@ -120,16 +120,23 @@ mkdir -p "$HOME/.claude"
 EXISTING="{}"
 [ -f "$CREDS_FILE" ] && EXISTING=$(cat "$CREDS_FILE")
 
-printf '%s' "$EXISTING" | jq \
-  --arg access "$ACCESS_TOKEN" \
-  --arg refresh "$REFRESH_TOKEN" \
-  --argjson expires_at "$EXPIRES_AT_MS" \
-  '.claudeAiOauth = {
-    accessToken: $access,
-    refreshToken: $refresh,
-    expiresAt: $expires_at,
-    scopes: ["org:create_api_key","user:profile","user:inference"]
-  }' > "$CREDS_FILE.tmp" && mv "$CREDS_FILE.tmp" "$CREDS_FILE"
+# The tokens are private from the moment the temporary file exists. Tightening the mode only
+# after the rename left a world-readable copy behind whenever the helper died in between; a
+# leftover from such a run is removed first, since a umask only applies to a file it creates.
+(
+  umask 077
+  rm -f "$CREDS_FILE.tmp"
+  printf '%s' "$EXISTING" | jq \
+    --arg access "$ACCESS_TOKEN" \
+    --arg refresh "$REFRESH_TOKEN" \
+    --argjson expires_at "$EXPIRES_AT_MS" \
+    '.claudeAiOauth = {
+      accessToken: $access,
+      refreshToken: $refresh,
+      expiresAt: $expires_at,
+      scopes: ["org:create_api_key","user:profile","user:inference"]
+    }' > "$CREDS_FILE.tmp"
+) && mv "$CREDS_FILE.tmp" "$CREDS_FILE"
 chmod 600 "$CREDS_FILE"
 
 echo ""

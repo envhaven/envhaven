@@ -1,14 +1,12 @@
 #!/usr/bin/with-contenv bash
 
-# Configure zsh customizations after the oh-my-zsh mod has run. s6 orders this
-# oneshot after init-mods-end, so no filesystem polling is needed here.
+# Install Oh My Zsh on a fresh volume and configure the zsh customizations. s6 orders this
+# oneshot after init-mods-end, so a mod a self-hoster adds through DOCKER_MODS has run first.
 #
 # code-server, sshd and the console all wait on this oneshot, and s6 never starts them
 # once it fails. Each step below therefore reports its own failure and carries on: one
 # odd dotfile must not leave the workspace with no way in.
 
-# LinuxServer code-server always uses 'abc' as the user (unlike openssh-server)
-USERNAME="abc"
 ZSH_CUSTOM_DIR="/config/.oh-my-zsh/custom"
 ENVHAVEN_ZSH="$ZSH_CUSTOM_DIR/envhaven.zsh"
 ZSHENV="/config/.zshenv"
@@ -21,7 +19,7 @@ ZSHENV="/config/.zshenv"
 install_user_file() {
     local source=$1
     local destination=$2
-    s6-setuidgid "$USERNAME" env HOME=/config bash -c '
+    /usr/local/lib/envhaven/as-abc bash -c '
         set -euo pipefail
         source=$1
         destination=$2
@@ -86,6 +84,22 @@ install_user_file() {
     ' envhaven-install-user-file "$source" "$destination"
 }
 
+# Oh My Zsh ships in the image at a pinned commit (Dockerfile) and is copied, as abc, into a
+# volume that has none. This replaces LinuxServer's code-server-zsh mod, which root fetched from
+# the mod registry and ran at every start. A copy already on the volume stays the user's, and
+# it is a git checkout, so `omz update` keeps working.
+if [ ! -e /config/.oh-my-zsh ]; then
+    if /usr/local/lib/envhaven/as-abc bash -c '
+        set -e
+        cp -a /usr/share/envhaven/oh-my-zsh /config/.oh-my-zsh
+        [ -e /config/.zshrc ] || cp /config/.oh-my-zsh/templates/zshrc.zsh-template /config/.zshrc
+    '; then
+        echo "Installed Oh My Zsh to /config/.oh-my-zsh"
+    else
+        echo "ERROR: could not install Oh My Zsh" >&2
+    fi
+fi
+
 # EnvHaven zsh customizations: image-owned like the theme below, refreshed on every boot,
 # so an image update reaches existing workspaces (the aliases it carries follow the tool
 # roster, and a copy-if-missing kept every older workspace on the roster it was created with).
@@ -103,7 +117,7 @@ fi
 
 # Create .zshenv to set ZSH_DISABLE_COMPFIX BEFORE .zshrc is loaded
 # .zshenv is always sourced first, before .zshrc
-if ! s6-setuidgid "$USERNAME" grep -q "ZSH_DISABLE_COMPFIX" "$ZSHENV" 2>/dev/null; then
+if ! /usr/local/lib/envhaven/as-abc grep -q "ZSH_DISABLE_COMPFIX" "$ZSHENV" 2>/dev/null; then
     if install_user_file /defaults/zshenv "$ZSHENV"; then
         echo "Created .zshenv with ZSH_DISABLE_COMPFIX"
     else
@@ -112,10 +126,10 @@ if ! s6-setuidgid "$USERNAME" grep -q "ZSH_DISABLE_COMPFIX" "$ZSHENV" 2>/dev/nul
 fi
 
 # The last line of ~/.zshrc loads the credential store for zsh that never runs the
-# drop-in above (envhaven-install-rc-hook says why). The mod rewrites .zshrc on its first
-# install, which is why this runs here rather than in init-user-config beside the bash
-# hook; it runs the same way, as root with HOME=/config.
-if ! HOME=/config /usr/local/lib/envhaven/envhaven-install-rc-hook zsh; then
+# drop-in above (envhaven-install-rc-hook says why). A fresh .zshrc is only written above,
+# which is why this runs here rather than in init-user-config beside the bash hook; it runs
+# the same way, as abc.
+if ! /usr/local/lib/envhaven/as-abc /usr/local/lib/envhaven/envhaven-install-rc-hook zsh; then
     echo "ERROR: could not install the zsh credential store hook" >&2
 fi
 
@@ -124,7 +138,7 @@ fi
 # A failure is reported and startup continues. The console still never exposes two
 # mutable stores: it repeats the marked-line migration before every credential change
 # and refuses the change until that migration succeeds.
-if ! s6-setuidgid "$USERNAME" env HOME=/config /opt/envhaven/bin/envhaven-console --migrate-credentials; then
+if ! /usr/local/lib/envhaven/as-abc /opt/envhaven/bin/envhaven-console --migrate-credentials; then
     echo "ERROR: EnvHaven credential migration failed; the console refuses credential changes until it succeeds" >&2
 fi
 

@@ -3,10 +3,11 @@
 # Called by tmux copy bindings via run-shell -b (background).
 # Web clients (extension active): show keyboard shortcut.
 # SSH clients: confirm selection was copied via OSC 52.
-# Uses flock to skip if another hint is already showing.
+# Uses flock to skip if another hint is already showing. The lock is this script
+# itself, opened read-only: a lock file in world-writable /tmp would be created or
+# truncated through whatever symlink another user planted at its path.
 
-LOCK="/tmp/.tmux-hint-lock"
-exec 9>"$LOCK"
+exec 9<"$0"
 flock -n 9 || exit 0
 
 if [ -f /tmp/.envhaven-extension-active ]; then

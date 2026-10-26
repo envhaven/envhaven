@@ -37,12 +37,13 @@ Default apps to **port 3000** and bind `0.0.0.0`. Map that port in `docker-compo
 
 `cloudflared` is included. Set `CLOUDFLARE_TUNNEL_TOKEN` to enable automatic tunnel.
 
-### Password Authentication
+### Authentication
 
 | Variable | Purpose |
 |----------|---------|
-| `PASSWORD` | Web GUI password |
-| `SUDO_PASSWORD` | SSH and sudo password |
+| `PASSWORD` | Web GUI password (without one, the web UI listens on 127.0.0.1 only) |
+| `SUDO_PASSWORD` | sudo password |
+| `PUBLIC_KEY_URL` | SSH public keys, e.g. `https://github.com/<username>.keys`. SSH accepts keys only |
 
 See [docs/configuration.md](https://github.com/envhaven/envhaven/blob/master/docs/configuration.md) for full configuration reference.
 
