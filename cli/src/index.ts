@@ -22,6 +22,8 @@ program
   .option("--idle-timeout <duration>", "Override idle timeout (e.g., 30m, 1h, 2h)")
   .option("--reset-host-key", "Remove cached host key (use after workspace rebuild)")
   .option("--use-gitignore", "Exclude files matching .gitignore patterns from sync")
+  .option("--sync-env-files", "Sync .env and .npmrc files to the workspace (remembered per directory)")
+  .option("--no-sync-env-files", "Keep .env and .npmrc files on this machine (remembered per directory)")
   .action(async (path: string | undefined, target: string | undefined, options: ConnectOptions) => {
     try {
       await connect(path, { ...options, target });
@@ -73,6 +75,9 @@ async function handleRemoteCommand(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  // The remote command's exit code becomes haven's, as it does for `ssh host cmd`: that is what
+  // lets `haven npm test && ...` and CI wrappers act on the remote result. It also means the
+  // workspace decides pass or fail for anything wrapping haven, the same trust ssh asks for.
   const exitCode = await runRemote(config.sshAlias, config, localPath, args);
   process.exit(exitCode);
 }

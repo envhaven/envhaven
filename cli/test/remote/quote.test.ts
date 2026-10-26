@@ -34,6 +34,12 @@ describe("posixQuote", () => {
   it("quotes empty strings", () => {
     expect(posixQuote("")).toBe("''");
   });
+
+  it("quotes words that zsh or any shell expands at their start", () => {
+    expect(posixQuote("=key.pem")).toBe("'=key.pem'");
+    expect(posixQuote("~/notes")).toBe("'~/notes'");
+    expect(posixQuote("a=b")).toBe("a=b");
+  });
 });
 
 describe("posixQuoteArgs", () => {

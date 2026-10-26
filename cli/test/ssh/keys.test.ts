@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync, existsSync } from "fs";
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "fs";
 import { join } from "path";
 import {
   findExistingKeys,
@@ -15,6 +15,8 @@ import {
   getKeyFingerprint,
   analyzeKeys,
   hasUsableKey,
+  parseIdentityAgent,
+  identityCandidates,
 } from "../../src/ssh/keys";
 
 const TEST_SSH_DIR = "/tmp/haven-test-ssh";
@@ -359,6 +361,66 @@ describe("ssh/keys", () => {
 
     it("returns false when no keys exist", async () => {
       expect(await hasUsableKey(TEST_SSH_DIR)).toBe(false);
+    });
+  });
+  describe("parseIdentityAgent (M-7)", () => {
+    const env = { SSH_AUTH_SOCK: "/run/agent.sock", OP_SOCK: "/run/1p.sock" };
+
+    it("uses the IdentityAgent ssh -G reports, spaces included", () => {
+      const dump = "user abc\nidentityagent /Users/u/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock\nport 22\n";
+      expect(parseIdentityAgent(dump, env)).toBe("/Users/u/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock");
+    });
+
+    it("falls back to SSH_AUTH_SOCK when IdentityAgent is unset or names it", () => {
+      expect(parseIdentityAgent("user abc\n", env)).toBe("/run/agent.sock");
+      expect(parseIdentityAgent("identityagent SSH_AUTH_SOCK\n", env)).toBe("/run/agent.sock");
+      expect(parseIdentityAgent("", {})).toBeNull();
+    });
+
+    it("reads a $VARIABLE and honours none", () => {
+      expect(parseIdentityAgent("identityagent $OP_SOCK\n", env)).toBe("/run/1p.sock");
+      expect(parseIdentityAgent("identityagent none\n", env)).toBeNull();
+    });
+  });
+
+  describe("identityCandidates (M-7)", () => {
+    it("lists agent-only keys from the agent it is given, and locked key files last", async () => {
+      await createRealKey("id_ed25519", "");
+      await createRealKey("id_locked", "a passphrase");
+
+      // A key that exists only in an agent on its own socket, as 1Password and Secretive run them.
+      const agentDir = join(TEST_SSH_DIR, "agent");
+      mkdirSync(agentDir, { recursive: true });
+      const keygen = Bun.spawn(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "agent-only", "-f", join(agentDir, "k")]);
+      await keygen.exited;
+      const socket = join(TEST_SSH_DIR, "agent.sock");
+      const agent = Bun.spawn(["ssh-agent", "-D", "-a", socket], { stdout: "pipe", stderr: "pipe" });
+      try {
+        for (let i = 0; i < 50 && !existsSync(socket); i++) await Bun.sleep(20);
+        const add = Bun.spawn(["ssh-add", join(agentDir, "k")], {
+          env: { ...process.env, SSH_AUTH_SOCK: socket },
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        expect(await add.exited).toBe(0);
+        rmSync(agentDir, { recursive: true, force: true });
+
+        const candidates = await identityCandidates(socket, TEST_SSH_DIR);
+
+        expect(candidates).toHaveLength(3);
+        expect(candidates[0]).toBe(join(TEST_SSH_DIR, "id_ed25519"));
+        expect(candidates[1]).toMatch(/\/haven\/agent-[0-9a-f]{16}\.pub$/);
+        expect(readFileSync(candidates[1]!, "utf-8")).toContain("agent-only");
+        expect(candidates[2]).toBe(join(TEST_SSH_DIR, "id_locked"));
+      } finally {
+        agent.kill();
+        await agent.exited;
+      }
+    });
+
+    it("finds no agent keys when told there is no agent", async () => {
+      await createRealKey("id_ed25519", "");
+      expect(await identityCandidates(null, TEST_SSH_DIR)).toEqual([join(TEST_SSH_DIR, "id_ed25519")]);
     });
   });
 });

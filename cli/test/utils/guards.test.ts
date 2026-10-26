@@ -1,5 +1,6 @@
-import { describe, it, expect } from "bun:test";
-import { homedir } from "os";
+import { describe, it, expect, afterEach } from "bun:test";
+import { homedir, tmpdir } from "os";
+import { mkdtempSync, rmSync, symlinkSync, mkdirSync } from "fs";
 import {
   isSuspiciousPath,
   getSuspiciousPaths,
@@ -72,6 +73,41 @@ describe("isSuspiciousPath", () => {
       expect(isSuspiciousPath("/projects/build-tools")).toBe(false);
       expect(isSuspiciousPath("/projects/vendor-api")).toBe(false);
     });
+  });
+});
+
+describe("symlinks and aliases (M-23)", () => {
+  let dir: string | undefined;
+
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
+  });
+
+  it("flags a project-looking link to the home directory", () => {
+    dir = mkdtempSync(`${tmpdir()}/haven-guard-`);
+    symlinkSync(homedir(), `${dir}/home-link`);
+    expect(isSuspiciousPath(`${dir}/home-link`)).toBe(true);
+  });
+
+  it("flags a link to a system directory", () => {
+    dir = mkdtempSync(`${tmpdir()}/haven-guard-`);
+    symlinkSync("/etc", `${dir}/config-files`);
+    expect(isSuspiciousPath(`${dir}/config-files`)).toBe(true);
+  });
+
+  it("flags a link whose target is a dependency directory", () => {
+    dir = mkdtempSync(`${tmpdir()}/haven-guard-`);
+    mkdirSync(`${dir}/node_modules`);
+    symlinkSync(`${dir}/node_modules`, `${dir}/deps`);
+    expect(isSuspiciousPath(`${dir}/deps`)).toBe(true);
+  });
+
+  it("still allows an ordinary directory reached through a link", () => {
+    dir = mkdtempSync(`${tmpdir()}/haven-guard-`);
+    mkdirSync(`${dir}/project`);
+    symlinkSync(`${dir}/project`, `${dir}/project-link`);
+    expect(isSuspiciousPath(`${dir}/project-link`)).toBe(false);
   });
 });
 

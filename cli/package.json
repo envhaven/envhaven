@@ -1,6 +1,7 @@
 {
   "name": "@envhaven/cli",
   "version": "0.1.1",
+  "private": true,
   "description": "Haven CLI - Local editor + remote AI coding environment",
   "type": "module",
   "main": "dist/index.js",

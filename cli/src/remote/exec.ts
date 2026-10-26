@@ -1,6 +1,7 @@
-import { buildRemoteCommand } from "./quote";
+import { buildRemoteCommand, posixQuote } from "./quote";
 import type { ConnectionConfig } from "../config/store";
 import { mapLocalToRemote, canonicalPath } from "../utils/paths";
+import { stripTerminalControl } from "../utils/terminal";
 
 export interface ExecOptions {
   cwd?: string;
@@ -39,26 +40,29 @@ export async function runRemote(
   return await proc.exited;
 }
 
-export async function runRemoteQuiet(
+/**
+ * Which of `paths` (relative to `remoteRoot`) exist on the workspace, asked in one ssh call and
+ * without changing anything there. Empty when the question could not be asked: callers use it to
+ * inform, never to decide.
+ */
+export async function remotePathsThatExist(
   sshAlias: string,
-  config: ConnectionConfig,
-  localProjectRoot: string,
-  args: readonly string[]
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  const remoteCwd = config.remotePath;
-  const remoteCommand = buildRemoteCommand(remoteCwd, args);
-
-  const proc = Bun.spawn(["ssh", sshAlias, remoteCommand], {
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-
-  const [exitCode, stdout, stderr] = await Promise.all([
-    proc.exited,
+  remoteRoot: string,
+  paths: readonly string[],
+): Promise<string[]> {
+  if (paths.length === 0) return [];
+  const list = paths.map(posixQuote).join(" ");
+  const script = `cd ${posixQuote(remoteRoot)} 2>/dev/null || exit 0; for p in ${list}; do if [ -e "$p" ] || [ -L "$p" ]; then printf '%s\\n' "$p"; fi; done`;
+  const proc = Bun.spawn(
+    ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "LogLevel=ERROR", sshAlias, script],
+    { stdout: "pipe", stderr: "pipe", timeout: 30_000 },
+  );
+  const [stdout, , exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
+    proc.exited,
   ]);
-
-  return { exitCode, stdout: stdout.trim(), stderr: stderr.trim() };
+  if (exitCode !== 0) return [];
+  const asked = new Set(paths);
+  return stripTerminalControl(stdout).split("\n").filter((line) => asked.has(line));
 }

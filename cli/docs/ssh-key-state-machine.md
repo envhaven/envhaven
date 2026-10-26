@@ -46,28 +46,58 @@ usable = !encrypted OR inAgent
          └─────────────────────┴─────────┴─────────┘
                                │
                                ▼
-                      writeHostConfig()
-                      (all keys in IdentityFile)
+                      ensureHostKeyTrusted()
+            (ssh with the probe alias, "none" auth only)
                                │
+         ┌─────────────────────┼─────────────────────┐
+         │                     │                     │
+         ▼                     ▼                     ▼
+       KNOWN              FIRST CONNECT           CHANGED
+         │              show fingerprint      show old + new
+         │                   [y/N]                 [y/N]
+         │                     └──────────┬──────────┘
+         │                    no ◀────────┴────────▶ yes
+         │                     │                     │
+         │                     ▼                     ▼
+         │                  EXIT(1)          pin the shown key
+         │                                           │
+         └─────────────────────┬─────────────────────┘
                                ▼
-                      testConnection()
-                      (ssh -o BatchMode=yes)
+                      connectWithWorkingKey()
+             identity candidates (Haven key, key files,
+             agent-only keys, locked files; recorded key
+             first), up to five per connection:
+               writeHostConfig() (those keys, IdentitiesOnly)
+               testConnection() (ssh -v -o BatchMode=yes)
+               accepted key named by ssh -v → block names it
+             all refused: one try with every key file and
+             no IdentitiesOnly (ssh's own key selection)
                                │
                  ┌─────────────┴─────────────┐
                  │                           │
                  ▼                           ▼
              SUCCESS                      FAILURE
+     (workspace's own block     "Permission denied" → next key
+      written, key recorded)    anything else, or none left
                  │                           │
-                 ▼               ┌───────────┴───────────┐
-            startSync()          ▼                       ▼
-                 │        host key changed          other failure
-                 ▼               │                       │
-            CONNECTED            ▼                       ▼
-                          prompt reconnect?        showSshKeyHelp()
-                          removeHostKey() + retry      EXIT(1)
+                 ▼                           ▼
+            startSync()               showSshKeyHelp()
+                 │                       EXIT(1)
+                 ▼
+            CONNECTED
 ```
 
-On `testConnection()` failure Haven CLI distinguishes two cases: a **changed host key** (workspace rebuilt) prompts to reconnect, runs `removeHostKey()`, and retries; any **other failure** calls `showSshKeyHelp()` and exits. `--reset-host-key` forces the host-key path up front.
+The host key is settled before anything authenticates, by ssh itself with a probe alias that has
+the workspace's host, port and user (so a ProxyJump or ProxyCommand applies) and only the "none"
+authentication method (so no key is offered): a key `~/.ssh/known_hosts` already holds for the
+host is used silently, a new or changed one is shown with its fingerprint and needs an explicit
+yes (the default is no). The workspace's own Host block changes only once a key has logged in;
+until then everything runs under the probe alias, whose block is removed however the connect
+ends. The SSH config is `StrictHostKeyChecking yes`, so after that check neither ssh nor mutagen
+accepts another key on its own. Keys are then offered a few per connection, which keeps refused
+logins under the point where newer OpenSSH servers refuse the address, and the config ends up
+naming the one that worked. `--reset-host-key` forgets the trusted key first, so the check asks
+as on a first connection.
 
 ## Why Haven Key is Trusted
 

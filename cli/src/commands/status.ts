@@ -1,4 +1,4 @@
-import { findConnection, loadSession } from "../config/store";
+import { findConnection, loadSession, sessionIdFor } from "../config/store";
 import { getSyncStatus, formatSyncStatus } from "../sync/mutagen";
 import { formatDuration } from "../utils/duration";
 import { contractPath, canonicalPath } from "../utils/paths";
@@ -32,8 +32,9 @@ async function getStatusData(pathArg?: string): Promise<StatusData> {
   }
 
   const { localPath, config } = found;
-  const session = loadSession(localPath);
-  const syncStatus = await getSyncStatus(localPath);
+  const sessionId = sessionIdFor(localPath, config);
+  const session = loadSession(sessionId);
+  const syncStatus = await getSyncStatus(sessionId);
 
   const data: StatusData = {
     connected: session?.connected ?? false,
@@ -112,15 +113,19 @@ async function diagnose(pathArg?: string): Promise<void> {
   blank();
 
   console.log("Testing SSH connection...");
-  const sshResult = await testConnection(config.sshAlias!);
-  console.log(`SSH: ${sshResult.success ? "OK" : "FAILED"}`);
-  if (sshResult.error) {
-    console.log(`Error: ${sshResult.error}`);
+  if (config.sshAlias) {
+    const sshResult = await testConnection(config.sshAlias);
+    console.log(`SSH: ${sshResult.success ? "OK" : "FAILED"}`);
+    if (sshResult.error) {
+      console.log(`Error: ${sshResult.error}`);
+    }
+  } else {
+    console.log("SSH: no alias saved; run 'haven connect' to set it up again");
   }
   blank();
 
   console.log("Checking sync status...");
-  const syncStatus = await getSyncStatus(localPath);
+  const syncStatus = await getSyncStatus(sessionIdFor(localPath, config));
   console.log(`Sync status: ${syncStatus.status}`);
   
   if (syncStatus.conflicts.length > 0) {
