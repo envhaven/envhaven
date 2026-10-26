@@ -21,6 +21,7 @@ package main
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -30,9 +31,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/argon2"
@@ -53,11 +57,27 @@ const (
 	ctxWS       = "ws"
 	ctxInternal = "extension-token"
 
-	// Login brute-force gate: a token bucket refilling at loginPerMin with this
-	// burst. A legitimate operator logs in about once per sessionTTL, so this is
-	// never hit in normal use; it caps online guessing.
-	loginPerMin = 10
-	loginBurst  = 10
+	// Login brute-force gate (loginLimiter): a token bucket per client address
+	// refilling at loginPerMin with loginBurst, under one shared bucket for all
+	// addresses together. A legitimate operator logs in about once per sessionTTL,
+	// so neither is hit in normal use. The shared bucket refills faster than any one
+	// client's can, so a single flooding address can never empty it; it caps how
+	// fast many addresses together can guess, and how many password hashes they can
+	// make this process compute. Several addresses together can empty it, so an
+	// address that has logged in within sessionTTL does not draw on it.
+	loginPerMin       = 10
+	loginBurst        = 10
+	loginGlobalPerMin = 30
+	loginGlobalBurst  = 20
+	// maxLoginClients bounds the per-address table and the set of addresses that
+	// have logged in, so a flood from many addresses costs memory in proportion to
+	// this, not to the number of addresses.
+	maxLoginClients = 1024
+
+	// instanceSaltFile holds this install's token-key salt (instanceSalt), beside the
+	// managed credential store in ~/.config/envhaven, on the volume.
+	instanceSaltFile = "console-token-salt"
+	instanceSaltLen  = 32
 )
 
 // Password verification methods, mirroring code-server's getPasswordMethod:
@@ -77,10 +97,30 @@ type credential struct {
 	hash   string // methodArgon2 (argon2 PHC) / methodSHA256 (lowercase hex)
 }
 
-// newCredential reads the web-password env code-server consumes, failing closed
-// on a malformed HASHED_PASSWORD rather than degrading to a weaker check.
-func newCredential() (*credential, error) {
-	if h := os.Getenv("HASHED_PASSWORD"); h != "" {
+// webPassword is the operator's web password exactly as code-server receives it:
+// HASHED_PASSWORD and PASSWORD, either of which may be empty.
+type webPassword struct{ hashed, plain string }
+
+// takeWebPassword reads the web password and removes both variables from this
+// process's environment. Everything the console starts inherits that environment:
+// the login shell behind every session (and through it any tmux server the shell
+// starts, so every pane and every agent in it), `skills add` and whatever it
+// installs, vendor CLIs. None of them needs the operator's password, and code-server
+// deletes the same two variables from its own environment for the same reason. This
+// stops inheritance only: code running as abc can still read the s6 copy of the
+// container environment (see the trust boundary in docs/configuration.md).
+func takeWebPassword() webPassword {
+	p := webPassword{hashed: os.Getenv("HASHED_PASSWORD"), plain: os.Getenv("PASSWORD")}
+	os.Unsetenv("HASHED_PASSWORD")
+	os.Unsetenv("PASSWORD")
+	return p
+}
+
+// newCredential builds the credential from the web password code-server consumes,
+// failing closed on a malformed HASHED_PASSWORD rather than degrading to a weaker
+// check.
+func newCredential(p webPassword) (*credential, error) {
+	if h := p.hashed; h != "" {
 		if strings.Contains(h, "$argon") {
 			if _, err := parseArgon2(h); err != nil {
 				return nil, fmt.Errorf("HASHED_PASSWORD: %w", err)
@@ -92,8 +132,8 @@ func newCredential() (*credential, error) {
 		}
 		return &credential{method: methodSHA256, hash: strings.ToLower(h)}, nil
 	}
-	if p := os.Getenv("PASSWORD"); p != "" {
-		return &credential{method: methodPlain, plain: p}, nil
+	if p.plain != "" {
+		return &credential{method: methodPlain, plain: p.plain}, nil
 	}
 	return nil, errors.New("no web credential set (PASSWORD or HASHED_PASSWORD)")
 }
@@ -181,20 +221,90 @@ func isSHA256Hex(s string) bool {
 	return err == nil
 }
 
-// deriveSecret derives the HMAC signing key from the password material via HKDF,
-// so there is no new secret to configure and every issued cookie/token is
-// invalidated the moment the operator rotates the password.
-func deriveSecret(c *credential) []byte {
+// deriveSecret derives the key that signs this install's session cookies and
+// WebSocket tokens: HKDF of the password material, salted with the install's own
+// salt (instanceSalt). The password in the input means there is no new secret to
+// configure and every issued cookie and token is invalidated the moment the operator
+// rotates the password. The salt means a cookie or token taken from one install does
+// not verify on another that happens to share the password.
+func deriveSecret(c *credential, salt []byte) []byte {
+	return deriveKey(c, salt, "token-signing-key/v2")
+}
+
+// deriveProofKey derives the key the in-container extension proves it holds
+// HASHED_PASSWORD with (handleInternalToken). The extension computes the same bytes
+// (extension/src/consoleClient.ts, and dev/scripts/test-image.ts in the image check),
+// so this derivation is a contract: its fixed salt and info stay exactly as they are.
+// It only ever checks that 30-second proof, never a cookie or a token, so the
+// install binding deriveSecret adds would protect nothing here: anyone able to
+// compute the proof already holds HASHED_PASSWORD.
+func deriveProofKey(c *credential) []byte {
+	return deriveKey(c, []byte("envhaven-console"), "token-signing-key/v1")
+}
+
+func deriveKey(c *credential, salt []byte, info string) []byte {
 	material := c.hash
 	if c.method == methodPlain {
 		material = c.plain
 	}
-	r := hkdf.New(sha256.New, []byte(material), []byte("envhaven-console"), []byte("token-signing-key/v1"))
+	r := hkdf.New(sha256.New, []byte(material), salt, []byte(info))
 	key := make([]byte, 32)
 	if _, err := io.ReadFull(r, key); err != nil {
 		fatal("derive token key: " + err.Error())
 	}
 	return key
+}
+
+// instanceSalt returns this install's token-key salt, created on first start and kept
+// in ~/.config/envhaven so that sessions survive restarts and image updates. When it
+// cannot be stored (a read-only home, a planted symlink), the console runs on a salt
+// that lives as long as the process, which is no less safe: every restart then signs
+// the operator out.
+func instanceSalt(home string) []byte {
+	salt, err := loadInstanceSalt(home)
+	if err == nil {
+		return salt
+	}
+	fmt.Fprintln(os.Stderr, "envhaven-console: token salt not stored ("+err.Error()+"); sessions will end when the console restarts")
+	salt = make([]byte, instanceSaltLen)
+	if _, err := rand.Read(salt); err != nil {
+		fatal("generate token salt: " + err.Error())
+	}
+	return salt
+}
+
+// loadInstanceSalt reads the stored salt, or writes a fresh one when there is none or
+// the stored one is not 32 hex-encoded bytes (a truncated write, a hand edit), which
+// signs everyone out once.
+func loadInstanceSalt(home string) ([]byte, error) {
+	dir, err := ensureCredentialStoreDirectory(home)
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dir, instanceSaltFile)
+	info, err := os.Lstat(path)
+	switch {
+	case err == nil && !info.Mode().IsRegular():
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	case err == nil:
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		if salt, err := hex.DecodeString(strings.TrimSpace(string(data))); err == nil && len(salt) == instanceSaltLen {
+			return salt, nil
+		}
+	case !errors.Is(err, os.ErrNotExist):
+		return nil, err
+	}
+	salt := make([]byte, instanceSaltLen)
+	if _, err := rand.Read(salt); err != nil {
+		return nil, err
+	}
+	if err := atomicReplaceFile(path, []byte(hex.EncodeToString(salt)+"\n"), 0o600); err != nil {
+		return nil, err
+	}
+	return salt, nil
 }
 
 // sign computes HMAC-SHA256 over a domain tag and the expiry, so a value signed
@@ -230,23 +340,137 @@ func verifyToken(secret []byte, ctxTag, token string, now time.Time) bool {
 
 // selfHost holds the self-hosted auth state and serves the login/token/UI routes.
 type selfHost struct {
-	cred    *credential
-	secret  []byte
-	origins []string
-	limiter *rate.Limiter
+	cred     *credential
+	secret   []byte // signs session cookies and WebSocket tokens (deriveSecret)
+	proofKey []byte // checks the extension's hash proof (deriveProofKey)
+	origins  []string
+	logins   *loginLimiter
 }
 
-func newSelfHost() *selfHost {
-	cred, err := newCredential()
+func newSelfHost(password webPassword) *selfHost {
+	cred, err := newCredential(password)
 	if err != nil {
 		fatal(err.Error())
 	}
 	return &selfHost{
-		cred:    cred,
-		secret:  deriveSecret(cred),
-		origins: configuredOrigins(os.Getenv("_ENVHAVEN_CONSOLE_ORIGINS")), // empty -> same-origin only
-		limiter: rate.NewLimiter(rate.Limit(float64(loginPerMin)/60.0), loginBurst),
+		cred:     cred,
+		secret:   deriveSecret(cred, instanceSalt(homeDir())),
+		proofKey: deriveProofKey(cred),
+		origins:  configuredOrigins(os.Getenv("_ENVHAVEN_CONSOLE_ORIGINS")), // empty -> same-origin only
+		logins:   newLoginLimiter(),
 	}
+}
+
+// loginLimiter is the login brute-force gate: a token bucket per client address
+// under one shared bucket. With a single shared bucket, as this once was, one client
+// sending a wrong password every six seconds kept it empty and locked the operator out
+// of the published port; now that client only ever drains its own. Three such
+// clients would still keep the shared bucket empty, so an address that logged in
+// successfully within sessionTTL skips it and answers to its own bucket alone: a
+// coordinated flood cannot keep the operator out from an address they have used.
+// A first login from a new address still waits on the shared bucket, which is what
+// keeps guessing from many addresses bounded.
+type loginLimiter struct {
+	mu      sync.Mutex
+	clients map[string]*rate.Limiter
+	global  *rate.Limiter
+	known   map[string]time.Time // address key -> its last successful login
+}
+
+func newLoginLimiter() *loginLimiter {
+	return &loginLimiter{
+		clients: map[string]*rate.Limiter{},
+		global:  rate.NewLimiter(rate.Limit(float64(loginGlobalPerMin)/60.0), loginGlobalBurst),
+		known:   map[string]time.Time{},
+	}
+}
+
+// allow reports whether a login attempt from remoteAddr may proceed at now. The
+// client's own bucket is charged first, so an attempt it refuses never reaches the
+// shared bucket, and an address with a recent successful login never reaches it.
+func (l *loginLimiter) allow(remoteAddr string, now time.Time) bool {
+	key := loginClientKey(remoteAddr)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	client, ok := l.clients[key]
+	if !ok {
+		if len(l.clients) >= maxLoginClients {
+			l.evict(now)
+		}
+		client = rate.NewLimiter(rate.Limit(float64(loginPerMin)/60.0), loginBurst)
+		l.clients[key] = client
+	}
+	if !client.AllowN(now, 1) {
+		return false
+	}
+	if at, ok := l.known[key]; ok {
+		if now.Sub(at) < sessionTTL {
+			return true
+		}
+		delete(l.known, key)
+	}
+	return l.global.AllowN(now, 1)
+}
+
+// succeeded records a login that passed verification, so its address skips the
+// shared bucket for the next sessionTTL. Recording one takes the password, so the set
+// stays small; when it is full, expired entries go first, then the oldest login.
+func (l *loginLimiter) succeeded(remoteAddr string, now time.Time) {
+	key := loginClientKey(remoteAddr)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, ok := l.known[key]; !ok && len(l.known) >= maxLoginClients {
+		var oldest string
+		var at time.Time
+		found := false
+		for k, t := range l.known {
+			if now.Sub(t) >= sessionTTL {
+				delete(l.known, k)
+			} else if !found || t.Before(at) {
+				oldest, at, found = k, t, true
+			}
+		}
+		if len(l.known) >= maxLoginClients {
+			delete(l.known, oldest)
+		}
+	}
+	l.known[key] = now
+}
+
+// evict makes room in a full table. A client whose bucket has refilled carries nothing
+// a fresh bucket would not, so all of those go; if none has, the one closest to full
+// does. Forgetting a client can only hand it a fresh burst, and every attempt still
+// pays into the shared bucket.
+func (l *loginLimiter) evict(now time.Time) {
+	fullest, most := "", -1.0
+	for key, client := range l.clients {
+		tokens := client.TokensAt(now)
+		if tokens >= loginBurst {
+			delete(l.clients, key)
+		} else if tokens > most {
+			fullest, most = key, tokens
+		}
+	}
+	if len(l.clients) >= maxLoginClients {
+		delete(l.clients, fullest)
+	}
+}
+
+// loginClientKey is the address an attempt is charged to: the peer IP, with IPv6
+// grouped by /64, the block one subscriber is normally given, so stepping through
+// addresses inside it buys nothing. X-Forwarded-For is never read, because any
+// client can set it; behind a reverse proxy every attempt therefore arrives from the
+// proxy's address and shares its bucket, which is how the gate behaved before.
+func loginClientKey(remoteAddr string) string {
+	ap, err := netip.ParseAddrPort(remoteAddr)
+	if err != nil {
+		return remoteAddr
+	}
+	addr := ap.Addr().Unmap().WithZone("")
+	if addr.Is6() {
+		return netip.PrefixFrom(addr, 64).Masked().String()
+	}
+	return addr.String()
 }
 
 // wsAuth is the WebSocket authenticator: it verifies the presented 60s token,
@@ -270,7 +494,7 @@ func (a tokenAuth) authorize(r *http.Request) error {
 // ONLY place the durable credential is checked; everything downstream rides the
 // signed cookie and the short token.
 func (s *selfHost) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if !s.limiter.Allow() {
+	if !s.logins.allow(r.RemoteAddr, time.Now()) {
 		http.Error(w, "too many attempts", http.StatusTooManyRequests)
 		return
 	}
@@ -285,6 +509,7 @@ func (s *selfHost) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid password", http.StatusUnauthorized)
 		return
 	}
+	s.logins.succeeded(r.RemoteAddr, time.Now())
 	// No Secure attribute: the documented flow is http://<host>:7681 with the
 	// operator's own TLS in front, and browsers drop Secure cookies set from a
 	// plain-HTTP non-localhost origin — the login would 204 yet never stick.
@@ -338,7 +563,7 @@ func (s *selfHost) handleInternalToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	proof, err := base64.RawURLEncoding.DecodeString(r.Header.Get("X-EnvHaven-Proof"))
-	if err != nil || !hmac.Equal(proof, sign(s.secret, ctxInternal, issued)) {
+	if err != nil || !hmac.Equal(proof, sign(s.proofKey, ctxInternal, issued)) {
 		http.Error(w, "invalid proof", http.StatusUnauthorized)
 		return
 	}

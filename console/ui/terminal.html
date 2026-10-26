@@ -105,6 +105,14 @@
      clicked, moving the text out from under the pointer. visibility (not display)
      also takes it out of the tab order and the a11y tree. */
   #status button.away { visibility: hidden; pointer-events: none; }
+  /* Clipboard notice (eh-clipboard.js). A program in the terminal can set the clipboard
+     through OSC 52, so a write is never silent: this says what happened for a few seconds,
+     in a corner, under the status surface, and never takes a click meant for the terminal. */
+  #clipNotice { position: absolute; top: 8px; right: 8px; z-index: 10; max-width: calc(100% - 16px);
+                box-sizing: border-box; padding: 6px 10px; border-radius: 4px; background: #252526;
+                color: #ccc; font-size: 12px; pointer-events: none; opacity: 0; transition: opacity .2s; }
+  #clipNotice.show { opacity: 1; }
+  @media (prefers-reduced-motion: reduce) { #clipNotice { transition: none; } }
   /* While a predicted cursor is shown, neutralize xterm's real cursor DECORATION
      only — background, accent colour, outline, blink — never the cell itself: in
      the DOM renderer the cursor cell contains the character, so opacity/visibility
@@ -156,6 +164,7 @@
     <div class="err" id="err"></div>
   </form>
 </div>
+<div id="clipNotice" role="status" aria-live="polite"></div>
 <div id="status" role="status" aria-live="polite">
   <div class="card">
     <div class="mark"><span class="glow"></span><span class="spin" id="statusSpin">⠿</span><span class="lift" id="statusLift" aria-hidden="true"></span></div>

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -8,9 +10,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -458,7 +463,8 @@ func TestNewHandlerModes(t *testing.T) {
 		t.Setenv("_ENVHAVEN_WORKSPACE_ID", "ws_test")
 		t.Setenv("_ENVHAVEN_API_URL", ts.URL)
 
-		addr, mux := newHandler(context.Background())
+		// A managed container carries HASHED_PASSWORD for code-server; the marker still wins.
+		addr, mux := newHandler(context.Background(), webPassword{hashed: fixtureSHA256})
 		if addr != managedAddr {
 			t.Fatalf("managed addr = %q, want %q", addr, managedAddr)
 		}
@@ -486,10 +492,9 @@ func TestNewHandlerModes(t *testing.T) {
 
 	t.Run("self-host", func(t *testing.T) {
 		t.Setenv("ENVHAVEN_MANAGED", "")
-		t.Setenv("HASHED_PASSWORD", "")
-		t.Setenv("PASSWORD", "hunter2")
+		t.Setenv("HOME", t.TempDir()) // the token salt is written under HOME
 
-		addr, mux := newHandler(context.Background())
+		addr, mux := newHandler(context.Background(), webPassword{plain: "hunter2"})
 		if addr != selfHostAddr {
 			t.Fatalf("self-host addr = %q, want %q", addr, selfHostAddr)
 		}
@@ -539,26 +544,242 @@ func TestFrameAncestors(t *testing.T) {
 // the self-host page outright. The page is the SAME bytes in both modes; only the
 // framing headers differ, and they are the whole gate.
 func TestServeUIFraming(t *testing.T) {
-	// Self-host (no frameAncestors): opened top-level, so deny all framing.
+	// Self-host (no frameAncestors): opened top-level, so deny all framing, in CSP and
+	// in X-Frame-Options for browsers that predate frame-ancestors.
 	w := httptest.NewRecorder()
 	serveUI(w, nil)
 	if got := w.Header().Get("X-Frame-Options"); got != "DENY" {
 		t.Fatalf("self-host X-Frame-Options = %q, want DENY", got)
 	}
-	if got := w.Header().Get("Content-Security-Policy"); got != "" {
-		t.Fatalf("self-host must set no CSP, got %q", got)
+	if got, want := w.Header().Get("Content-Security-Policy"), pagePolicy+"; frame-ancestors 'none'"; got != want {
+		t.Fatalf("self-host CSP = %q, want %q", got, want)
 	}
 	// Managed: only the given dashboard origins may frame; no XFO (CSP supersedes it,
 	// and XFO cannot express an allowed origin).
 	w = httptest.NewRecorder()
-	serveUI(w, []string{"https://envhaven.com"})
-	if got := w.Header().Get("Content-Security-Policy"); got != "frame-ancestors https://envhaven.com" {
-		t.Fatalf("managed CSP = %q, want frame-ancestors https://envhaven.com", got)
+	serveUI(w, []string{"https://envhaven.com", "https://*.envhaven.dev"})
+	if got, want := w.Header().Get("Content-Security-Policy"), pagePolicy+"; frame-ancestors https://envhaven.com https://*.envhaven.dev"; got != want {
+		t.Fatalf("managed CSP = %q, want %q", got, want)
 	}
 	if got := w.Header().Get("X-Frame-Options"); got != "" {
 		t.Fatalf("managed must set no X-Frame-Options, got %q", got)
 	}
 	if got := w.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
 		t.Fatalf("content-type = %q", got)
+	}
+}
+
+// TestServeUIPolicy pins the page's script and connection policy: the console page is
+// a remote shell, so the policy is what keeps an injection on its origin from running.
+// Each directive below is load-bearing; the live check that the page still works under
+// it is the headless-browser run (no CSP violation, socket attached).
+func TestServeUIPolicy(t *testing.T) {
+	for _, frameAncestors := range [][]string{nil, {"https://envhaven.com"}} {
+		w := httptest.NewRecorder()
+		serveUI(w, frameAncestors)
+		directives := map[string]string{}
+		for _, d := range strings.Split(w.Header().Get("Content-Security-Policy"), ";") {
+			name, value, _ := strings.Cut(strings.TrimSpace(d), " ")
+			if _, dup := directives[name]; dup {
+				t.Fatalf("directive %s appears twice", name)
+			}
+			directives[name] = value
+		}
+		for name, want := range map[string]string{
+			"default-src": "'self'",
+			"script-src":  "'self'",
+			"connect-src": "'self'",
+			"object-src":  "'none'",
+			"base-uri":    "'none'",
+			"form-action": "'self'",
+		} {
+			if got := directives[name]; got != want {
+				t.Errorf("%s = %q, want %q", name, got, want)
+			}
+		}
+		// xterm needs inline styles; nothing may ever loosen scripts the same way.
+		for name, value := range directives {
+			if strings.Contains(value, "unsafe-eval") || (strings.Contains(value, "unsafe-inline") && name != "style-src") {
+				t.Errorf("%s = %q relaxes script execution", name, value)
+			}
+		}
+		if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+		}
+		if got := w.Header().Get("Referrer-Policy"); got != "no-referrer" {
+			t.Errorf("Referrer-Policy = %q, want no-referrer", got)
+		}
+	}
+	// The policy forbids inline script, so the page must carry none.
+	for _, m := range regexp.MustCompile(`(?s)<script([^>]*)>(.*?)</script>`).FindAllSubmatch(terminalPage, -1) {
+		if !regexp.MustCompile(`\bsrc\s*=`).Match(m[1]) || len(bytes.TrimSpace(m[2])) > 0 {
+			t.Fatalf("terminal.html carries an inline script (%.80q), which script-src 'self' blocks", m[0])
+		}
+	}
+	if regexp.MustCompile(`\son[a-z]+\s*=`).Match(terminalPage) {
+		t.Fatal("terminal.html carries an inline event handler, which script-src 'self' blocks")
+	}
+}
+
+// TestNewServerShape pins the listener settings: request shaping is on, and there is no
+// server-wide Read or WriteTimeout. Bodies are bounded per request instead
+// (limitBodyReads), so an authenticated upload can take longer than a login form, and
+// a WriteTimeout would cut off responses that rightly take minutes (a skills install,
+// a large artifact download).
+func TestNewServerShape(t *testing.T) {
+	srv := newServer(selfHostAddr, http.NotFoundHandler())
+	if srv.ReadTimeout != 0 || srv.WriteTimeout != 0 {
+		t.Fatalf("ReadTimeout %v, WriteTimeout %v: bodies are bounded per request, and a write timeout cuts off long responses", srv.ReadTimeout, srv.WriteTimeout)
+	}
+	if srv.ReadHeaderTimeout <= 0 || srv.IdleTimeout <= 0 || srv.MaxHeaderBytes <= 0 {
+		t.Fatalf("request shaping missing: %+v", srv)
+	}
+	if srv.Addr != selfHostAddr {
+		t.Fatalf("Addr = %q", srv.Addr)
+	}
+}
+
+// dribble sends a request whose declared body arrives one byte per interval for as
+// long as the connection stays open, the way a client trying to pin a handler would.
+func dribble(t *testing.T, addr, path string, interval time.Duration) net.Conn {
+	t.Helper()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	head := "POST " + path + " HTTP/1.1\r\nHost: console\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 4096\r\n\r\n"
+	if _, err := io.WriteString(conn, head); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for {
+			time.Sleep(interval)
+			if _, err := conn.Write([]byte("a")); err != nil {
+				return
+			}
+		}
+	}()
+	return conn
+}
+
+// TestLimitBodyReads pins the body deadline that keeps the published self-host port
+// from being held open by slow clients: a dribbled body ends at the deadline whether
+// the handler reads it or answers without reading it, and the deadline never reaches
+// a handler that keeps working after its body arrived, nor a request with no body.
+func TestLimitBodyReads(t *testing.T) {
+	const timeout = 300 * time.Millisecond
+	type outcome struct{ readErr, ctxErr error }
+	results := make(chan outcome, 4)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /read", func(w http.ResponseWriter, r *http.Request) {
+		_, err := io.ReadAll(r.Body)
+		results <- outcome{readErr: err}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /ignore", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized) // any refusal sent before the body is read
+	})
+	mux.HandleFunc("POST /slow", func(w http.ResponseWriter, r *http.Request) {
+		_, err := io.ReadAll(r.Body)
+		time.Sleep(3 * timeout) // work long past the deadline, as a skills install does
+		results <- outcome{readErr: err, ctxErr: r.Context().Err()}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(limitBodyReads(mux, timeout))
+	t.Cleanup(srv.Close)
+	addr := strings.TrimPrefix(srv.URL, "http://")
+
+	t.Run("a dribbled body is cut off", func(t *testing.T) {
+		start := time.Now()
+		dribble(t, addr, "/read", 50*time.Millisecond)
+		select {
+		case got := <-results:
+			if got.readErr == nil {
+				t.Fatal("a dribbled body was read to the end; want the deadline to end it")
+			}
+			if elapsed := time.Since(start); elapsed > 10*timeout {
+				t.Fatalf("the read ended after %v, want about %v", elapsed, timeout)
+			}
+		case <-time.After(20 * timeout):
+			t.Fatal("reading a dribbled body never ended")
+		}
+	})
+
+	t.Run("an unread body does not hold the connection", func(t *testing.T) {
+		// Without a deadline, net/http's drain of the unread body would wait on the
+		// client before sending the 401, for the 200 seconds this body takes to arrive.
+		conn := dribble(t, addr, "/ignore", 50*time.Millisecond)
+		_ = conn.SetReadDeadline(time.Now().Add(20 * timeout))
+		br := bufio.NewReader(conn)
+		resp, err := http.ReadResponse(br, nil)
+		if err != nil {
+			t.Fatalf("no response while the body dribbled: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("status %d, want 401", resp.StatusCode)
+		}
+		// Then the server closes the connection instead of reading on: EOF, or a reset
+		// when its close finds more dribbled bytes unread. Only a timeout means it stayed.
+		var netErr net.Error
+		if _, err := br.ReadByte(); err == nil || (errors.As(err, &netErr) && netErr.Timeout()) {
+			t.Fatalf("connection after the response: %v, want it closed", err)
+		}
+	})
+
+	t.Run("a handler working past the deadline keeps its context", func(t *testing.T) {
+		for _, body := range []string{"password=x", ""} {
+			resp, err := srv.Client().Post(srv.URL+"/slow", "application/x-www-form-urlencoded", strings.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if got := <-results; got.readErr != nil || got.ctxErr != nil {
+				t.Fatalf("body %q: read error %v, context error %v; want neither", body, got.readErr, got.ctxErr)
+			}
+		}
+	})
+}
+
+// TestSessionLimit pins the session cap's eviction order: a new session always gets
+// in, the oldest makes room, and a session that ended frees its place without
+// disturbing the others.
+func TestSessionLimit(t *testing.T) {
+	l := &sessionLimit{max: 2}
+	a, releaseA := l.admit(context.Background())
+	b, releaseB := l.admit(context.Background())
+	if a.Err() != nil || b.Err() != nil {
+		t.Fatal("sessions within the limit were cancelled")
+	}
+
+	c, releaseC := l.admit(context.Background())
+	if a.Err() == nil {
+		t.Fatal("a third session at a limit of two left the oldest running")
+	}
+	if b.Err() != nil || c.Err() != nil {
+		t.Fatal("eviction cancelled a session other than the oldest")
+	}
+
+	releaseB()
+	if b.Err() == nil {
+		t.Fatal("an ended session's context is still live")
+	}
+	d, releaseD := l.admit(context.Background())
+	if c.Err() != nil || d.Err() != nil {
+		t.Fatal("admitting into a freed place evicted a live session")
+	}
+
+	releaseA() // the evicted session ending late must not remove anyone else
+	if len(l.live) != 2 {
+		t.Fatalf("%d live sessions, want 2", len(l.live))
+	}
+	releaseC()
+	releaseD()
+	if len(l.live) != 0 {
+		t.Fatalf("%d live sessions after every release, want 0", len(l.live))
+	}
+	if consoleSessions.max != maxSessions {
+		t.Fatalf("the console's limit is %d, want maxSessions (%d)", consoleSessions.max, maxSessions)
 	}
 }

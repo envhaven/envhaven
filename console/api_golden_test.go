@@ -83,7 +83,7 @@ func TestHandleToolsGolden(t *testing.T) {
 // The search half runs through handleSkills against the skillsFixture: the first-party
 // "deploy" (null install count) merges ahead of a community hit that keeps its counter.
 // The installed half has no hermetic path through the handler (listInstalledSkills
-// shells out to `npx skills`), so fixture values marshal directly — writeJSON emits
+// shells out to `skills`), so fixture values marshal directly — writeJSON emits
 // exactly this encoding, so the struct tags ARE the wire.
 func TestSkillsGolden(t *testing.T) {
 	f := newSkillsFixture(t)

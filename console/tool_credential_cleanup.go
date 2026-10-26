@@ -60,6 +60,7 @@ func signOutOpenClaw(ctx context.Context, home string) (string, error) {
 	result, err := runBoundedArgvCapture(
 		ctx,
 		toolCommandTimeout,
+		commandOutputLimit,
 		[]string{"openclaw", "models", "auth", "list", "--json"},
 		"",
 		environmentWithHome(home),
@@ -82,7 +83,7 @@ func signOutOpenClaw(ctx context.Context, home string) (string, error) {
 			argv = append(argv, "--agent", auth.AgentID)
 		}
 		argv = append(argv, "logout", profile.ID, "--yes")
-		logout, err := runBoundedArgvCapture(ctx, toolCommandTimeout, argv, "", environmentWithHome(home))
+		logout, err := runBoundedArgvCapture(ctx, toolCommandTimeout, commandOutputLimit, argv, "", environmentWithHome(home))
 		if err != nil {
 			return "", fmt.Errorf("openclaw profile logout failed: %w: %s", err, strings.TrimSpace(string(logout.stderr)))
 		}

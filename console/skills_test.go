@@ -12,16 +12,20 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type skillsFixture struct {
@@ -100,7 +104,9 @@ func newSkillsFixture(t *testing.T) *skillsFixture {
 	t.Cleanup(func() { skillsShAPI, githubAPIBase, githubRawBase = prevSh, prevAPI, prevRaw })
 
 	prevSearch, prevEnv, prevMd := searchCache, envSkillsCache, markdownCache
-	searchCache, envSkillsCache, markdownCache = &ttlCache[[]skillResult]{}, &ttlCache[[]skillResult]{}, &ttlCache[string]{}
+	searchCache = newTTLCache[[]skillResult](skillsCacheEntries, skillsCacheBytes)
+	envSkillsCache = newTTLCache[[]skillResult](skillsCacheEntries, skillsCacheBytes)
+	markdownCache = newTTLCache[string](skillsCacheEntries, skillsCacheBytes)
 	t.Cleanup(func() { searchCache, envSkillsCache, markdownCache = prevSearch, prevEnv, prevMd })
 
 	return f
@@ -409,30 +415,215 @@ func TestConnectedAgentsInstalledGate(t *testing.T) {
 }
 
 // TestHandleSkillActionValidation pins the skill action input gates, all of
-// which run before any npx exec (so nothing here spawns a process): an unknown
-// action is a 400, a flag-shaped or empty source/skillId can never become an
-// npx option, and a remove target must reduce to a plain directory name.
+// which run before the skills CLI does (so nothing here spawns a process): an unknown
+// action is a 400, an install source is exactly a GitHub owner/repo and its skill id
+// a plain name (the markdown route's gates), neither can become a CLI option, and a
+// remove target must reduce to a plain directory name.
 func TestHandleSkillActionValidation(t *testing.T) {
 	cases := []struct {
 		name, body string
 	}{
 		{"unknown action", `{"action":"frobnicate"}`},
 		{"install flag source", `{"action":"install","source":"--rm-rf","skillId":"deploy"}`},
+		{"install flag-shaped owner", `{"action":"install","source":"-x/skills","skillId":"deploy"}`},
 		{"install flag skillId", `{"action":"install","source":"acme/skills","skillId":"-g"}`},
 		{"install empty source", `{"action":"install","source":"","skillId":"deploy"}`},
+		{"install URL source", `{"action":"install","source":"https://evil.example/skills.tar.gz","skillId":"deploy"}`},
+		{"install git remote source", `{"action":"install","source":"git@github.com:acme/skills.git","skillId":"deploy"}`},
+		{"install path source", `{"action":"install","source":"../../etc","skillId":"deploy"}`},
+		{"install repo subpath source", `{"action":"install","source":"acme/skills/deep","skillId":"deploy"}`},
+		{"install traversal source", `{"action":"install","source":"acme/..","skillId":"deploy"}`},
+		{"install spaced source", `{"action":"install","source":"acme /skills","skillId":"deploy"}`},
+		{"install bare domain source", `{"action":"install","source":"open.feishu.cn","skillId":"lark-event"}`},
+		{"install empty skillId", `{"action":"install","source":"acme/skills","skillId":""}`},
+		{"install path skillId", `{"action":"install","source":"acme/skills","skillId":"../x"}`},
+		{"install control skillId", `{"action":"install","source":"acme/skills","skillId":"de\u0001ploy"}`},
 		{"remove empty dir", `{"action":"remove","dir":""}`},
 		{"remove root dir", `{"action":"remove","dir":"/"}`},
 		{"remove parent dir", `{"action":"remove","dir":".."}`},
 		{"remove flag dir", `{"action":"remove","dir":"-g"}`},
 	}
+	emptyToolCatalog(t) // were a gate to let a case through, it stops at "no connected tools", before the CLI
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			r := httptest.NewRequest(http.MethodPost, "/__console/skills", strings.NewReader(c.body))
 			handleSkillAction(w, r)
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d, want 400 (body %q)", w.Code, w.Body.String())
+			if w.Code != http.StatusBadRequest || strings.Contains(w.Body.String(), "no connected tools") {
+				t.Fatalf("status = %d (body %q), want 400 from the input gate", w.Code, w.Body.String())
 			}
 		})
+	}
+}
+
+// emptyToolCatalog points the catalog at one with no tools and HOME at an empty
+// directory, so an install that passes its gates stops at "no connected tools"
+// instead of running the skills CLI.
+func emptyToolCatalog(t *testing.T) {
+	t.Helper()
+	defs := filepath.Join(t.TempDir(), "tool-definitions.json")
+	if err := os.WriteFile(defs, []byte(`{"tools":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prev := toolDefsPath
+	toolDefsPath = defs
+	t.Cleanup(func() { toolDefsPath = prev })
+	t.Setenv("HOME", t.TempDir())
+}
+
+// TestHandleSkillActionInstallAccepts: registry-shaped installs pass every input gate
+// (a stricter gate must not refuse what the registry offers) and reach the
+// connected-agent check, where the empty catalog stops them before the CLI.
+func TestHandleSkillActionInstallAccepts(t *testing.T) {
+	emptyToolCatalog(t)
+	for _, c := range []struct{ source, skillID string }{
+		{"vercel-labs/agent-skills", "react-best-practices"},
+		{"envhaven/envhaven", "deploy"},
+		{"A.b-1/c_d.2", "Convex Best Practices"},
+	} {
+		body, _ := json.Marshal(map[string]string{"action": "install", "source": c.source, "skillId": c.skillID})
+		w := httptest.NewRecorder()
+		handleSkillAction(w, httptest.NewRequest(http.MethodPost, "/__console/skills", strings.NewReader(string(body))))
+		if !strings.Contains(w.Body.String(), "no connected tools") {
+			t.Fatalf("install %s --skill %q = %d %q, want it past the input gates", c.source, c.skillID, w.Code, w.Body.String())
+		}
+	}
+}
+
+// TestTTLCacheBounds pins the cache bounds that keep client-chosen keys from growing
+// memory: the entry and byte caps hold, the entries closest to expiry go first,
+// expired entries are swept on every write, and a value that could never fit is not
+// kept at all.
+func TestTTLCacheBounds(t *testing.T) {
+	c := newTTLCache[string](3, 100)
+	for _, k := range []string{"a", "b", "c", "d"} {
+		c.put(k, "v", 1)
+	}
+	if len(c.entries) != 3 {
+		t.Fatalf("%d entries, want the cap of 3", len(c.entries))
+	}
+	if _, ok := c.get("a"); ok {
+		t.Fatal("the entry closest to expiry survived an over-cap put")
+	}
+
+	big := strings.Repeat("x", 60)
+	c.put("big", big, len(big))
+	if c.bytes > c.maxBytes {
+		t.Fatalf("%d bytes held, want at most %d", c.bytes, c.maxBytes)
+	}
+	if got, ok := c.get("big"); !ok || got != big {
+		t.Fatal("a value within the byte budget was not kept")
+	}
+	c.put("huge", strings.Repeat("y", 200), 200)
+	if _, ok := c.get("huge"); ok {
+		t.Fatal("a value larger than the whole budget was kept")
+	}
+
+	sum := 0
+	for _, e := range c.entries {
+		sum += e.size
+	}
+	if sum != c.bytes {
+		t.Fatalf("byte count %d drifted from the entries' sum %d", c.bytes, sum)
+	}
+
+	for k, e := range c.entries {
+		e.exp = time.Now().Add(-time.Second)
+		c.entries[k] = e
+	}
+	c.put("fresh", "v", 1)
+	if len(c.entries) != 1 || c.bytes != len("fresh")+1 {
+		t.Fatalf("expired entries not swept on write: %d entries, %d bytes", len(c.entries), c.bytes)
+	}
+}
+
+// TestHTTPGetTextLimit: a remote body is never read past its limit, and one that
+// runs over is an error rather than a truncated document.
+func TestHTTPGetTextLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, strings.Repeat("a", 64))
+	}))
+	t.Cleanup(srv.Close)
+	if got, err := httpGetText(context.Background(), srv.URL, nil, 64); err != nil || len(got) != 64 {
+		t.Fatalf("a body exactly at the limit: %d bytes, err %v", len(got), err)
+	}
+	if _, err := httpGetText(context.Background(), srv.URL, nil, 63); err == nil || !strings.Contains(err.Error(), "larger than 63 bytes") {
+		t.Fatalf("a body over the limit: err %v, want the size error", err)
+	}
+}
+
+func fakeSkillsCLI(t *testing.T, script string) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "skills"), []byte("#!/bin/sh\n"+script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestSkillsCLICapsCapturedOutput(t *testing.T) {
+	fakeSkillsCLI(t, "dd if=/dev/zero bs=1M count=32 status=none\n")
+	out, err := runSkillsCLI(context.Background(), commandOutputLimit, "add")
+	if !errors.Is(err, errCommandOutputTruncated) {
+		t.Fatalf("error = %v, want output truncation", err)
+	}
+	if len(out) != commandOutputLimit {
+		t.Fatalf("captured %d bytes, want %d", len(out), commandOutputLimit)
+	}
+}
+
+func TestSkillsCLITerminatesDescendantsHoldingOutputPipes(t *testing.T) {
+	fakeSkillsCLI(t, "sleep 1000 &\nprintf ok\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	out, err := runSkillsCLI(ctx, commandOutputLimit, "add")
+	if !errors.Is(err, exec.ErrWaitDelay) || string(out) != "ok" {
+		t.Fatalf("run = (%q, %v), want output and a bounded pipe wait", out, err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("command waited %s for a descendant's pipes", elapsed)
+	}
+}
+
+// TestListInstalledSkillsReadsALargeListing: `skills ls -g --json` prints a few hundred
+// bytes per installed skill, so a single bulk install (`skills add github/awesome-copilot
+// --all -g` brings 460) lists far past the 64 KiB an install's or a remove's output gets.
+// The listing has a bound of its own, and a listing past even that is still an error.
+func TestListInstalledSkillsReadsALargeListing(t *testing.T) {
+	const n = 600
+	fakeSkillsCLI(t, fmt.Sprintf(`i=0
+printf '['
+while [ $i -lt %d ]; do
+  [ $i -gt 0 ] && printf ','
+  printf '{"name":"skill-%%03d","path":"/nonexistent/skills/skill-%%03d","agents":["Claude Code","Codex","OpenCode","Gemini CLI","Amp","Goose","Qwen Code","Kimi Code CLI"]}' $i $i
+  i=$((i+1))
+done
+printf ']'
+`, n))
+	skills, err := listInstalledSkills(context.Background())
+	if err != nil {
+		t.Fatalf("a %d-skill listing: %v", n, err)
+	}
+	if len(skills) != n {
+		t.Fatalf("listed %d skills, want %d", len(skills), n)
+	}
+
+	fakeSkillsCLI(t, fmt.Sprintf("dd if=/dev/zero bs=1M count=%d status=none\n", skillsListLimit>>20+1))
+	if _, err := listInstalledSkills(context.Background()); !errors.Is(err, errCommandOutputTruncated) {
+		t.Fatalf("a listing past its bound: %v, want output truncation", err)
+	}
+}
+
+// TestSkillsCLIRunsWithoutTelemetry: unless DISABLE_TELEMETRY is set, the skills CLI reports
+// every install and remove to skills.sh and asks its audit API about each skill it adds
+// (skills 1.7.4, src/telemetry.ts isEnabled). Nothing the image runs phones home, so the
+// console sets it for every run, over whatever value it inherited.
+func TestSkillsCLIRunsWithoutTelemetry(t *testing.T) {
+	t.Setenv("DISABLE_TELEMETRY", "")
+	fakeSkillsCLI(t, `printf '%s' "$DISABLE_TELEMETRY"`)
+	out, err := runSkillsCLI(context.Background(), commandOutputLimit, "add")
+	if err != nil || string(out) != "1" {
+		t.Fatalf("DISABLE_TELEMETRY = %q (err %v), want 1", out, err)
 	}
 }

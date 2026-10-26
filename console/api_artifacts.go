@@ -10,10 +10,16 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 )
 
 const maxArtifactUpload = 100 << 20 // 100 MiB
+
+// uploadIdleTimeout is how long an upload may go without delivering any of its body. It
+// rides out a stalled mobile uplink or a network handover; a body that delivers nothing
+// for a minute has stopped. A var so tests can shorten it.
+var uploadIdleTimeout = time.Minute
 
 // artifactsDir is a var so tests can point storage at a fixture directory.
 var artifactsDir = "/config/artifacts"
@@ -63,7 +69,16 @@ func listArtifacts(w http.ResponseWriter) {
 }
 
 func uploadArtifact(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxArtifactUpload)
+	// limitBodyReads (main.go) gave this body the short deadline every body gets. An
+	// upload is the one large body the console accepts, and its bearer has verified by
+	// now (withAPI), so its deadline follows its progress instead: each read waits at
+	// most uploadIdleTimeout. An upload over a slow link that keeps arriving takes as
+	// long as it needs; one that stops arriving is cut off.
+	r.Body = &idleDeadlineBody{
+		ReadCloser: http.MaxBytesReader(w, r.Body, maxArtifactUpload),
+		rc:         http.NewResponseController(w),
+		idle:       uploadIdleTimeout,
+	}
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		writeAPIError(w, http.StatusBadRequest, "invalid upload")
 		return
@@ -102,6 +117,29 @@ func uploadArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"name": final})
+}
+
+// idleDeadlineBody moves the connection's read deadline idle into the future before each
+// read of the body it wraps, so the deadline measures silence rather than the whole
+// transfer. It stops once the body has ended: at EOF net/http clears the deadline to
+// watch for the client going away, and a deadline set after that would end the watch
+// and cancel the request's context.
+type idleDeadlineBody struct {
+	io.ReadCloser
+	rc    *http.ResponseController
+	idle  time.Duration
+	ended bool
+}
+
+func (b *idleDeadlineBody) Read(p []byte) (int, error) {
+	if !b.ended {
+		_ = b.rc.SetReadDeadline(time.Now().Add(b.idle))
+	}
+	n, err := b.ReadCloser.Read(p)
+	if err != nil {
+		b.ended = true
+	}
+	return n, err
 }
 
 // resolveArtifact accepts only an existing regular file under artifactsDir.

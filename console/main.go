@@ -22,8 +22,10 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -51,6 +53,11 @@ type claims struct {
 }
 
 func main() {
+	// Before any mode can start a child process, read the web password and remove it
+	// from this process's environment (takeWebPassword). Only the self-hosted server
+	// below uses it.
+	password := takeWebPassword()
+
 	showVersion := flag.Bool("version", false, "print version and exit")
 	showReadyTools := flag.Bool("ready-tools", false, "print ready tool names and exit")
 	migrateCredentials := flag.Bool("migrate-credentials", false, "migrate legacy managed credentials and exit")
@@ -92,20 +99,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	addr, mux := newHandler(ctx)
-
-	// Request-shaping for the directly-exposed self-host front door (and benign on
-	// the managed loopback): ReadHeaderTimeout closes slowloris header-dribblers,
-	// IdleTimeout reaps idle keep-alives, MaxHeaderBytes caps header size. We do
-	// NOT set Read/WriteTimeout: those would sever the long-lived console
-	// WebSocket, which manages its own deadlines after the upgrade.
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       2 * time.Minute,
-		MaxHeaderBytes:    1 << 16,
-	}
+	srv := newServer(newHandler(ctx, password))
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -114,8 +108,55 @@ func main() {
 	}()
 
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		fatal("listen on " + addr + ": " + err.Error())
+		fatal("listen on " + srv.Addr + ": " + err.Error())
 	}
+}
+
+// bodyReadTimeout is how long a request that carries a body has to deliver it. Every
+// body the console reads is a few kilobytes (a login form, an API action), apart from
+// an artifact upload, which extends its own deadline once its bearer has verified
+// (uploadArtifact).
+const bodyReadTimeout = 10 * time.Second
+
+// newServer shapes requests for the directly-exposed self-host front door (and is
+// benign on the managed loopback): ReadHeaderTimeout closes slowloris header-dribblers,
+// IdleTimeout reaps idle keep-alives, MaxHeaderBytes caps header size, and
+// limitBodyReads bounds the time a body may take. There is no server ReadTimeout or
+// WriteTimeout. A ReadTimeout is one bound for every body, and the console needs a
+// short one for a login form and a long one for an authenticated upload. A
+// WriteTimeout would cut off responses that rightly take minutes: a skills install
+// runs for up to skillsCLITimeout before it answers, and an artifact download can be
+// 100 MiB. Neither would touch the console WebSocket, whose connection deadlines
+// net/http clears when the upgrade hijacks it.
+func newServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           limitBodyReads(h, bodyReadTimeout),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    1 << 16,
+	}
+}
+
+// limitBodyReads gives every request that carries a body timeout to deliver it, so a
+// client that dribbles a login POST, or a body nothing will read, cannot hold a
+// connection open for as long as it cares to. Bodies are not only read by handlers:
+// net/http also drains up to 256 KiB of an unread body when a handler responds, and
+// without a deadline that drain waits on the client too.
+//
+// The deadline is per request, set through http.ResponseController, so a handler that
+// expects a large body can extend it once it has authenticated the request
+// (uploadArtifact). An upgrade request carries no body, so it never gets one. Nor
+// does a long handler lose its context to it: net/http clears the read deadline the
+// moment a body reaches EOF, before it starts the background read that watches for
+// the client going away.
+func limitBodyReads(next http.Handler, timeout time.Duration) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength != 0 { // a declared length, or -1 for chunked
+			_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(timeout))
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // newHandler picks the mode ONCE, explicitly, on the marker the rest of the
@@ -126,8 +167,9 @@ func main() {
 // built; if neither can be configured the process refuses to start
 // (newManagedAuth / newSelfHost fatal). There is no unauthenticated path: auth
 // and the pty share one port, so nothing on the network or in the container
-// can reach a shell without a credential.
-func newHandler(ctx context.Context) (string, *http.ServeMux) {
+// can reach a shell without a credential. password is the web password main took
+// from the environment; only the self-hosted authenticator reads it.
+func newHandler(ctx context.Context, password webPassword) (string, *http.ServeMux) {
 	mux := http.NewServeMux()
 	if os.Getenv("ENVHAVEN_MANAGED") == "true" {
 		auth, origins := newManagedAuth(ctx)
@@ -149,7 +191,7 @@ func newHandler(ctx context.Context) (string, *http.ServeMux) {
 		})
 		return managedAddr, mux
 	}
-	sh := newSelfHost()
+	sh := newSelfHost(password)
 	mux.HandleFunc("GET /{$}", sh.handleRoot)
 	mux.HandleFunc("POST /__console/login", sh.handleLogin)
 	mux.HandleFunc("GET /__console/token", sh.handleToken)
@@ -302,11 +344,63 @@ func serveConsole(ctx context.Context, w http.ResponseWriter, r *http.Request, a
 	defer conn.CloseNow()
 	conn.SetReadLimit(1 << 20) // 1 MiB: large pastes, well above the 32 KiB default
 
-	if err := pumpSession(ctx, conn, initialWinsize(r), managed, predict, probeSession); err != nil {
+	// Admitted only after the upgrade succeeded, so a failed handshake never costs a
+	// live session its place.
+	session, release := consoleSessions.admit(ctx)
+	defer release()
+	if err := pumpSession(session, conn, initialWinsize(r), managed, predict, probeSession); err != nil {
 		conn.Close(websocket.StatusInternalError, "session ended")
 		return
 	}
 	conn.Close(websocket.StatusNormalClosure, "")
+}
+
+// maxSessions bounds the terminal sessions one console serves at once. Each holds a
+// login shell and a tmux client for as long as hardMaxLife, and one with predictive
+// echo also runs a tmux poll every predictPoll (pump.go), so without a bound a client
+// stuck in a reconnect loop, or anything holding a bearer, could keep opening them
+// until the container ran out of processes. Eight is several more tabs than one
+// person watches at once.
+const maxSessions = 8
+
+// sessionLimit admits console sessions up to max and, when full, closes the OLDEST to
+// admit the new one rather than refusing it. The newest connection is the one a person
+// has just opened; the oldest is the likeliest to be a forgotten tab, or a socket whose
+// network vanished without a close, which the server only notices when the idle timeout
+// runs out (pump.go). Refusing instead would lock the owner out behind sessions nobody
+// can see. Eviction cancels the session's context, and coder/websocket drops a
+// connection whose pending read is cancelled without sending a close frame, so the
+// evicted page sees an abnormal close and shows its Reconnect button like any dropped
+// session. A closed session stays closed: the page never reconnects by itself
+// (ui/assets/eh-transport.js), so two tabs cannot evict each other in a loop.
+type sessionLimit struct {
+	mu   sync.Mutex
+	max  int
+	live []*liveSession // oldest first
+}
+
+type liveSession struct{ cancel context.CancelFunc }
+
+var consoleSessions = &sessionLimit{max: maxSessions}
+
+// admit registers a session and returns its context, cancelled if a newer session
+// evicts it, plus the release func to call when the session ends.
+func (l *sessionLimit) admit(parent context.Context) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(parent)
+	s := &liveSession{cancel: cancel}
+	l.mu.Lock()
+	if len(l.live) >= l.max {
+		l.live[0].cancel()
+		l.live = slices.Delete(l.live, 0, 1)
+	}
+	l.live = append(l.live, s)
+	l.mu.Unlock()
+	return ctx, func() {
+		l.mu.Lock()
+		l.live = slices.DeleteFunc(l.live, func(o *liveSession) bool { return o == s })
+		l.mu.Unlock()
+		cancel()
+	}
 }
 
 // probeSessionPattern is intentionally narrower than tmux's own session-name grammar.

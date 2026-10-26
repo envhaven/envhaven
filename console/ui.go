@@ -107,21 +107,44 @@ var terminalPage = func() []byte {
 	return page
 }()
 
+// pagePolicy is the terminal page's Content-Security-Policy, less frame-ancestors,
+// which serveUI appends per mode. The page is a remote shell, so markup injected into
+// it must not run: no inline script, no eval, no script from another origin (the page
+// carries none of the first two, and loads its own files from this origin), and every
+// fetch and socket goes back to this origin. 'self' is the whole origin, which on a
+// managed workspace the IDE shares, so it narrows where script comes from without
+// naming the console's files. It also covers the page's own ws: or wss: socket in
+// every browser that can run the vendored xterm (CSP3 source matching: WebKit since
+// 2022, Gecko and Blink earlier).
+// Styles keep 'unsafe-inline': xterm's DOM renderer writes its theme and cell
+// geometry into <style> elements and its truecolor cells into style attributes at
+// run time, and a style cannot run script. The rest closes what a default-src does
+// not: plugins, a <base> that would re-point every relative URL, and a form posting
+// off-origin.
+const pagePolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+	"connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"
+
 // serveUI writes the embedded terminal page. The page holds no secret: self-host
 // fetches a token and prompts for the password only if that returns 401; managed
 // receives a platform JWT from the embedding dashboard over postMessage. The SAME
 // page serves both modes, and the only difference is who may frame it. frameAncestors
-// is empty for self-host (opened top-level, so framing is denied outright) and the
-// CSP frame-ancestors origin list for managed (only the dashboard may embed the
-// live terminal). This is the whole anti-clickjacking gate for the page.
+// is empty for self-host (opened top-level, so framing is denied outright, and
+// X-Frame-Options says so to browsers that predate frame-ancestors) and the CSP
+// frame-ancestors origin list for managed (only the dashboard may embed the live
+// terminal). This is the whole anti-clickjacking gate for the page.
 func serveUI(w http.ResponseWriter, frameAncestors []string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store") // changes with every build; never serve a stale one
+	h := w.Header()
+	h.Set("Content-Type", "text/html; charset=utf-8")
+	h.Set("Cache-Control", "no-store") // changes with every build; never serve a stale one
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Referrer-Policy", "no-referrer")
+	ancestors := "'none'"
 	if len(frameAncestors) == 0 {
-		w.Header().Set("X-Frame-Options", "DENY")
+		h.Set("X-Frame-Options", "DENY")
 	} else {
-		w.Header().Set("Content-Security-Policy", "frame-ancestors "+strings.Join(frameAncestors, " "))
+		ancestors = strings.Join(frameAncestors, " ")
 	}
+	h.Set("Content-Security-Policy", pagePolicy+"; frame-ancestors "+ancestors)
 	_, _ = w.Write(terminalPage)
 }
 
@@ -159,8 +182,11 @@ func serveAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// ServeFileFS does the conditional-request handling itself, but only against
-	// headers already on the response, so both are set before delegating.
+	// headers already on the response, so both are set before delegating. nosniff
+	// holds each file to the type its extension names, so nothing served here can be
+	// run as a script or a stylesheet unless it is one.
 	w.Header().Set("Etag", `"`+sum+`"`)
 	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.ServeFileFS(w, r, assets, name)
 }

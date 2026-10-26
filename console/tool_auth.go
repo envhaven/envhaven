@@ -26,12 +26,13 @@ const (
 )
 
 var (
-	errCommandOutputTruncated = errors.New("command output truncated after 65536 bytes")
+	errCommandOutputTruncated = errors.New("command output truncated")
 	gooseProviderRe           = regexp.MustCompile(`GOOSE_PROVIDER:\s*["']?(\w+)`)
 )
 
 type boundedCommandOutput struct {
 	sync.Mutex
+	limit     int // bytes kept, stdout and stderr together
 	stdout    bytes.Buffer
 	stderr    bytes.Buffer
 	combined  bytes.Buffer
@@ -48,7 +49,7 @@ func (writer boundedCommandWriter) Write(data []byte) (int, error) {
 	defer writer.output.Unlock()
 
 	written := len(data)
-	remaining := commandOutputLimit - writer.output.combined.Len()
+	remaining := writer.output.limit - writer.output.combined.Len()
 	if remaining <= 0 {
 		writer.output.truncated = true
 		return written, nil
@@ -82,13 +83,15 @@ func (output *boundedCommandOutput) result() (boundedCommandResult, bool) {
 	}, output.truncated
 }
 
-// runBoundedArgvCapture runs a trusted argv vector without a shell. The process
-// starts in its own group so cancellation terminates descendants as well as the
+// runBoundedArgvCapture runs a trusted argv vector without a shell, keeping at most
+// limit bytes of its output (commandOutputLimit unless a caller has a reason to read
+// more); output past that is discarded and reported as errCommandOutputTruncated. The
+// process starts in its own group so cancellation terminates descendants as well as the
 // direct child. Once the direct child is reaped, anything left in its group has
 // outlived the command, so the group is killed after every run whatever the exit
 // status: os/exec reports a descendant holding a pipe as ErrWaitDelay only after a
 // successful exit.
-func runBoundedArgvCapture(parent context.Context, timeout time.Duration, argv []string, stdin string, env []string) (boundedCommandResult, error) {
+func runBoundedArgvCapture(parent context.Context, timeout time.Duration, limit int, argv []string, stdin string, env []string) (boundedCommandResult, error) {
 	if len(argv) == 0 {
 		return boundedCommandResult{}, nil
 	}
@@ -105,7 +108,7 @@ func runBoundedArgvCapture(parent context.Context, timeout time.Duration, argv [
 	if env != nil {
 		cmd.Env = env
 	}
-	var output boundedCommandOutput
+	output := boundedCommandOutput{limit: limit}
 	cmd.Stdout = boundedCommandWriter{output: &output}
 	cmd.Stderr = boundedCommandWriter{output: &output, stderr: true}
 	commandErr := cmd.Run()
@@ -121,7 +124,7 @@ func runBoundedArgvCapture(parent context.Context, timeout time.Duration, argv [
 	}
 	result, truncated := output.result()
 	if truncated {
-		commandErr = errors.Join(commandErr, errCommandOutputTruncated)
+		commandErr = errors.Join(commandErr, fmt.Errorf("%w after %d bytes", errCommandOutputTruncated, limit))
 	}
 	return result, commandErr
 }
@@ -152,7 +155,7 @@ func waitForProcessGroupExit(pgid int) error {
 }
 
 func runBoundedArgv(parent context.Context, timeout time.Duration, argv []string, stdin string, env []string) ([]byte, error) {
-	result, err := runBoundedArgvCapture(parent, timeout, argv, stdin, env)
+	result, err := runBoundedArgvCapture(parent, timeout, commandOutputLimit, argv, stdin, env)
 	return result.combined, err
 }
 
@@ -324,6 +327,7 @@ func inspectOpenClawAuth(ctx context.Context, home string, timeout time.Duration
 	result, err := runBoundedArgvCapture(
 		ctx,
 		timeout,
+		commandOutputLimit,
 		[]string{"openclaw", "models", "status", "--json"},
 		"",
 		environmentWithHome(home),

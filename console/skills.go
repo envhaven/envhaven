@@ -1,19 +1,22 @@
 package main
 
 // The Cockpit HUD's skills domain: everything behind /__console/skills. The
-// installed list and install/remove ride the `npx skills` CLI; search merges
+// installed list and install/remove ride the image-baked `skills` CLI; search merges
 // EnvHaven's first-party skills (GitHub) with the skills.sh registry; the
 // detail view fetches SKILL.md from the skill's upstream repo. registerAPI
 // (api.go) mounts every route here behind the same withAPI guard as the rest
 // of the Cockpit, so nothing in this file is reachable without the bearer.
 //
-// Two properties hold throughout:
-//  1. npx runs through exec.Command argv (no `sh -c`), and every
-//     client-supplied argument passes safeArg/validSkillSource/validSkillID
-//     first, so a request string can never become a flag or a shell word.
+// Three properties hold throughout:
+//  1. The CLI runs through bounded exec argv (no `sh -c` or runtime npx resolution),
+//     and every client-supplied argument passes its shape check (validSkillSource,
+//     validSkillID) and safeArg first, so a request string can never become a
+//     flag, a shell word, or a source other than a GitHub owner/repo.
 //  2. Every remote read (search, the first-party listing, skill markdown) is
-//     cached for skillsCacheTTL — the same 5 minutes the extension's
-//     skillsService cached before this logic moved server-side.
+//     cached for skillsCacheTTL (the same 5 minutes the extension's
+//     skillsService cached before this logic moved server-side), in caches with
+//     fixed entry and byte bounds.
+//  3. No remote body is read past a fixed size (maxRemoteJSON, maxSkillFile).
 
 import (
 	"context"
@@ -34,12 +37,32 @@ import (
 )
 
 const (
-	// npxSkillsTimeout bounds the skills CLI. `ls` returns instantly; `add`
+	// skillsCLITimeout bounds the skills CLI. `ls` returns instantly; `add`
 	// fetches over the network and can be slow, so this is generous.
-	npxSkillsTimeout = 120 * time.Second
+	skillsCLITimeout = 120 * time.Second
+	// skillsListLimit bounds the output of `skills ls -g --json`, which an install's
+	// or a remove's commandOutputLimit would cut short: the listing prints a few
+	// hundred bytes per installed skill, so 64 KiB is about 150 skills, and one bulk
+	// install of a large collection brings several hundred. It is the user's own
+	// skills listed by the image's own CLI, not a remote body, so the bound only has
+	// to stop a runaway process: 16 MiB is about three times the listing of the
+	// largest public collection (8,589 skills, about 5 MB).
+	skillsListLimit = 16 << 20
 
 	// skillsCacheTTL is how long each remote read is reused before re-fetching.
 	skillsCacheTTL = 5 * time.Minute
+	// skillsCacheEntries and skillsCacheBytes bound each of the caches below. Their
+	// keys come from clients (raw search queries, any owner/repo), so the bounds,
+	// not the TTL, are what keep them small.
+	skillsCacheEntries = 256
+	skillsCacheBytes   = 4 << 20
+
+	// maxRemoteJSON bounds a GitHub tree listing or a skills.sh response. GitHub
+	// stops a recursive tree at 7 MB and marks it truncated, so a real one fits.
+	maxRemoteJSON = 8 << 20
+	// maxSkillFile bounds one SKILL.md: fetchSkillMarkdown reads up to
+	// maxSkillMdCandidates of them at once, and the one it returns is cached.
+	maxSkillFile = 1 << 20
 )
 
 // Remote endpoints. Vars, not consts, so tests can point them at an httptest
@@ -50,18 +73,27 @@ var (
 	githubRawBase = "https://raw.githubusercontent.com"
 )
 
-// ttlCache is the smallest expiring cache that works: one mutex, one map,
-// entries valid for skillsCacheTTL. An expired entry reads as a miss and is
-// deleted on that read, so a churning key set (the per-keystroke search
-// cache) cannot grow the map monotonically; nothing is evicted early.
+// ttlCache is the smallest expiring cache that stays bounded: one mutex, one map,
+// entries valid for skillsCacheTTL. An expired entry reads as a miss and is deleted
+// on that read. Every put first drops all expired entries, then, while the new value
+// would break either bound, the entry closest to expiry, so neither a churning key set
+// (the per-keystroke search cache) nor a few large values can grow it past maxEntries
+// or maxBytes.
 type ttlCache[V any] struct {
-	mu      sync.Mutex
-	entries map[string]ttlEntry[V]
+	mu                   sync.Mutex
+	entries              map[string]ttlEntry[V]
+	maxEntries, maxBytes int
+	bytes                int // sum of the entries' sizes
 }
 
 type ttlEntry[V any] struct {
-	val V
-	exp time.Time
+	val  V
+	exp  time.Time
+	size int
+}
+
+func newTTLCache[V any](maxEntries, maxBytes int) *ttlCache[V] {
+	return &ttlCache[V]{entries: map[string]ttlEntry[V]{}, maxEntries: maxEntries, maxBytes: maxBytes}
 }
 
 func (c *ttlCache[V]) get(key string) (V, bool) {
@@ -69,20 +101,63 @@ func (c *ttlCache[V]) get(key string) (V, bool) {
 	defer c.mu.Unlock()
 	e, ok := c.entries[key]
 	if !ok || time.Now().After(e.exp) {
-		delete(c.entries, key) // reap the expired entry; a no-op on a plain miss
+		c.drop(key) // reap the expired entry; a no-op on a plain miss
 		var zero V
 		return zero, false
 	}
 	return e.val, true
 }
 
-func (c *ttlCache[V]) put(key string, val V) {
+// put caches val under key. size is what the value costs to keep, in bytes; the key
+// is added to it. A value that could never fit is not cached at all.
+func (c *ttlCache[V]) put(key string, val V, size int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.entries == nil {
-		c.entries = map[string]ttlEntry[V]{}
+	size += len(key)
+	c.drop(key)
+	if c.maxEntries < 1 || size > c.maxBytes {
+		return
 	}
-	c.entries[key] = ttlEntry[V]{val, time.Now().Add(skillsCacheTTL)}
+	now := time.Now()
+	for k, e := range c.entries {
+		if now.After(e.exp) {
+			c.drop(k)
+		}
+	}
+	for len(c.entries) >= c.maxEntries || c.bytes+size > c.maxBytes {
+		c.drop(c.soonestToExpire())
+	}
+	c.entries[key] = ttlEntry[V]{val: val, exp: now.Add(skillsCacheTTL), size: size}
+	c.bytes += size
+}
+
+func (c *ttlCache[V]) drop(key string) {
+	if e, ok := c.entries[key]; ok {
+		c.bytes -= e.size
+		delete(c.entries, key)
+	}
+}
+
+func (c *ttlCache[V]) soonestToExpire() string {
+	var key string
+	var exp time.Time
+	found := false
+	for k, e := range c.entries {
+		if !found || e.exp.Before(exp) {
+			key, exp, found = k, e.exp, true
+		}
+	}
+	return key
+}
+
+// resultsSize approximates what a result list costs to keep: its strings, plus a
+// fixed allowance per result for the struct around them.
+func resultsSize(rs []skillResult) int {
+	n := 0
+	for _, r := range rs {
+		n += 64 + len(r.ID) + len(r.SkillID) + len(r.Name) + len(r.Source)
+	}
+	return n
 }
 
 // The three caches the extension's skillsService kept and the TS→Go port
@@ -90,9 +165,9 @@ func (c *ttlCache[V]) put(key string, val V) {
 // entry), and skill markdown by source/skillId. Pointers so a test can swap
 // in a fresh cache without copying a mutex.
 var (
-	searchCache    = &ttlCache[[]skillResult]{}
-	envSkillsCache = &ttlCache[[]skillResult]{}
-	markdownCache  = &ttlCache[string]{}
+	searchCache    = newTTLCache[[]skillResult](skillsCacheEntries, skillsCacheBytes)
+	envSkillsCache = newTTLCache[[]skillResult](skillsCacheEntries, skillsCacheBytes)
+	markdownCache  = newTTLCache[string](skillsCacheEntries, skillsCacheBytes)
 )
 
 // ---------------------------------------------------------------------------
@@ -156,7 +231,13 @@ func handleSkillAction(w http.ResponseWriter, r *http.Request) {
 	}
 	switch req.Action {
 	case "install":
-		if !safeArg(req.Source) || !safeArg(req.SkillID) {
+		// The markdown route's shape checks, plus safeArg because the CLI parses both
+		// as argv. A source is a GitHub owner/repo, the form every installable registry
+		// result has; `skills add` would also take a URL, a path, or a git remote, none
+		// of which a registry install sends. skills.sh does list a few bare domains as sources,
+		// but `skills add` reads a bare name as a git URL and fails on it, so
+		// refusing them here loses nothing that worked.
+		if !validSkillSource(req.Source) || !validSkillID(req.SkillID) || !safeArg(req.Source) || !safeArg(req.SkillID) {
 			writeAPIError(w, http.StatusBadRequest, "invalid source or skillId")
 			return
 		}
@@ -173,7 +254,7 @@ func handleSkillAction(w http.ResponseWriter, r *http.Request) {
 		for _, a := range agents {
 			args = append(args, "-a", a)
 		}
-		if _, err := npxSkills(r.Context(), args...); err != nil {
+		if _, err := runSkillsCLI(r.Context(), commandOutputLimit, args...); err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "install failed: "+errDetail(err))
 			return
 		}
@@ -184,7 +265,7 @@ func handleSkillAction(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusBadRequest, "invalid dir")
 			return
 		}
-		if _, err := npxSkills(r.Context(), "remove", dir, "-g", "-y"); err != nil {
+		if _, err := runSkillsCLI(r.Context(), commandOutputLimit, "remove", dir, "-g", "-y"); err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "remove failed: "+errDetail(err))
 			return
 		}
@@ -195,7 +276,7 @@ func handleSkillAction(w http.ResponseWriter, r *http.Request) {
 }
 
 // safeArg rejects empty values and values that would be parsed as a CLI flag,
-// so a client string cannot inject an option into the npx skills invocation.
+// so a client string cannot inject an option into the skills invocation.
 func safeArg(s string) bool {
 	return s != "" && !strings.HasPrefix(s, "-")
 }
@@ -247,16 +328,27 @@ func connectedAgents() ([]string, error) {
 	return agents, nil
 }
 
-func npxSkills(ctx context.Context, args ...string) ([]byte, error) {
-	c, cancel := context.WithTimeout(ctx, npxSkillsTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(c, "npx", append([]string{"skills"}, args...)...)
-	cmd.Env = append(os.Environ(), "NO_COLOR=1")
-	return cmd.Output()
+// runSkillsCLI runs the image's skills CLI, keeping at most limit bytes of its output.
+// DISABLE_TELEMETRY turns off the CLI's reports to skills.sh: every install and remove,
+// and an audit query naming each skill it adds (skills 1.7.4, src/telemetry.ts). Nothing
+// the image runs phones home, so it is set last, over any inherited value.
+func runSkillsCLI(ctx context.Context, limit int, args ...string) ([]byte, error) {
+	result, err := runBoundedArgvCapture(
+		ctx,
+		skillsCLITimeout,
+		limit,
+		append([]string{"skills"}, args...),
+		"",
+		append(os.Environ(), "NO_COLOR=1", "DISABLE_TELEMETRY=1"),
+	)
+	if err != nil && len(result.stderr) > 0 {
+		return result.stdout, fmt.Errorf("%w: %s", err, result.stderr)
+	}
+	return result.stdout, err
 }
 
 func listInstalledSkills(ctx context.Context) ([]installedSkill, error) {
-	out, err := npxSkills(ctx, "ls", "-g", "--json")
+	out, err := runSkillsCLI(ctx, skillsListLimit, "ls", "-g", "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -372,7 +464,7 @@ func fetchEnvhavenSkills(ctx context.Context) ([]skillResult, error) {
 		if e.Type != "blob" || !envhavenSkillPathRe.MatchString(e.Path) {
 			continue
 		}
-		raw, err := httpGetText(ctx, githubRawBase+"/"+envhavenSkillsSource+"/HEAD/"+encodePath(e.Path), nil)
+		raw, err := httpGetText(ctx, githubRawBase+"/"+envhavenSkillsSource+"/HEAD/"+encodePath(e.Path), nil, maxSkillFile)
 		if err != nil {
 			continue
 		}
@@ -393,7 +485,7 @@ func fetchEnvhavenSkills(ctx context.Context) ([]skillResult, error) {
 		})
 	}
 	sort.Slice(results, func(i, j int) bool { return results[i].Name < results[j].Name })
-	envSkillsCache.put(envhavenSkillsSource, results)
+	envSkillsCache.put(envhavenSkillsSource, results, resultsSize(results))
 	return results, nil
 }
 
@@ -417,7 +509,7 @@ func searchSkillsSh(ctx context.Context, q string) ([]skillResult, error) {
 	for _, s := range body.Skills {
 		out = append(out, skillResult{ID: s.ID, SkillID: s.SkillID, Name: s.Name, Installs: s.Installs, Source: s.Source})
 	}
-	searchCache.put(q, out)
+	searchCache.put(q, out, resultsSize(out))
 	return out, nil
 }
 
@@ -443,9 +535,12 @@ func encodePath(p string) string {
 }
 
 // httpGetText GETs u (with optional headers) and returns the body on 200 OK;
-// any other status is an error. This is the ONE request/do/status path every
+// any other status is an error, and so is a body longer than limit bytes, which is
+// never read past the limit: the remote is skills.sh or GitHub, or whoever stands
+// in for them on the path, and a body without a bound could fill the container's
+// memory within the client timeout. This is the ONE request/do/status path every
 // remote skills read goes through; httpGetJSON wraps it.
-func httpGetText(ctx context.Context, u string, headers map[string]string) (string, error) {
+func httpGetText(ctx context.Context, u string, headers map[string]string, limit int64) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return "", err
@@ -461,15 +556,18 @@ func httpGetText(ctx context.Context, u string, headers map[string]string) (stri
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("GET %s: HTTP %d", u, resp.StatusCode)
 	}
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return "", err
+	}
+	if int64(len(data)) > limit {
+		return "", fmt.Errorf("GET %s: response larger than %d bytes", u, limit)
 	}
 	return string(data), nil
 }
 
 func httpGetJSON(ctx context.Context, u string, headers map[string]string, v any) error {
-	body, err := httpGetText(ctx, u, headers)
+	body, err := httpGetText(ctx, u, headers, maxRemoteJSON)
 	if err != nil {
 		return err
 	}
@@ -562,11 +660,11 @@ func fetchSkillMarkdown(ctx context.Context, source, skillID string) (string, er
 			continue
 		}
 		if e.Path == skillID+"/SKILL.md" || strings.HasSuffix(e.Path, "/"+skillID+"/SKILL.md") {
-			raw, err := httpGetText(ctx, rawURL(e.Path), nil) // fast path: a dir named exactly skillId
+			raw, err := httpGetText(ctx, rawURL(e.Path), nil, maxSkillFile) // fast path: a dir named exactly skillId
 			if err != nil {
 				return "", err
 			}
-			markdownCache.put(key, raw)
+			markdownCache.put(key, raw, len(raw))
 			return raw, nil
 		}
 		candidates = append(candidates, e.Path)
@@ -585,7 +683,7 @@ func fetchSkillMarkdown(ctx context.Context, source, skillID string) (string, er
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if raw, err := httpGetText(ctx, rawURL(p), nil); err == nil {
+			if raw, err := httpGetText(ctx, rawURL(p), nil, maxSkillFile); err == nil {
 				raws[i] = raw
 			}
 		}()
@@ -593,7 +691,7 @@ func fetchSkillMarkdown(ctx context.Context, source, skillID string) (string, er
 	wg.Wait()
 	for _, raw := range raws {
 		if raw != "" && parseFrontmatter(raw)["name"] == skillID {
-			markdownCache.put(key, raw)
+			markdownCache.put(key, raw, len(raw))
 			return raw, nil
 		}
 	}

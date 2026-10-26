@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"math"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -733,6 +735,83 @@ func TestArtifactUpload(t *testing.T) {
 	if data, _ := os.ReadFile(filepath.Join(dir, "report (2).pdf")); string(data) != "second" {
 		t.Fatalf("suffixed bytes = %q, want %q", data, "second")
 	}
+}
+
+// TestArtifactUploadDeadlineFollowsProgress drives uploads over a real connection, the
+// only place a read deadline acts: an upload that keeps arriving completes however long
+// it takes, well past any fixed window of uploadIdleTimeout, and one that stops arriving
+// is cut off once uploadIdleTimeout passes without a byte.
+func TestArtifactUploadDeadlineFollowsProgress(t *testing.T) {
+	const idle = 400 * time.Millisecond
+	prev := uploadIdleTimeout
+	uploadIdleTimeout = idle
+	t.Cleanup(func() { uploadIdleTimeout = prev })
+	srv := httptest.NewServer(limitBodyReads(http.HandlerFunc(handleArtifacts), idle))
+	t.Cleanup(srv.Close)
+
+	content := strings.Repeat("x", 4096)
+	r := uploadRequest(t, "slow.bin", content)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// send writes the request head, then the first `upTo` bytes of the body in 256-byte
+	// pieces `gap` apart, and returns the response.
+	send := func(t *testing.T, upTo int, gap time.Duration) (*http.Response, time.Duration) {
+		t.Helper()
+		conn, err := net.Dial("tcp", strings.TrimPrefix(srv.URL, "http://"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		start := time.Now()
+		head := fmt.Sprintf("POST /__console/artifacts HTTP/1.1\r\nHost: console\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n", r.Header.Get("Content-Type"), len(body))
+		if _, err := io.WriteString(conn, head); err != nil {
+			t.Fatal(err)
+		}
+		var writeErr error
+		for sent := 0; sent < upTo && writeErr == nil; sent += 256 {
+			time.Sleep(gap)
+			_, writeErr = conn.Write(body[sent:min(sent+256, upTo)])
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(20 * idle))
+		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+		if err != nil {
+			t.Fatalf("no response after %v: %v (writing the body: %v)", time.Since(start), err, writeErr)
+		}
+		resp.Body.Close()
+		return resp, time.Since(start)
+	}
+
+	t.Run("a slow upload that keeps arriving completes", func(t *testing.T) {
+		dir := t.TempDir()
+		withArtifactsDir(t, dir)
+		resp, took := send(t, len(body), idle/4)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("an upload delivering a piece every %v ended %d after %v", idle/4, resp.StatusCode, took)
+		}
+		if took < 2*idle {
+			t.Fatalf("the upload took %v; it must outlast a fixed window of %v to prove anything", took, idle)
+		}
+		if data, err := os.ReadFile(filepath.Join(dir, "slow.bin")); err != nil || string(data) != content {
+			t.Fatalf("stored %d bytes (err %v), want the %d sent", len(data), err, len(content))
+		}
+	})
+
+	t.Run("an upload that stops arriving is cut off", func(t *testing.T) {
+		dir := t.TempDir()
+		withArtifactsDir(t, dir)
+		resp, took := send(t, len(body)/2, 0)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("a stalled upload = %d, want 400", resp.StatusCode)
+		}
+		if took > 10*idle {
+			t.Fatalf("a stalled upload held its connection for %v, want about %v", took, idle)
+		}
+		if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+			t.Fatalf("a stalled upload left %d files in the drop folder", len(entries))
+		}
+	})
 }
 
 // TestArtifactList pins the listing contract: newest mtime first, directories
