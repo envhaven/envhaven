@@ -130,7 +130,11 @@ export interface WorkspaceInfo {
   aiTools: AITool[];
   sshEnabled: boolean;
   sshPort: number;
-  sshCommand: string | null;
+  /** The copy-and-run commands, built host-side from validated values (environment.ts
+   *  getSshConfig). The webview shows them verbatim and copies them by ClipboardKey, so
+   *  the text on screen is the text the host writes to the clipboard. */
+  sshCommand: string;
+  havenCommand: string;
   sshConfigured: boolean;
   sshKeyConfigured: boolean;
   publicUrl: string | null;
@@ -169,14 +173,18 @@ export interface ResourceSnapshot {
   capturedAt: number;
 }
 
+/** What the webview may ask the host to copy. The webview names the text; the host
+ *  supplies it (sidebar-provider.ts), so a webview message can never place arbitrary
+ *  text on the clipboard. */
+export type ClipboardKey = 'sshCommand' | 'havenCommand' | 'dockerPullCommand';
+
 /** Webview → extension-host messages, discriminated on `command`. The variants
  *  mirror the host's onDidReceiveMessage switch (sidebar-provider.ts) one-to-one. */
 export type WebviewToExtensionMessage =
   | { command: 'ready' }
   | { command: 'runTool'; toolId: string; action: ConsoleToolAction }
   | { command: 'openToolDocs'; url: string }
-  | { command: 'copySshCommand'; text: string }
-  | { command: 'copyToClipboard'; text: string }
+  | { command: 'copyToClipboard'; key: ClipboardKey }
   | { command: 'setApiKey'; toolId: string; envVar: string; apiKey: string }
   | { command: 'signOutTool'; toolId: string }
   | { command: 'setSshKey'; sshPublicKey: string }

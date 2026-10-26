@@ -305,7 +305,11 @@ function listPids(): number[] {
 async function getTmuxPanePids(): Promise<Set<number>> {
   const pids = new Set<number>();
   try {
-    const { stdout } = await execSafe(`tmux list-panes -a -t ${TMUX_SESSION} -F '#{pane_pid}'`);
+    // Every pane of the one `envhaven` session, which the grouped SSH and console views
+    // share. `-s` with `=name:` names that session exactly, as getTmuxWindows does: `-a`
+    // ignores -t and lists every session on the server, and a bare name prefix-matches
+    // one like `envhaven-dev`, either way offering its processes as killable rows.
+    const { stdout } = await execSafe(`tmux list-panes -s -t '=${TMUX_SESSION}:' -F '#{pane_pid}'`);
     for (const line of stdout.split('\n')) {
       const n = parseInt(line.trim(), 10);
       if (Number.isFinite(n) && n > 0) pids.add(n);

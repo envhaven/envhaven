@@ -30,13 +30,6 @@ function commandItem(
   };
 }
 
-function havenCommandFor(workspace: WorkspaceInfo): string {
-  const subdomain = workspace.hostname.replace(/^ssh-/, '').replace(/\.envhaven\.app$/, '');
-  return workspace.isManaged
-    ? `haven connect . ${subdomain}`
-    : `haven connect . abc@${workspace.hostname}:${workspace.sshPort}`;
-}
-
 function buildItems(workspace: WorkspaceInfo, skills: InstalledSkill[], sidebar: SidebarProvider): Item[] {
   const items: Item[] = [];
   const connectedTools = workspace.aiTools.filter((t) => t.installed && t.authStatus === 'ready');
@@ -140,14 +133,12 @@ function buildItems(workspace: WorkspaceInfo, skills: InstalledSkill[], sidebar:
         sidebar.openSheet('ssh');
       })
     );
-    if (workspace.sshCommand) {
-      items.push(
-        commandItem('Copy Haven command', havenCommandFor(workspace), 'clippy', async () => {
-          await vscode.env.clipboard.writeText(havenCommandFor(workspace));
-          vscode.window.showInformationMessage('Haven command copied');
-        })
-      );
-    }
+    items.push(
+      commandItem('Copy Haven command', workspace.havenCommand, 'clippy', async () => {
+        await vscode.env.clipboard.writeText(workspace.havenCommand);
+        vscode.window.showInformationMessage('Haven command copied');
+      })
+    );
   }
 
   items.push(sep('Monitor'));

@@ -13,6 +13,14 @@ import { vscode } from '../lib/vscode';
 // wrapping anchor; the anchor opens the URL full-size in a new tab.
 // If the site blocks embedding (X-Frame-Options / frame-ancestors CSP), the
 // iframe renders blank — the LIVE overlay still shows, and clicking still works.
+//
+// The frame runs the user's own app, which is not this page's to trust, so it is
+// sandboxed down to what rendering a thumbnail needs: scripts, and its own origin
+// so its cookies and storage work. No top navigation, popups, dialogs, forms or
+// downloads. That origin (preview-<subdomain>) is never this webview's, and the
+// webview's CSP lets the frame load nothing else, so the pair cannot lift the
+// sandbox; App.tsx ignores any message the frame posts to this page.
+const PREVIEW_SANDBOX = 'allow-scripts allow-same-origin';
 const PREVIEW_SCALE = 0.3;
 const PREVIEW_INVERSE_PCT = `${100 / PREVIEW_SCALE}%`;
 
@@ -79,6 +87,7 @@ function PreviewSection({ url, isOnline }: { url: string; isOnline: boolean }) {
           <iframe
             src={url}
             title="App preview"
+            sandbox={PREVIEW_SANDBOX}
             scrolling="no"
             tabIndex={-1}
             aria-hidden="true"

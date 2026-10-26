@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, setSystemTime, test } from 'bun:test';
 import * as childProcess from 'node:child_process';
 import { createHmac, hkdfSync } from 'node:crypto';
 import { once } from 'node:events';
@@ -58,6 +58,10 @@ const state = {
   // Self-host login flow: /__console/login (204 + Set-Cookie) → /__console/token.
   loginCount: 0,
   lastLoginBody: '',
+  // /__console/token answers 401 for these session cookies, as a console whose signing
+  // salt changed would; `lastTokenCookie` is the cookie the last exchange carried.
+  rejectedSessions: new Set<string>(),
+  lastTokenCookie: '',
   internalTokenCount: 0,
   lastInternalHeaders: {} as Record<string, string>,
 };
@@ -114,11 +118,17 @@ beforeAll(() => {
       return Promise.resolve(
         new Response(null, {
           status: 204,
-          headers: { 'Set-Cookie': 'envhaven_console_session=sess-1; Path=/__console; HttpOnly; SameSite=Strict' },
+          headers: {
+            'Set-Cookie': `envhaven_console_session=sess-${state.loginCount}; Path=/__console; HttpOnly; SameSite=Strict`,
+          },
         })
       );
     }
     if (url.endsWith('/__console/token')) {
+      state.lastTokenCookie = ((init?.headers ?? {}) as Record<string, string>).Cookie ?? '';
+      if (state.rejectedSessions.has(state.lastTokenCookie)) {
+        return Promise.resolve(new Response('unauthorized', { status: 401 }));
+      }
       return Promise.resolve(new Response('sh-tok-1', { status: 200 }));
     }
     if (url.endsWith('/__console/internal-token')) {
@@ -167,6 +177,8 @@ beforeEach(() => {
   state.fail401Once = false;
   state.lastConsole = { url: '', authorization: '', method: 'GET', body: '' };
   state.lastLoginBody = '';
+  state.rejectedSessions = new Set();
+  state.lastTokenCookie = '';
   state.internalTokenCount = 0;
   state.lastInternalHeaders = {};
   spawnMock.mockClear();
@@ -560,6 +572,32 @@ describe('self-host auth (web password)', () => {
 
     await client.listInstalledSkills();
     expect(state.loginCount).toBe(1); // session + token cached, no second login
+  });
+
+  // The console signs session cookies with a per-install salt. When that salt changes under
+  // a running extension host, the cached cookie stops verifying at /__console/token.
+  test('logs in again when the console stops honoring the cached session cookie', async () => {
+    state.consoleBody = { installed: [] };
+    await client.listInstalledSkills();
+    expect(state.lastTokenCookie).toBe('envhaven_console_session=sess-1');
+
+    state.rejectedSessions.add('envhaven_console_session=sess-1');
+    setSystemTime(Date.now() + 61_000); // the 60s token lapses; the 12h session does not
+    try {
+      await client.listInstalledSkills();
+    } finally {
+      setSystemTime();
+    }
+    expect(state.loginCount).toBe(2);
+    expect(state.lastTokenCookie).toBe('envhaven_console_session=sess-2');
+    expect(state.lastConsole.authorization).toBe('Bearer sh-tok-1');
+  });
+
+  test('logs in again only once when a fresh session cookie is refused too', async () => {
+    state.rejectedSessions.add('envhaven_console_session=sess-1');
+    state.rejectedSessions.add('envhaven_console_session=sess-2');
+    await expect(client.listInstalledSkills()).rejects.toThrow('console token exchange failed: HTTP 401');
+    expect(state.loginCount).toBe(2);
   });
 });
 

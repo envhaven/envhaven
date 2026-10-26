@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 
 import { ArrowUpCircle, Cloud, ExternalLink, Plug } from 'lucide-react';
 import { vscode, type ExtensionToWebviewMessage } from './lib/vscode';
+import { isFromWebviewHost } from './lib/host-message';
 import { useWorkspaceStore, YOUNG_WORKSPACE_MAX_AGE_SEC } from './stores/workspace-store';
 import { ToolLauncher } from './components/tool-launcher';
 import { TerminalsPanel } from './components/terminals-panel';
@@ -38,6 +39,8 @@ export default function App() {
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent<ExtensionToWebviewMessage>) => {
+      // Only the extension host speaks to this page; the preview iframe must not.
+      if (!isFromWebviewHost(event, window)) return;
       const message = event.data;
 
       switch (message.command) {
@@ -171,10 +174,7 @@ export default function App() {
   };
 
   const handleCopyPullCommand = () => {
-    vscode.postMessage({
-      command: 'copyToClipboard',
-      text: 'docker pull ghcr.io/envhaven/envhaven:latest',
-    });
+    vscode.postMessage({ command: 'copyToClipboard', key: 'dockerPullCommand' });
   };
 
   return (

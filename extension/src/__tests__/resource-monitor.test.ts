@@ -1,11 +1,33 @@
-import { describe, expect, it, beforeEach } from 'bun:test';
+import { describe, expect, it, beforeEach, spyOn } from 'bun:test';
+import * as environment from '../environment';
 import {
   parseStatLine,
   classify,
   diskFrom,
   signalProcess,
+  snapshot,
   __test__,
 } from '../resource-monitor';
+
+describe('snapshot pane lookup', () => {
+  it('lists the panes of exactly the envhaven session', async () => {
+    // Captured, never run: this shell may sit inside the developer's own tmux server.
+    const commands: string[] = [];
+    const exec = spyOn(environment, 'execSafe').mockImplementation(async (command: string) => {
+      commands.push(command);
+      return { stdout: '', stderr: '' };
+    });
+    try {
+      await snapshot();
+    } finally {
+      exec.mockRestore();
+      __test__.reset();
+    }
+    // -a would ignore -t and list every session's panes; a bare name prefix-matches one
+    // like envhaven-dev. Both were measured against tmux 3.4.
+    expect(commands).toEqual([`tmux list-panes -s -t '=envhaven:' -F '#{pane_pid}'`]);
+  });
+});
 
 // The same vectors as TestDiskFrom in console/api_test.go: the sidebar and the Cockpit must
 // show one figure for one disk. A hobby filesystem, 15% reserved and 28% written, which

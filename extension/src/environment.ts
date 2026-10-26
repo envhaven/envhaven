@@ -28,6 +28,10 @@ export function execSafe(command: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promi
     let stdout = '';
     let stderr = '';
     let killed = false;
+    // Decode each stream as a whole: chunk by chunk, a multi-byte character split across a
+    // pipe boundary (a large terminal selection, say) would turn into replacement characters.
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
 
     const timer = setTimeout(() => {
       killed = true;
@@ -109,19 +113,42 @@ function isSshKeyConfigured(): boolean {
   }
 }
 
-function getSshConfig() {
+// A DNS name: letters, digits, dots, hyphens and underscores, alphanumeric at both ends.
+// None of those characters means anything to a shell.
+const SSH_HOSTNAME = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$/;
+const SSH_PORT = /^[0-9]{1,5}$/;
+
+/**
+ * The SSH and Haven commands the sidebar shows with a copy button, inviting the user to
+ * paste them into a terminal on their own machine. ENVHAVEN_SSH_HOST and ENVHAVEN_SSH_PORT
+ * come from the container environment, so they are checked before they become part of a
+ * command: a host must be a hostname or an IP literal (net.isIP also admits an IPv6 zone,
+ * but only one made of letters, digits, `-`, `.` and `:`) and a port a decimal number from
+ * 1 to 65535. Anything else falls back to the generic text, the `<host>` placeholder with
+ * the sidebar's set-the-variable hint and the default port, rather than to a command that
+ * runs something else when pasted. The command has the format of get_ssh_string in
+ * runtime/scripts/envhaven-status, which prints it in the terminal banner.
+ */
+export function getSshConfig() {
   const isManaged = process.env.ENVHAVEN_MANAGED === 'true';
-  const host = process.env.ENVHAVEN_SSH_HOST || null;
-  const port = parseInt(process.env.ENVHAVEN_SSH_PORT || (isManaged ? '22' : '2222'), 10);
-  const displayHost = host || '<host>';
+  const rawHost = process.env.ENVHAVEN_SSH_HOST || '';
+  const rawPort = process.env.ENVHAVEN_SSH_PORT || '';
+  const configured = net.isIP(rawHost) !== 0 || SSH_HOSTNAME.test(rawHost);
+  const host = configured ? rawHost : '<host>';
+  const port = SSH_PORT.test(rawPort) && Number(rawPort) >= 1 && Number(rawPort) <= 65535
+    ? Number(rawPort)
+    : isManaged ? 22 : 2222;
   const command = port === 22
-    ? `ssh abc@${displayHost}`
-    : `ssh abc@${displayHost} -p ${port}`;
-  const configured = !!host;
-  return { host: displayHost, port, command, configured };
+    ? `ssh abc@${host}`
+    : `ssh abc@${host} -p ${port}`;
+  const subdomain = host.replace(/^ssh-/, '').replace(/\.envhaven\.app$/, '');
+  const havenCommand = isManaged
+    ? `haven connect . ${subdomain}`
+    : `haven connect . abc@${host}:${port}`;
+  return { host, port, command, havenCommand, configured };
 }
 
-function getPreviewUrl(publicUrl: string | null): string | null {
+export function getPreviewUrl(publicUrl: string | null): string | null {
   if (!publicUrl) return null;
   try {
     const url = new URL(publicUrl);
@@ -386,7 +413,8 @@ export async function getWorkspaceInfo(): Promise<WorkspaceInfo> {
     aiTools: toolData.tools,
     sshEnabled,
     sshPort: ssh.port,
-    sshCommand: sshEnabled ? ssh.command : null,
+    sshCommand: ssh.command,
+    havenCommand: ssh.havenCommand,
     sshConfigured: ssh.configured,
     sshKeyConfigured: isSshKeyConfigured(),
     publicUrl,

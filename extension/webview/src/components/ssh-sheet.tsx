@@ -5,22 +5,33 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 import { useWorkspaceStore } from '../stores/workspace-store';
-import { vscode } from '../lib/vscode';
+import { vscode, type ClipboardKey } from '../lib/vscode';
+import { sshKeyToSend } from '../lib/ssh-key';
 
 /**
  * Single-line, monospaced shell command with a thin horizontal scrollbar for
- * overflow affordance and a copy button attached on the right edge.
+ * overflow affordance and a copy button attached on the right edge. The copy
+ * names the command by key and the extension host supplies the text: the same
+ * host-built string this block shows.
  *
  * Important: the `<code>` element MUST explicitly set `bg-transparent`.
  * Browser user-agent stylesheets paint `<code>` with a default background
  * color that overrides nothing in Tailwind — it renders on top of the
  * wrapper's bg and creates the "different tone in the middle" artifact.
  */
-function CommandBlock({ command, copyLabel }: { command: string; copyLabel: string }) {
+function CommandBlock({
+  command,
+  copyKey,
+  copyLabel,
+}: {
+  command: string;
+  copyKey: ClipboardKey;
+  copyLabel: string;
+}) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
-    vscode.postMessage({ command: 'copySshCommand', text: command });
+    vscode.postMessage({ command: 'copyToClipboard', key: copyKey });
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -185,10 +196,10 @@ function SshKeyInput() {
   }, [op.status, op.lastTs, setSshKeyOp]);
 
   const handleSave = () => {
-    const trimmed = value.trim();
-    if (!trimmed || !trimmed.startsWith('ssh-')) return;
+    const key = sshKeyToSend(value);
+    if (!key) return;
     setSshKeyOp('paste', { status: 'loading' });
-    vscode.postMessage({ command: 'setSshKey', sshPublicKey: trimmed });
+    vscode.postMessage({ command: 'setSshKey', sshPublicKey: key });
     setValue('');
   };
 
@@ -218,7 +229,7 @@ function SshKeyInput() {
               size="icon"
               className="h-7 w-7 shrink-0 rounded-sm"
               onClick={handleSave}
-              disabled={!value.trim().startsWith('ssh-') || isLoading}
+              disabled={!sshKeyToSend(value) || isLoading}
             >
               {isLoading ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -241,18 +252,6 @@ export function SshSheet() {
   const open = openSheet === 'ssh';
 
   if (!workspace) return null;
-
-  const subdomain = workspace.hostname.replace(/^ssh-/, '').replace(/\.envhaven\.app$/, '');
-  const havenCommand = workspace.isManaged
-    ? `haven connect . ${subdomain}`
-    : `haven connect . abc@${workspace.hostname}:${workspace.sshPort}`;
-
-  // Mirror the format produced by `get_ssh_string` in /opt/envhaven/bin/envhaven.
-  const sshCommand =
-    workspace.sshCommand ??
-    (workspace.sshPort === 22
-      ? `ssh abc@${workspace.hostname}`
-      : `ssh abc@${workspace.hostname} -p ${workspace.sshPort}`);
 
   return (
     <Sheet open={open} onOpenChange={(v) => setOpenSheet(v ? 'ssh' : null)}>
@@ -320,7 +319,11 @@ export function SshSheet() {
               >
                 Haven CLI
               </CommandLabel>
-              <CommandBlock command={havenCommand} copyLabel="Copy Haven command" />
+              <CommandBlock
+                command={workspace.havenCommand}
+                copyKey="havenCommand"
+                copyLabel="Copy Haven command"
+              />
             </div>
 
             <div className="space-y-1.5">
@@ -334,7 +337,11 @@ export function SshSheet() {
               >
                 SSH
               </CommandLabel>
-              <CommandBlock command={sshCommand} copyLabel="Copy SSH command" />
+              <CommandBlock
+                command={workspace.sshCommand}
+                copyKey="sshCommand"
+                copyLabel="Copy SSH command"
+              />
               {!workspace.sshConfigured && (
                 <p className="text-[11px] text-yellow-600 dark:text-yellow-500">
                   Set <span className="font-mono">ENVHAVEN_SSH_HOST</span> on the host for the

@@ -17,6 +17,7 @@ import type {
   ProcessCategory,
   ProcessInfo,
   ResourceSnapshot,
+  ClipboardKey,
   WebviewToExtensionMessage,
   ExtensionToWebviewMessage,
 } from '../../../src/shared-types';
@@ -33,6 +34,7 @@ export type {
   ProcessCategory,
   ProcessInfo,
   ResourceSnapshot,
+  ClipboardKey,
   WebviewToExtensionMessage,
   ExtensionToWebviewMessage,
 };

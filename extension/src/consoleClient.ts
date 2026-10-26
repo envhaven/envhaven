@@ -49,7 +49,7 @@ const SESSION_REFRESH_MARGIN_MS = 60_000;
 const HASH_PROOF_CONTEXT = 'extension-token';
 
 // Per-call fetch budgets. Reads that fan out to GitHub/skills.sh server-side get
-// a generous window; install/remove shell out to `npx skills`, which the console
+// a generous window; install/remove run the image's `skills` CLI, which the console
 // bounds at 120s, so the action budget must clear that.
 const TOKEN_MINT_TIMEOUT_MS = 5_000;
 const CONSOLE_READ_TIMEOUT_MS = 15_000;
@@ -138,7 +138,7 @@ async function mintConsoleToken(): Promise<string> {
  * A web credential exactly as svc-console sees it: the s6 copy read verbatim (no
  * trim), where an empty file counts as unset, as it does for with-contenv. A shell
  * export of the same name must not replace it: a wrong password on every poll
- * would drain the console's shared login limiter and lock the operator out.
+ * would drain the loopback address's login bucket.
  */
 function webCredential(name: 'PASSWORD' | 'HASHED_PASSWORD'): string | undefined {
   try {
@@ -210,11 +210,15 @@ async function mintManagedToken(
  * admits this in-container caller.
  */
 async function mintSelfHostToken(password: string): Promise<string> {
-  const cookie = await getSelfHostSession(password);
-  const res = await fetch(`${CONSOLE_BASE}/__console/token`, {
-    headers: { Cookie: cookie },
-    signal: AbortSignal.timeout(TOKEN_MINT_TIMEOUT_MS),
-  });
+  let res = await exchangeSessionCookie(await getSelfHostSession(password));
+  if (res.status === 401) {
+    // The console signs session cookies with a per-install salt, so a cached cookie stops
+    // verifying when that salt changes under a running extension host (its file removed,
+    // or not stored and the console restarted). Log in once more instead of replaying the
+    // dead cookie for the rest of its 12h.
+    cachedSession = null;
+    res = await exchangeSessionCookie(await getSelfHostSession(password));
+  }
   if (!res.ok) {
     throw new Error(`console token exchange failed: HTTP ${res.status}`);
   }
@@ -223,6 +227,13 @@ async function mintSelfHostToken(password: string): Promise<string> {
     throw new Error('console token exchange returned no token');
   }
   return token;
+}
+
+function exchangeSessionCookie(cookie: string): Promise<Response> {
+  return fetch(`${CONSOLE_BASE}/__console/token`, {
+    headers: { Cookie: cookie },
+    signal: AbortSignal.timeout(TOKEN_MINT_TIMEOUT_MS),
+  });
 }
 
 const SESSION_COOKIE_NAME = 'envhaven_console_session';
@@ -588,7 +599,7 @@ export async function installSkill(source: string, skillId: string): Promise<voi
 /**
  * POST /__console/skills {action:'remove'} — remove an installed skill. Pass the
  * skill's `path` (from listInstalledSkills); the console basenames it to the
- * directory name the `npx skills` CLI matches on.
+ * directory name the `skills` CLI matches on.
  */
 export async function removeSkill(dir: string): Promise<void> {
   const res = await consoleFetch(

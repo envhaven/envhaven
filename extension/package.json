@@ -3,6 +3,7 @@
   "displayName": "EnvHaven",
   "description": "EnvHaven cloud IDE extension - sidebar and environment management",
   "version": "0.2.0",
+  "private": true,
   "publisher": "envhaven",
   "license": "MIT",
   "packageManager": "bun@1.3.5",
@@ -92,7 +93,7 @@
     "dev": "bun esbuild.mjs --watch",
     "build": "bun esbuild.mjs --production",
     "build:webview": "cd webview && bun run build",
-    "package": "bun run build && bun run build:webview && vsce package --out envhaven.vsix",
+    "package": "bun run build && bun run build:webview && vsce package --no-dependencies --out envhaven.vsix",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test"
   },
@@ -101,8 +102,11 @@
     "@types/bun": "^1.3.14",
     "@types/node": "^20.x",
     "@types/vscode": "^1.85.0",
-    "@vscode/vsce": "^3.2.0",
+    "@vscode/vsce": "^4.0.0",
     "esbuild": "^0.25.0",
     "typescript": "^5.7.0"
+  },
+  "overrides": {
+    "@azure/msal-node": "7.1.1"
   }
 }
