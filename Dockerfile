@@ -36,7 +36,7 @@ RUN bun run package
 # that golang.org/x/crypto v0.57.0 requires; pump.go's idle timer is written to be
 # correct under the Go 1.23+ timer semantics it brings. The toolchain here should
 # track current.
-FROM golang:1.26@sha256:672c944cfd07599b5f1bb179869270cdc94c6254e41db4d431259693cb286b82 AS console-builder
+FROM golang:1.27@sha256:f20d83a83e18dbd2a4714b8ffd4b30b287b6243962dd75608e86abcc63ba4efc AS console-builder
 
 WORKDIR /console
 
