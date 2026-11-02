@@ -50,7 +50,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/envhaven-console .
 # ============================================
 # STAGE 2: Main EnvHaven Image
 # ============================================
-FROM linuxserver/code-server:latest@sha256:4524d0b00478e41264f42e0e660c1819e3b7d0c460f78ce73e44fa39b2b55134
+FROM linuxserver/code-server:latest@sha256:ec8f01d91c93a5d615224a306914c3ea9190c6237f876383591bca676a24fa67
 
 # Version tracking for updates lives at the END of this stage. See the note there.
 
