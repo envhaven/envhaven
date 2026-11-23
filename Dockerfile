@@ -9,7 +9,7 @@
 # ============================================
 # STAGE 1: Build EnvHaven VS Code Extension
 # ============================================
-FROM oven/bun:1.3.5-alpine@sha256:7156fcc0cee0194d390bfaf7f0eeda9a5e383e70cc90f31aad3a2440a033d7dc AS extension-builder
+FROM oven/bun:1.4.5-alpine@sha256:da816670775f4c2b4e990b6b1847cf5540dcdc721a42033dd331ce7a88ba6a3b AS extension-builder
 
 RUN apk add --no-cache nodejs npm
 
